@@ -1,0 +1,563 @@
+private func getTimeAgo(from dateString: String) -> String {
+    let dateFormatter = DateFormatter()
+    dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+    dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+    dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+    
+    guard let date = dateFormatter.date(from: dateString) else { return dateString }
+    
+    let now = Date()
+    let components = Calendar.current.dateComponents([.minute, .hour, .day], from: date, to: now)
+    
+    if let days = components.day, days > 0 {
+        return "\(days)d ago"
+    } else if let hours = components.hour, hours > 0 {
+        return "\(hours)h ago"
+    } else if let minutes = components.minute, minutes > 0 {
+        return "\(minutes)m ago"
+    }
+    return "just now"
+}
+
+struct RSSItem: Codable {
+    let title: String
+    let link: String
+    let pubDate: String
+    let source: String
+    var isRead: Bool = false
+    
+    enum CodingKeys: String, CodingKey {
+        case title, link, pubDate, source, isRead
+    }
+}
+
+enum AppColors {
+    static var primary: UIColor {
+        UIColor(hex: "121212")  // Dark background
+    }
+    
+    static var secondary: UIColor {
+        UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark ?
+            UIColor(hex: "9E9E9E") : UIColor(hex: "757575")
+        }
+    }
+    
+    static var accent: UIColor {
+        UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark ?
+            UIColor(hex: "FFFFFF") : UIColor(hex: "1A1A1A")
+        }
+    }
+    
+    static var background: UIColor {
+        UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark ?
+            UIColor(hex: "1E1E1E") : UIColor(hex: "F5F5F5")
+        }
+    }
+}
+
+// Add UIColor extension for hex colors
+extension UIColor {
+    convenience init(hex: String) {
+        let scanner = Scanner(string: hex)
+        scanner.scanLocation = 0
+        
+        var rgbValue: UInt64 = 0
+        scanner.scanHexInt64(&rgbValue)
+        
+        let r = (rgbValue & 0xff0000) >> 16
+        let g = (rgbValue & 0xff00) >> 8
+        let b = rgbValue & 0xff
+        
+        self.init(red: CGFloat(r) / 0xff, green: CGFloat(g) / 0xff, blue: CGFloat(b) / 0xff, alpha: 1)
+    }
+}
+
+import UIKit
+import SafariServices
+
+class HomeFeedViewController: UIViewController {
+    private var items: [RSSItem] = []
+    private let tableView = UITableView()
+    private let refreshControl = UIRefreshControl()
+    private var lastContentOffset: CGFloat = 0
+    
+    private var footerLoadingIndicator: UIActivityIndicatorView?
+    private var footerRefreshButton: UIButton?
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        setupRefreshControl()
+        setupNavigationBar()
+        setupTableView()
+        setupScrollViewDelegate()
+        setupNotificationObserver()
+        loadRSSFeeds()
+    }
+    
+    private func setupRefreshControl() {
+        refreshControl.addTarget(self, action: #selector(refreshFeeds), for: .valueChanged)
+        tableView.refreshControl = refreshControl
+    }
+    
+    private func setupNotificationObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleReadItemsReset),
+            name: Notification.Name("readItemsReset"),
+            object: nil
+        )
+    }
+    
+    @objc private func handleReadItemsReset() {
+        loadRSSFeeds()
+    }
+    
+    // Add cleanup in deinit
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    // Mark items as read and save state
+    private func markVisibleItemsAsRead() {
+        let visibleIndexPaths = tableView.indexPathsForVisibleRows ?? []
+        for indexPath in visibleIndexPaths {
+            if !items[indexPath.row].isRead {
+                items[indexPath.row].isRead = true
+                tableView.reloadRows(at: [indexPath], with: .none)
+            }
+        }
+        saveReadState()
+    }
+    
+    private func saveReadState() {
+        // Get existing read links
+        var existingReadLinks = UserDefaults.standard.stringArray(forKey: "readItems") ?? []
+        
+        // Add new read links
+        let newReadLinks = items.filter { $0.isRead }.map { $0.link }
+        existingReadLinks.append(contentsOf: newReadLinks)
+        
+        // Remove duplicates
+        existingReadLinks = Array(Set(existingReadLinks))
+        
+        // Save back to UserDefaults
+        UserDefaults.standard.set(existingReadLinks, forKey: "readItems")
+        UserDefaults.standard.synchronize()
+        
+        debugPrintReadState(message: "After saving read state")
+    }
+    
+    private func loadReadState() {
+        let readLinks = UserDefaults.standard.stringArray(forKey: "readItems") ?? []
+        items = items.map { item in
+            var updatedItem = item
+            updatedItem.isRead = readLinks.contains(item.link)
+            return updatedItem
+        }
+    }
+    
+    private func setupScrollViewDelegate() {
+        tableView.delegate = self
+    }
+    
+    private func debugPrintReadState(message: String) {
+        print("DEBUG - \(message)")
+        print("Total items: \(items.count)")
+        print("Read items in UserDefaults: \(UserDefaults.standard.stringArray(forKey: "readItems")?.count ?? 0)")
+        print("Read items links: \(UserDefaults.standard.stringArray(forKey: "readItems") ?? [])")
+    }
+    
+    private func loadRSSFeeds() {
+        debugPrintReadState(message: "Start loading RSS feeds")
+        let readLinks = UserDefaults.standard.stringArray(forKey: "readItems") ?? []
+        
+        guard let data = UserDefaults.standard.data(forKey: "rssFeeds"),
+              let feeds = try? JSONDecoder().decode([RSSFeed].self, from: data) else {
+            refreshControl.endRefreshing()
+            return
+        }
+        
+        let dispatchGroup = DispatchGroup()
+        var allItems: [RSSItem] = []
+        
+        feeds.forEach { feed in
+            dispatchGroup.enter()
+            
+            guard let url = URL(string: feed.url) else {
+                dispatchGroup.leave()
+                return
+            }
+            
+            let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+                defer { dispatchGroup.leave() }
+                
+                guard let data = data,
+                      error == nil else {
+                    print("Error fetching RSS feed: \(error?.localizedDescription ?? "Unknown error")")
+                    return
+                }
+                
+                let parser = XMLParser(data: data)
+                let rssParser = RSSParser(source: feed.title)
+                parser.delegate = rssParser
+                
+                if parser.parse() {
+                    let items = rssParser.items.filter { !readLinks.contains($0.link) }
+                    allItems.append(contentsOf: items)
+                }
+            }
+            task.resume()
+        }
+        
+        dispatchGroup.notify(queue: .main) { [weak self] in
+            guard let self = self else { return }
+            
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+            dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+            
+            self.items = allItems.sorted { item1, item2 in
+                guard let date1 = dateFormatter.date(from: item1.pubDate),
+                      let date2 = dateFormatter.date(from: item2.pubDate) else {
+                    return false
+                }
+                return date1 > date2
+            }
+            
+            // Update button state based on available items
+            if self.items.isEmpty {
+                self.footerRefreshButton?.setTitle("  No More Articles  ", for: .normal)
+                self.footerRefreshButton?.isEnabled = false
+            } else {
+                self.footerRefreshButton?.setTitle("  Refresh Feed  ", for: .normal)
+                self.footerRefreshButton?.isEnabled = true
+            }
+            
+            debugPrintReadState(message: "Finished loading RSS feeds")
+            self.tableView.reloadData()
+            self.refreshControl.endRefreshing()
+        }
+    }
+    
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        loadRSSFeeds()
+    }
+    
+    private func setupNavigationBar() {
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = AppColors.primary
+        
+        // Dynamic color based on light/dark mode
+        let titleColor: UIColor = UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark ? .white : .black
+        }
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .foregroundColor: UIColor.white,
+            .font: UIFont.systemFont(ofSize: 17, weight: .semibold)
+        ]
+        appearance.titleTextAttributes = titleAttributes
+        appearance.largeTitleTextAttributes = titleAttributes
+        
+        navigationController?.navigationBar.standardAppearance = appearance
+        navigationController?.navigationBar.scrollEdgeAppearance = appearance
+        navigationController?.navigationBar.compactAppearance = appearance
+        
+        if #available(iOS 15.0, *) {
+            navigationController?.navigationBar.compactScrollEdgeAppearance = appearance
+        }
+        
+        setupNavigationButtons()
+    }
+    
+    private func setupNavigationButtons() {
+        let buttonImages = [
+            "RSS": (action: #selector(rssButtonTapped), position: "right"),
+            "settings": (action: #selector(openSettings), position: "right"),
+            "heart": (action: #selector(heartButtonTapped), position: "left"),
+            "bookmark": (action: #selector(bookmarkButtonTapped), position: "left")
+        ]
+        
+        var rightButtons: [UIBarButtonItem] = []
+        var leftButtons: [UIBarButtonItem] = []
+        
+        // Create buttons in specific order
+        let orderedLeftButtons = ["bookmark", "heart"]
+        let orderedRightButtons = ["settings", "RSS"]
+        
+        for imageName in orderedLeftButtons {
+            if let details = buttonImages[imageName] {
+                let button = createBarButton(imageName: imageName, action: details.action)
+                leftButtons.append(button)
+            }
+        }
+        
+        for imageName in orderedRightButtons {
+            if let details = buttonImages[imageName] {
+                let button = createBarButton(imageName: imageName, action: details.action)
+                rightButtons.append(button)
+            }
+        }
+        
+        navigationItem.rightBarButtonItems = rightButtons
+        navigationItem.leftBarButtonItems = leftButtons
+    }
+    
+    private func createBarButton(imageName: String, action: Selector) -> UIBarButtonItem {
+        let button = UIBarButtonItem(
+            image: resizeImage(UIImage(named: imageName), targetSize: CGSize(width: 24, height: 24))?
+                .withRenderingMode(.alwaysTemplate),
+            style: .plain,
+            target: self,
+            action: action
+        )
+        button.tintColor = .white
+        return button
+    }
+    
+    private func setupTableView() {
+        view.addSubview(tableView)
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        
+        tableView.delegate = self
+        tableView.dataSource = self
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "RSSCell")
+        
+        // Add footer refresh button
+        let footerView = UIView(frame: CGRect(x: 0, y: 0, width: view.frame.width, height: 80))
+        footerView.backgroundColor = AppColors.background
+        
+        let refreshButton = UIButton(type: .system)
+        refreshButton.translatesAutoresizingMaskIntoConstraints = false
+        footerView.addSubview(refreshButton)
+        
+        // Setup button appearance
+        refreshButton.backgroundColor = AppColors.primary
+        refreshButton.setTitle("  Refresh Feeds  ", for: .normal)
+        refreshButton.setTitleColor(.white, for: .normal)
+        refreshButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
+        refreshButton.layer.cornerRadius = 20
+        refreshButton.layer.masksToBounds = true
+        
+        // Add loading indicator
+        let loadingIndicator = UIActivityIndicatorView(style: .medium)
+        loadingIndicator.color = .white
+        loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
+        refreshButton.addSubview(loadingIndicator)
+        
+        // Center button in footer
+        NSLayoutConstraint.activate([
+            refreshButton.centerXAnchor.constraint(equalTo: footerView.centerXAnchor),
+            refreshButton.centerYAnchor.constraint(equalTo: footerView.centerYAnchor),
+            refreshButton.heightAnchor.constraint(equalToConstant: 40),
+            
+            loadingIndicator.trailingAnchor.constraint(equalTo: refreshButton.trailingAnchor, constant: -12),
+            loadingIndicator.centerYAnchor.constraint(equalTo: refreshButton.centerYAnchor)
+        ])
+        
+        refreshButton.addTarget(self, action: #selector(refreshButtonTapped), for: .touchUpInside)
+        tableView.tableFooterView = footerView
+        
+        // Store references for loading state
+        self.footerLoadingIndicator = loadingIndicator
+        self.footerRefreshButton = refreshButton
+    }
+    
+    @objc private func refreshButtonTapped() {
+        // Show loading state
+        footerLoadingIndicator?.startAnimating()
+        footerRefreshButton?.setTitle("  Loading...  ", for: .normal)
+        footerRefreshButton?.isEnabled = false
+        
+        refreshFeeds()
+    }
+
+    @objc private func refreshFeeds() {
+        items.removeAll { $0.isRead }
+        tableView.reloadData()
+        loadRSSFeeds()
+        
+        // Update button text based on items
+        if items.isEmpty {
+            footerRefreshButton?.setTitle("  No More Articles  ", for: .normal)
+            footerRefreshButton?.isEnabled = false
+        } else {
+            footerRefreshButton?.setTitle("  Refresh Feed  ", for: .normal)
+            footerRefreshButton?.isEnabled = true
+        }
+        footerLoadingIndicator?.stopAnimating()
+    }
+    
+    @objc private func rssButtonTapped() {
+        let rssSettingsVC = RSSSettingsViewController()
+        navigationController?.pushViewController(rssSettingsVC, animated: true)
+    }
+    
+    @objc private func heartButtonTapped() {
+        // Handle heart button tap
+    }
+    
+    @objc private func bookmarkButtonTapped() {
+        // Handle bookmark button tap
+    }
+    
+    @objc private func openSettings() {
+        let settingsVC = SettingsViewController()
+        navigationController?.pushViewController(settingsVC, animated: true)
+    }
+    
+    func resizeImage(_ image: UIImage?, targetSize: CGSize) -> UIImage? {
+        guard let image = image else { return nil }
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+    }
+    
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        
+        if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
+            setupNavigationBar()
+            tableView.backgroundColor = AppColors.background
+            tableView.reloadData()
+        }
+    }
+    
+}
+
+extension HomeFeedViewController: UIScrollViewDelegate {
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            let visibleCells = tableView.visibleCells
+            let topCell = visibleCells.first
+            
+            for cell in tableView.visibleCells {
+                if let indexPath = tableView.indexPath(for: cell),
+                   !items[indexPath.row].isRead,
+                   cell.frame.maxY < topCell?.frame.minY ?? 0 {
+                    items[indexPath.row].isRead = true
+                    configureCell(cell, with: items[indexPath.row])
+                    saveReadState()
+                }
+            }
+        }
+    
+    private func configureCell(_ cell: UITableViewCell, with item: RSSItem) {
+            var config = cell.defaultContentConfiguration()
+            config.text = item.title
+            config.secondaryText = "\(item.source) • \(getTimeAgo(from: item.pubDate))"
+            
+            config.textProperties.color = item.isRead ? AppColors.secondary : AppColors.accent
+            config.secondaryTextProperties.color = AppColors.secondary
+            config.secondaryTextProperties.font = .systemFont(ofSize: 12)
+            config.textProperties.font = .systemFont(ofSize: 16, weight: item.isRead ? .regular : .medium)
+            
+            cell.contentConfiguration = config
+        }
+    
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        markVisibleItemsAsRead()
+    }
+}
+
+extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return items.count
+    }
+    
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "RSSCell", for: indexPath)
+        let item = items[indexPath.row]
+        
+        var config = cell.defaultContentConfiguration()
+        config.text = item.title
+        config.secondaryText = "\(item.source) • \(getTimeAgo(from: item.pubDate))"
+        
+        // Style configuration
+        cell.backgroundColor = AppColors.background
+        config.textProperties.color = item.isRead ? AppColors.secondary : AppColors.accent
+        config.secondaryTextProperties.color = AppColors.secondary
+        config.secondaryTextProperties.font = .systemFont(ofSize: 12)
+        config.textProperties.font = .systemFont(ofSize: 16, weight: item.isRead ? .regular : .medium)
+        
+        cell.accessoryType = .disclosureIndicator
+        cell.contentConfiguration = config
+        
+        return cell
+    }
+    
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        if let url = URL(string: items[indexPath.row].link) {
+            // Mark item as read in memory only
+            items[indexPath.row].isRead = true
+            configureCell(tableView.cellForRow(at: indexPath)!, with: items[indexPath.row])
+            // Save state but don't reload table
+            saveReadState()
+            
+            let safariVC = SFSafariViewController(url: url)
+            present(safariVC, animated: true)
+        }
+    }
+}
+
+// RSSParser.swift
+class RSSParser: NSObject, XMLParserDelegate {
+    private(set) var items: [RSSItem] = []
+    private var currentElement = ""
+    private var currentTitle = ""
+    private var currentLink = ""
+    private var currentPubDate = ""
+    private var parsingItem = false
+    private var feedSource: String
+    
+    init(source: String) {
+        self.feedSource = source
+        super.init()
+    }
+    
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        if elementName == "item" {
+            let item = RSSItem(
+                title: currentTitle.trimmingCharacters(in: .whitespacesAndNewlines),
+                link: currentLink.trimmingCharacters(in: .whitespacesAndNewlines),
+                pubDate: currentPubDate.trimmingCharacters(in: .whitespacesAndNewlines),
+                source: feedSource
+            )
+            items.append(item)
+            parsingItem = false
+        }
+    }
+    
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String : String] = [:]) {
+        currentElement = elementName
+        if elementName == "item" {
+            parsingItem = true
+            currentTitle = ""
+            currentLink = ""
+            currentPubDate = ""
+        }
+    }
+    
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if parsingItem {
+            switch currentElement {
+            case "title": currentTitle += string
+            case "link": currentLink += string
+            case "pubDate": currentPubDate += string
+            default: break
+            }
+        }
+    }
+    
+}
