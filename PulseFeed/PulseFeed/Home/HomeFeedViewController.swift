@@ -148,7 +148,7 @@ class HomeFeedViewController: UIViewController {
         UserDefaults.standard.set(existingReadLinks, forKey: "readItems")
         UserDefaults.standard.synchronize()
         
-        debugPrintReadState(message: "After saving read state")
+        //debugPrintReadState(message: "After saving read state")
     }
     
     private func loadReadState() {
@@ -172,7 +172,7 @@ class HomeFeedViewController: UIViewController {
     }
     
     private func loadRSSFeeds() {
-        debugPrintReadState(message: "Start loading RSS feeds")
+        //debugPrintReadState(message: "Start loading RSS feeds")
         let readLinks = UserDefaults.standard.stringArray(forKey: "readItems") ?? []
         
         guard let data = UserDefaults.standard.data(forKey: "rssFeeds"),
@@ -237,7 +237,7 @@ class HomeFeedViewController: UIViewController {
                 self.footerRefreshButton?.isEnabled = true
             }
             
-            debugPrintReadState(message: "Finished loading RSS feeds")
+            //debugPrintReadState(message: "Finished loading RSS feeds")
             if let markAllButton = self.tableView.tableFooterView?.subviews.first as? UIButton {
                 markAllButton.setTitle(self.items.isEmpty ? "  Reached the end  " : "  Mark All as Read  ", for: .normal)
                 markAllButton.isEnabled = !self.items.isEmpty
