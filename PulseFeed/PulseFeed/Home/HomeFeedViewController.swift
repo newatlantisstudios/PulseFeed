@@ -82,7 +82,6 @@ class HomeFeedViewController: UIViewController {
     private var items: [RSSItem] = []
     private let tableView = UITableView()
     private let refreshControl = UIRefreshControl()
-    private var lastContentOffset: CGFloat = 0
     
     private var footerLoadingIndicator: UIActivityIndicatorView?
     private var footerRefreshButton: UIButton?
@@ -237,12 +236,18 @@ class HomeFeedViewController: UIViewController {
             }
             
             debugPrintReadState(message: "Finished loading RSS feeds")
+            if let markAllButton = self.tableView.tableFooterView?.subviews.first as? UIButton {
+                markAllButton.setTitle(self.items.isEmpty ? "  Reached the end  " : "  Mark All as Read  ", for: .normal)
+                markAllButton.isEnabled = !self.items.isEmpty
+            }
             self.tableView.reloadData()
             self.refreshControl.endRefreshing()
         }
     }
     
     private func setupNavigationBar() {
+        title = "Home"
+        
         let appearance = UINavigationBarAppearance()
         appearance.configureWithOpaqueBackground()
         appearance.backgroundColor = AppColors.primary
@@ -328,44 +333,56 @@ class HomeFeedViewController: UIViewController {
         tableView.dataSource = self
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "RSSCell")
         
-        // Add footer refresh button
+        // Add footer mark all as read button
         let footerView = UIView(frame: CGRect(x: 0, y: 0, width: view.frame.width, height: 80))
         footerView.backgroundColor = AppColors.background
         
-        let refreshButton = UIButton(type: .system)
-        refreshButton.translatesAutoresizingMaskIntoConstraints = false
-        footerView.addSubview(refreshButton)
+        let markAllButton = UIButton(type: .system)
+        markAllButton.translatesAutoresizingMaskIntoConstraints = false
+        footerView.addSubview(markAllButton)
         
         // Setup button appearance
-        refreshButton.backgroundColor = AppColors.primary
-        refreshButton.setTitle("  Refresh Feeds  ", for: .normal)
-        refreshButton.setTitleColor(.white, for: .normal)
-        refreshButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
-        refreshButton.layer.cornerRadius = 20
-        refreshButton.layer.masksToBounds = true
-        
-        // Add loading indicator
-        let loadingIndicator = UIActivityIndicatorView(style: .medium)
-        loadingIndicator.color = .white
-        loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
-        refreshButton.addSubview(loadingIndicator)
+        markAllButton.backgroundColor = AppColors.primary
+        markAllButton.setTitle(items.isEmpty ? "  Reached the end  " : "  Mark All as Read  ", for: .normal)
+        markAllButton.isEnabled = !items.isEmpty
+        markAllButton.setTitleColor(.white, for: .normal)
+        markAllButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
+        markAllButton.layer.cornerRadius = 20
+        markAllButton.layer.masksToBounds = true
         
         // Center button in footer
         NSLayoutConstraint.activate([
-            refreshButton.centerXAnchor.constraint(equalTo: footerView.centerXAnchor),
-            refreshButton.centerYAnchor.constraint(equalTo: footerView.centerYAnchor),
-            refreshButton.heightAnchor.constraint(equalToConstant: 40),
-            
-            loadingIndicator.trailingAnchor.constraint(equalTo: refreshButton.trailingAnchor, constant: -12),
-            loadingIndicator.centerYAnchor.constraint(equalTo: refreshButton.centerYAnchor)
+            markAllButton.centerXAnchor.constraint(equalTo: footerView.centerXAnchor),
+            markAllButton.centerYAnchor.constraint(equalTo: footerView.centerYAnchor),
+            markAllButton.heightAnchor.constraint(equalToConstant: 40)
         ])
         
-        refreshButton.addTarget(self, action: #selector(refreshButtonTapped), for: .touchUpInside)
+        markAllButton.addTarget(self, action: #selector(markAllAsReadTapped), for: .touchUpInside)
         tableView.tableFooterView = footerView
+    }
+    
+    @objc private func markAllAsReadTapped() {
+        let alert = UIAlertController(
+            title: "Mark All as Read",
+            message: "Are you sure you want to mark all articles as read?",
+            preferredStyle: .alert
+        )
         
-        // Store references for loading state
-        self.footerLoadingIndicator = loadingIndicator
-        self.footerRefreshButton = refreshButton
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Mark All", style: .default) { [weak self] _ in
+            self?.markAllItemsAsRead()
+        })
+        
+        present(alert, animated: true)
+    }
+    
+    private func markAllItemsAsRead() {
+        for index in 0..<items.count {
+            items[index].isRead = true
+        }
+        saveReadState()
+        items.removeAll()
+        loadRSSFeeds()
     }
     
     @objc private func refreshButtonTapped() {
@@ -376,7 +393,7 @@ class HomeFeedViewController: UIViewController {
         
         refreshFeeds()
     }
-
+    
     @objc private func refreshFeeds() {
         items.removeAll { $0.isRead }
         tableView.reloadData()
@@ -432,36 +449,17 @@ class HomeFeedViewController: UIViewController {
 }
 
 extension HomeFeedViewController: UIScrollViewDelegate {
-    func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            let visibleCells = tableView.visibleCells
-            let topCell = visibleCells.first
-            
-            for cell in tableView.visibleCells {
-                if let indexPath = tableView.indexPath(for: cell),
-                   !items[indexPath.row].isRead,
-                   cell.frame.maxY < topCell?.frame.minY ?? 0 {
-                    items[indexPath.row].isRead = true
-                    configureCell(cell, with: items[indexPath.row])
-                    saveReadState()
-                }
-            }
-        }
-    
     private func configureCell(_ cell: UITableViewCell, with item: RSSItem) {
-            var config = cell.defaultContentConfiguration()
-            config.text = item.title
-            config.secondaryText = "\(item.source) • \(getTimeAgo(from: item.pubDate))"
-            
-            config.textProperties.color = item.isRead ? AppColors.secondary : AppColors.accent
-            config.secondaryTextProperties.color = AppColors.secondary
-            config.secondaryTextProperties.font = .systemFont(ofSize: 12)
-            config.textProperties.font = .systemFont(ofSize: 16, weight: item.isRead ? .regular : .medium)
-            
-            cell.contentConfiguration = config
-        }
-    
-    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        markVisibleItemsAsRead()
+        var config = cell.defaultContentConfiguration()
+        config.text = item.title
+        config.secondaryText = "\(item.source) • \(getTimeAgo(from: item.pubDate))"
+        
+        config.textProperties.color = item.isRead ? AppColors.secondary : AppColors.accent
+        config.secondaryTextProperties.color = AppColors.secondary
+        config.secondaryTextProperties.font = .systemFont(ofSize: 12)
+        config.textProperties.font = .systemFont(ofSize: 16, weight: item.isRead ? .regular : .medium)
+        
+        cell.contentConfiguration = config
     }
 }
 
