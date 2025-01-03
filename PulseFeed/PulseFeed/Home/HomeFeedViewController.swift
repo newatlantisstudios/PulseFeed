@@ -242,11 +242,6 @@ class HomeFeedViewController: UIViewController {
         }
     }
     
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        loadRSSFeeds()
-    }
-    
     private func setupNavigationBar() {
         let appearance = UINavigationBarAppearance()
         appearance.configureWithOpaqueBackground()
@@ -499,15 +494,22 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         if let url = URL(string: items[indexPath.row].link) {
-            // Mark item as read in memory only
+            // Mark item as read
             items[indexPath.row].isRead = true
             configureCell(tableView.cellForRow(at: indexPath)!, with: items[indexPath.row])
-            // Save state but don't reload table
             saveReadState()
             
             let safariVC = SFSafariViewController(url: url)
+            safariVC.delegate = self
             present(safariVC, animated: true)
         }
+    }
+}
+
+extension HomeFeedViewController: SFSafariViewControllerDelegate {
+    func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+        // Just dismiss - no need to reload feeds
+        controller.dismiss(animated: true)
     }
 }
 
