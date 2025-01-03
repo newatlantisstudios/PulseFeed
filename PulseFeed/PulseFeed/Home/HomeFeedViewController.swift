@@ -85,6 +85,8 @@ class HomeFeedViewController: UIViewController {
     
     private var footerLoadingIndicator: UIActivityIndicatorView?
     private var footerRefreshButton: UIButton?
+    private var isShowingBookmarks = false
+    private var footerView: UIView?
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -242,6 +244,7 @@ class HomeFeedViewController: UIViewController {
             }
             self.tableView.reloadData()
             self.refreshControl.endRefreshing()
+            updateFooterVisibility()
         }
     }
     
@@ -333,15 +336,18 @@ class HomeFeedViewController: UIViewController {
         tableView.dataSource = self
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "RSSCell")
         
-        // Add footer mark all as read button
-        let footerView = UIView(frame: CGRect(x: 0, y: 0, width: view.frame.width, height: 80))
-        footerView.backgroundColor = AppColors.background
+        setupTableViewFooter()
+        tableView.tableFooterView = footerView
+    }
+    
+    private func setupTableViewFooter() {
+        footerView = UIView(frame: CGRect(x: 0, y: 0, width: view.frame.width, height: 80))
+        footerView?.backgroundColor = AppColors.background
         
         let markAllButton = UIButton(type: .system)
         markAllButton.translatesAutoresizingMaskIntoConstraints = false
-        footerView.addSubview(markAllButton)
+        footerView?.addSubview(markAllButton)
         
-        // Setup button appearance
         markAllButton.backgroundColor = AppColors.primary
         markAllButton.setTitle(items.isEmpty ? "  Reached the end  " : "  Mark All as Read  ", for: .normal)
         markAllButton.isEnabled = !items.isEmpty
@@ -350,15 +356,24 @@ class HomeFeedViewController: UIViewController {
         markAllButton.layer.cornerRadius = 20
         markAllButton.layer.masksToBounds = true
         
-        // Center button in footer
         NSLayoutConstraint.activate([
-            markAllButton.centerXAnchor.constraint(equalTo: footerView.centerXAnchor),
-            markAllButton.centerYAnchor.constraint(equalTo: footerView.centerYAnchor),
+            markAllButton.centerXAnchor.constraint(equalTo: footerView!.centerXAnchor),
+            markAllButton.centerYAnchor.constraint(equalTo: footerView!.centerYAnchor),
             markAllButton.heightAnchor.constraint(equalToConstant: 40)
         ])
         
         markAllButton.addTarget(self, action: #selector(markAllAsReadTapped), for: .touchUpInside)
-        tableView.tableFooterView = footerView
+    }
+    
+    private func updateFooterVisibility() {
+        if isShowingBookmarks {
+            tableView.tableFooterView = nil
+        } else {
+            if footerView == nil {
+                setupTableViewFooter()
+            }
+            tableView.tableFooterView = footerView
+        }
     }
     
     @objc private func markAllAsReadTapped() {
@@ -420,7 +435,27 @@ class HomeFeedViewController: UIViewController {
     }
     
     @objc private func bookmarkButtonTapped() {
-        // Handle bookmark button tap
+        isShowingBookmarks = !isShowingBookmarks
+        
+        // Update button image
+        if let bookmarkButton = navigationItem.leftBarButtonItems?.first {
+            let imageName = isShowingBookmarks ? "bookmarkFilled" : "bookmark"
+            bookmarkButton.image = resizeImage(UIImage(named: imageName), targetSize: CGSize(width: 24, height: 24))?
+                .withRenderingMode(.alwaysTemplate)
+        }
+        
+        if isShowingBookmarks {
+            // Show bookmarked items
+            let bookmarkedLinks = UserDefaults.standard.stringArray(forKey: "bookmarkedItems") ?? []
+            items = items.filter { bookmarkedLinks.contains($0.link) }
+        } else {
+            // Refresh feed to show all items
+            items.removeAll()
+            loadRSSFeeds()
+        }
+        
+        tableView.reloadData()
+        updateFooterVisibility()
     }
     
     @objc private func openSettings() {
@@ -446,6 +481,23 @@ class HomeFeedViewController: UIViewController {
         }
     }
     
+    private func toggleBookmark(for item: RSSItem) {
+        // Get existing bookmarks
+        var bookmarkedItems = UserDefaults.standard.stringArray(forKey: "bookmarkedItems") ?? []
+        
+        if bookmarkedItems.contains(item.link) {
+            // Remove bookmark
+            bookmarkedItems.removeAll { $0 == item.link }
+        } else {
+            // Add bookmark
+            bookmarkedItems.append(item.link)
+        }
+        
+        // Save updated bookmarks
+        UserDefaults.standard.set(bookmarkedItems, forKey: "bookmarkedItems")
+        UserDefaults.standard.synchronize()
+    }
+    
 }
 
 extension HomeFeedViewController: UIScrollViewDelegate {
@@ -466,6 +518,25 @@ extension HomeFeedViewController: UIScrollViewDelegate {
 extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         return items.count
+    }
+    
+    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        let bookmarkAction = UIContextualAction(style: .normal, title: nil) { [weak self] (action, view, completion) in
+            guard let self = self else {
+                completion(false)
+                return
+            }
+            
+            let item = self.items[indexPath.row]
+            self.toggleBookmark(for: item)
+            completion(true)
+        }
+        
+        // Set bookmark image
+        bookmarkAction.image = UIImage(named: "bookmark")?.withRenderingMode(.alwaysTemplate)
+        bookmarkAction.backgroundColor = AppColors.primary
+        
+        return UISwipeActionsConfiguration(actions: [bookmarkAction])
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
