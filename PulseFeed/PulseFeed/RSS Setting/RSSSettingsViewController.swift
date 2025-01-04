@@ -105,7 +105,7 @@ class RSSSettingsViewController : UIViewController, UITableViewDelegate, UITable
         if useICloud {
             loadFromICloud()
         } else {
-            feeds = loadLocalFeeds()
+            feeds = loadLocalFeeds().sorted { $0.title.lowercased() < $1.title.lowercased() }
         }
     }
     
@@ -114,7 +114,7 @@ class RSSSettingsViewController : UIViewController, UITableViewDelegate, UITable
         CKContainer.default().privateCloudDatabase.perform(query, inZoneWith: nil) { [weak self] records, error in
             DispatchQueue.main.async {
                 guard let records = records, error == nil else {
-                    self?.feeds = self?.loadLocalFeeds() ?? []
+                    self?.feeds = self?.loadLocalFeeds().sorted { $0.title.lowercased() < $1.title.lowercased() } ?? []
                     return
                 }
                 
@@ -123,7 +123,8 @@ class RSSSettingsViewController : UIViewController, UITableViewDelegate, UITable
                           let title = record["title"] as? String,
                           let lastUpdated = record["lastUpdated"] as? Date else { return nil }
                     return RSSFeed(url: url, title: title, lastUpdated: lastUpdated)
-                }
+                }.sorted { $0.title.lowercased() < $1.title.lowercased() }
+                
                 self?.feeds = cloudFeeds
                 self?.saveLocally(cloudFeeds) // Keep local copy in sync
             }

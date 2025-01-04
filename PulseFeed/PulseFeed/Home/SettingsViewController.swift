@@ -24,22 +24,6 @@ import UIKit
 import CloudKit
 
 class SettingsViewController: UIViewController, UIDocumentPickerDelegate{
-    private lazy var iCloudSwitch: UISwitch = {
-        let toggle = UISwitch()
-        toggle.isOn = UserDefaults.standard.bool(forKey: "useICloud")
-        toggle.addTarget(self, action: #selector(iCloudSwitchChanged), for: .valueChanged)
-        toggle.translatesAutoresizingMaskIntoConstraints = false
-        return toggle
-    }()
-    
-    private lazy var iCloudLabel: UILabel = {
-        let label = UILabel()
-        label.text = "Sync with iCloud"
-        label.textColor = .label
-        label.translatesAutoresizingMaskIntoConstraints = false
-        return label
-    }()
-    
     private lazy var importButton: UIButton = {
         var configuration = UIButton.Configuration.filled()
         configuration.title = "Import OPML"
@@ -91,39 +75,21 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate{
     }
     
     private func setupViews() {
-        view.addSubview(iCloudLabel)
-        view.addSubview(iCloudSwitch)
-        view.addSubview(importButton)
-        view.addSubview(exportButton)
-        view.addSubview(resetButton)
+        let stackView = UIStackView(arrangedSubviews: [importButton, exportButton, resetButton])
+        stackView.axis = .vertical
+        stackView.spacing = 16
+        stackView.alignment = .center
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stackView)
         
         NSLayoutConstraint.activate([
-            iCloudLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
-            iCloudLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            stackView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            stackView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             
-            iCloudSwitch.centerYAnchor.constraint(equalTo: iCloudLabel.centerYAnchor),
-            iCloudSwitch.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            
-            importButton.topAnchor.constraint(equalTo: iCloudLabel.bottomAnchor, constant: 30),
-            importButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             importButton.widthAnchor.constraint(equalToConstant: 140),
-            
-            exportButton.topAnchor.constraint(equalTo: importButton.bottomAnchor, constant: 16),
-            exportButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             exportButton.widthAnchor.constraint(equalToConstant: 140),
-            
-            resetButton.topAnchor.constraint(equalTo: exportButton.bottomAnchor, constant: 16),
-            resetButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             resetButton.widthAnchor.constraint(equalToConstant: 140)
         ])
-    }
-    
-    @objc private func iCloudSwitchChanged(_ sender: UISwitch) {
-        UserDefaults.standard.set(sender.isOn, forKey: "useICloud")
-        if sender.isOn {
-            checkICloudAvailability()
-        }
-        NotificationCenter.default.post(name: Notification.Name("iCloudSyncPreferenceChanged"), object: nil)
     }
     
     @objc private func importOPML() {
@@ -156,12 +122,6 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate{
                 UserDefaults.standard.set(encodedData, forKey: "rssFeeds")
             }
             
-            if UserDefaults.standard.bool(forKey: "useICloud") {
-                for feed in importedFeeds {
-                    saveToICloud(feed)
-                }
-            }
-            
             let alert = UIAlertController(title: "Import Successful", message: "Feeds have been imported", preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "OK", style: .default))
             present(alert, animated: true)
@@ -172,23 +132,8 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate{
         }
     }
     
-    private func saveToICloud(_ feed: RSSFeed) {
-        let record = CKRecord(recordType: "RSSFeed")
-        record.setValue(feed.url, forKey: "url")
-        record.setValue(feed.title, forKey: "title")
-        record.setValue(feed.lastUpdated, forKey: "lastUpdated")
-        
-        CKContainer.default().privateCloudDatabase.save(record) { [weak self] _, error in
-            if let error = error {
-                DispatchQueue.main.async {
-                    self?.showError("Failed to save to iCloud: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
-    
     @objc private func exportOPML() {
-        let feeds = loadLocalFeeds() // Using your existing function
+        let feeds = loadLocalFeeds()
         
         let opml = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -247,18 +192,6 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate{
         })
         
         present(alert, animated: true)
-    }
-    
-    private func checkICloudAvailability() {
-        CKContainer.default().accountStatus { [weak self] status, error in
-            DispatchQueue.main.async {
-                if status != .available {
-                    self?.iCloudSwitch.setOn(false, animated: true)
-                    UserDefaults.standard.set(false, forKey: "useICloud")
-                    self?.showError("iCloud is not available. Please sign in to your iCloud account in Settings.")
-                }
-            }
-        }
     }
     
     private func showError(_ message: String) {

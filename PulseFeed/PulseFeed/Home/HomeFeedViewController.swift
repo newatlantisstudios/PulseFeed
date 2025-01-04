@@ -82,11 +82,24 @@ class HomeFeedViewController: UIViewController {
     private var items: [RSSItem] = []
     private let tableView = UITableView()
     private let refreshControl = UIRefreshControl()
+    private var longPressGesture: UILongPressGestureRecognizer!
     
     private var footerLoadingIndicator: UIActivityIndicatorView?
     private var footerRefreshButton: UIButton?
     private var isShowingBookmarks = false
     private var footerView: UIView?
+    
+    private enum FeedType {
+        case rss
+        case bookmarks
+        case heart
+    }
+    private var currentFeedType: FeedType = .rss {
+        didSet {
+            updateNavigationButtons()
+            updateTableViewContent()
+        }
+    }
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -95,6 +108,7 @@ class HomeFeedViewController: UIViewController {
         setupTableView()
         setupScrollViewDelegate()
         setupNotificationObserver()
+        setupLongPressGesture()
         loadRSSFeeds()
     }
     
@@ -110,6 +124,155 @@ class HomeFeedViewController: UIViewController {
             name: Notification.Name("readItemsReset"),
             object: nil
         )
+    }
+    
+    private func updateTableViewContent() {
+        switch currentFeedType {
+        case .rss:
+            items.removeAll()
+            loadRSSFeeds()
+            
+        case .bookmarks:
+            let bookmarkedLinks = UserDefaults.standard.stringArray(forKey: "bookmarkedItems") ?? []
+            // Get all RSS items that are bookmarked
+            guard let data = UserDefaults.standard.data(forKey: "rssFeeds"),
+                  let feeds = try? JSONDecoder().decode([RSSFeed].self, from: data) else {
+                items.removeAll()
+                tableView.reloadData()
+                return
+            }
+            
+            items.removeAll()
+            let dispatchGroup = DispatchGroup()
+            
+            feeds.forEach { feed in
+                dispatchGroup.enter()
+                
+                guard let url = URL(string: feed.url) else {
+                    dispatchGroup.leave()
+                    return
+                }
+                
+                let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+                    defer { dispatchGroup.leave() }
+                    
+                    guard let data = data,
+                          error == nil else { return }
+                    
+                    let parser = XMLParser(data: data)
+                    let rssParser = RSSParser(source: feed.title)
+                    parser.delegate = rssParser
+                    
+                    if parser.parse() {
+                        let filteredItems = rssParser.items.filter { bookmarkedLinks.contains($0.link) }
+                        self?.items.append(contentsOf: filteredItems)
+                    }
+                }
+                task.resume()
+            }
+            
+            dispatchGroup.notify(queue: .main) { [weak self] in
+                self?.sortItemsByDate()
+                self?.tableView.reloadData()
+            }
+            
+        case .heart:
+            let heartedLinks = UserDefaults.standard.stringArray(forKey: "heartedItems") ?? []
+            // Get all RSS items that are hearted
+            guard let data = UserDefaults.standard.data(forKey: "rssFeeds"),
+                  let feeds = try? JSONDecoder().decode([RSSFeed].self, from: data) else {
+                items.removeAll()
+                tableView.reloadData()
+                return
+            }
+            
+            items.removeAll()
+            let dispatchGroup = DispatchGroup()
+            
+            feeds.forEach { feed in
+                dispatchGroup.enter()
+                
+                guard let url = URL(string: feed.url) else {
+                    dispatchGroup.leave()
+                    return
+                }
+                
+                let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+                    defer { dispatchGroup.leave() }
+                    
+                    guard let data = data,
+                          error == nil else { return }
+                    
+                    let parser = XMLParser(data: data)
+                    let rssParser = RSSParser(source: feed.title)
+                    parser.delegate = rssParser
+                    
+                    if parser.parse() {
+                        let filteredItems = rssParser.items.filter { heartedLinks.contains($0.link) }
+                        self?.items.append(contentsOf: filteredItems)
+                    }
+                }
+                task.resume()
+            }
+            
+            dispatchGroup.notify(queue: .main) { [weak self] in
+                self?.sortItemsByDate()
+                self?.tableView.reloadData()
+            }
+        }
+        
+        updateFooterVisibility()
+    }
+    
+    private func sortItemsByDate() {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        
+        items.sort { item1, item2 in
+            guard let date1 = dateFormatter.date(from: item1.pubDate),
+                  let date2 = dateFormatter.date(from: item2.pubDate) else {
+                return false
+            }
+            return date1 > date2
+        }
+    }
+    
+    private func setupLongPressGesture() {
+        longPressGesture = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
+        tableView.addGestureRecognizer(longPressGesture)
+    }
+
+    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+        if gesture.state == .began {
+            let point = gesture.location(in: tableView)
+            if let indexPath = tableView.indexPathForRow(at: point) {
+                showMarkAboveAlert(for: indexPath)
+            }
+        }
+    }
+
+    private func showMarkAboveAlert(for indexPath: IndexPath) {
+        let alert = UIAlertController(
+            title: "Mark as Read",
+            message: "Do you want to mark all articles above this one as read?",
+            preferredStyle: .alert
+        )
+
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Mark Read", style: .default) { [weak self] _ in
+            self?.markItemsAboveAsRead(indexPath)
+        })
+
+        present(alert, animated: true)
+    }
+
+    private func markItemsAboveAsRead(_ indexPath: IndexPath) {
+        for index in 0...indexPath.row {
+            items[index].isRead = true
+        }
+        saveReadState()
+        tableView.reloadRows(at: (0...indexPath.row).map { IndexPath(row: $0, section: 0) }, with: .fade)
     }
     
     @objc private func handleReadItemsReset() {
@@ -249,7 +412,6 @@ class HomeFeedViewController: UIViewController {
     }
     
     private func setupNavigationBar() {
-        title = "Home"
         
         let appearance = UINavigationBarAppearance()
         appearance.configureWithOpaqueBackground()
@@ -278,36 +440,39 @@ class HomeFeedViewController: UIViewController {
     }
     
     private func setupNavigationButtons() {
-        let buttonImages = [
-            "RSS": (action: #selector(rssButtonTapped), position: "right"),
-            "settings": (action: #selector(openSettings), position: "right"),
-            "heart": (action: #selector(heartButtonTapped), position: "left"),
-            "bookmark": (action: #selector(bookmarkButtonTapped), position: "left")
+        let leftButtons = [
+            createBarButton(imageName: "rss", action: #selector(rssButtonTapped)),
+            createBarButton(imageName: "bookmark", action: #selector(bookmarkButtonTapped)),
+            createBarButton(imageName: "heart", action: #selector(heartButtonTapped))
         ]
         
-        var rightButtons: [UIBarButtonItem] = []
-        var leftButtons: [UIBarButtonItem] = []
+        let rightButtons = [
+            createBarButton(imageName: "settings", action: #selector(openSettings)),
+            createBarButton(imageName: "edit", action: #selector(editButtonTapped))
+        ]
         
-        // Create buttons in specific order
-        let orderedLeftButtons = ["bookmark", "heart"]
-        let orderedRightButtons = ["settings", "RSS"]
-        
-        for imageName in orderedLeftButtons {
-            if let details = buttonImages[imageName] {
-                let button = createBarButton(imageName: imageName, action: details.action)
-                leftButtons.append(button)
-            }
-        }
-        
-        for imageName in orderedRightButtons {
-            if let details = buttonImages[imageName] {
-                let button = createBarButton(imageName: imageName, action: details.action)
-                rightButtons.append(button)
-            }
-        }
-        
-        navigationItem.rightBarButtonItems = rightButtons
         navigationItem.leftBarButtonItems = leftButtons
+        navigationItem.rightBarButtonItems = rightButtons
+        updateNavigationButtons()
+    }
+    
+    private func updateNavigationButtons() {
+        guard let leftButtons = navigationItem.leftBarButtonItems else { return }
+        
+        // Reset all to unfilled
+        leftButtons[0].image = resizeImage(UIImage(named: "rss"), targetSize: CGSize(width: 24, height: 24))?.withRenderingMode(.alwaysTemplate)
+        leftButtons[1].image = resizeImage(UIImage(named: "bookmark"), targetSize: CGSize(width: 24, height: 24))?.withRenderingMode(.alwaysTemplate)
+        leftButtons[2].image = resizeImage(UIImage(named: "heart"), targetSize: CGSize(width: 24, height: 24))?.withRenderingMode(.alwaysTemplate)
+        
+        // Set filled based on current type
+        switch currentFeedType {
+        case .rss:
+            leftButtons[0].image = resizeImage(UIImage(named: "rssFilled"), targetSize: CGSize(width: 24, height: 24))?.withRenderingMode(.alwaysTemplate)
+        case .bookmarks:
+            leftButtons[1].image = resizeImage(UIImage(named: "bookmarkFilled"), targetSize: CGSize(width: 24, height: 24))?.withRenderingMode(.alwaysTemplate)
+        case .heart:
+            leftButtons[2].image = resizeImage(UIImage(named: "heartFilled"), targetSize: CGSize(width: 24, height: 24))?.withRenderingMode(.alwaysTemplate)
+        }
     }
     
     private func createBarButton(imageName: String, action: Selector) -> UIBarButtonItem {
@@ -366,7 +531,8 @@ class HomeFeedViewController: UIViewController {
     }
     
     private func updateFooterVisibility() {
-        if isShowingBookmarks {
+        // Hide footer for bookmarks and hearts views
+        if currentFeedType == .bookmarks || currentFeedType == .heart {
             tableView.tableFooterView = nil
         } else {
             if footerView == nil {
@@ -426,36 +592,39 @@ class HomeFeedViewController: UIViewController {
     }
     
     @objc private func rssButtonTapped() {
+        currentFeedType = .rss
+    }
+    
+    @objc private func bookmarkButtonTapped() {
+        currentFeedType = .bookmarks
+    }
+    
+    @objc private func heartButtonTapped() {
+        currentFeedType = .heart
+    }
+    
+    @objc private func editButtonTapped() {
         let rssSettingsVC = RSSSettingsViewController()
         navigationController?.pushViewController(rssSettingsVC, animated: true)
     }
     
-    @objc private func heartButtonTapped() {
-        // Handle heart button tap
-    }
-    
-    @objc private func bookmarkButtonTapped() {
-        isShowingBookmarks = !isShowingBookmarks
+    private func toggleHeart(for item: RSSItem) {
+        var heartedItems = UserDefaults.standard.stringArray(forKey: "heartedItems") ?? []
         
-        // Update button image
-        if let bookmarkButton = navigationItem.leftBarButtonItems?.first {
-            let imageName = isShowingBookmarks ? "bookmarkFilled" : "bookmark"
-            bookmarkButton.image = resizeImage(UIImage(named: imageName), targetSize: CGSize(width: 24, height: 24))?
-                .withRenderingMode(.alwaysTemplate)
-        }
-        
-        if isShowingBookmarks {
-            // Show bookmarked items
-            let bookmarkedLinks = UserDefaults.standard.stringArray(forKey: "bookmarkedItems") ?? []
-            items = items.filter { bookmarkedLinks.contains($0.link) }
+        if heartedItems.contains(item.link) {
+            heartedItems.removeAll { $0 == item.link }
         } else {
-            // Refresh feed to show all items
-            items.removeAll()
-            loadRSSFeeds()
+            heartedItems.append(item.link)
         }
         
-        tableView.reloadData()
-        updateFooterVisibility()
+        UserDefaults.standard.set(heartedItems, forKey: "heartedItems")
+        UserDefaults.standard.synchronize()
+        
+        // Refresh table if we're in heart view and unhearted an item
+        if currentFeedType == .heart && !heartedItems.contains(item.link) {
+            items.removeAll { $0.link == item.link }
+            tableView.reloadData()
+        }
     }
     
     @objc private func openSettings() {
@@ -482,20 +651,22 @@ class HomeFeedViewController: UIViewController {
     }
     
     private func toggleBookmark(for item: RSSItem) {
-        // Get existing bookmarks
         var bookmarkedItems = UserDefaults.standard.stringArray(forKey: "bookmarkedItems") ?? []
         
         if bookmarkedItems.contains(item.link) {
-            // Remove bookmark
             bookmarkedItems.removeAll { $0 == item.link }
         } else {
-            // Add bookmark
             bookmarkedItems.append(item.link)
         }
         
-        // Save updated bookmarks
         UserDefaults.standard.set(bookmarkedItems, forKey: "bookmarkedItems")
         UserDefaults.standard.synchronize()
+        
+        // Refresh table if we're in bookmarks view and unbookmarked an item
+        if currentFeedType == .bookmarks && !bookmarkedItems.contains(item.link) {
+            items.removeAll { $0.link == item.link }
+            tableView.reloadData()
+        }
     }
     
 }
@@ -521,22 +692,68 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
     }
     
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        let item = items[indexPath.row]
+        let bookmarkedItems = UserDefaults.standard.stringArray(forKey: "bookmarkedItems") ?? []
+        let isBookmarked = bookmarkedItems.contains(item.link)
+        
         let bookmarkAction = UIContextualAction(style: .normal, title: nil) { [weak self] (action, view, completion) in
             guard let self = self else {
                 completion(false)
                 return
             }
             
-            let item = self.items[indexPath.row]
             self.toggleBookmark(for: item)
+            
+            // Update the swipe action's image after toggling
+            let updatedBookmarkedItems = UserDefaults.standard.stringArray(forKey: "bookmarkedItems") ?? []
+            let isNowBookmarked = updatedBookmarkedItems.contains(item.link)
+            view.backgroundColor = AppColors.primary
+            
+            // Create and set new image
+            let newImage = UIImage(named: isNowBookmarked ? "bookmarkFilled" : "bookmark")?
+                .withRenderingMode(.alwaysTemplate)
+            
+            if let contextualAction = action as? UIContextualAction {
+                contextualAction.image = newImage
+            }
+            
             completion(true)
         }
         
-        // Set bookmark image
-        bookmarkAction.image = UIImage(named: "bookmark")?.withRenderingMode(.alwaysTemplate)
+        // Set initial image based on current state
+        bookmarkAction.image = UIImage(named: isBookmarked ? "bookmarkFilled" : "bookmark")?
+            .withRenderingMode(.alwaysTemplate)
         bookmarkAction.backgroundColor = AppColors.primary
         
         return UISwipeActionsConfiguration(actions: [bookmarkAction])
+    }
+    
+    func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        let heartAction = UIContextualAction(style: .normal, title: nil) { [weak self] (action, view, completion) in
+            guard let self = self else {
+                completion(false)
+                return
+            }
+            
+            let item = self.items[indexPath.row]
+            self.toggleHeart(for: item)
+            
+            let heartedItems = UserDefaults.standard.stringArray(forKey: "heartedItems") ?? []
+            let isHearted = heartedItems.contains(item.link)
+            let heartImage = UIImage(named: isHearted ? "heartFilled" : "heart")?.withRenderingMode(.alwaysTemplate)
+            view.backgroundColor = AppColors.primary
+            
+            completion(true)
+        }
+        
+        let item = items[indexPath.row]
+        let heartedItems = UserDefaults.standard.stringArray(forKey: "heartedItems") ?? []
+        let isHearted = heartedItems.contains(item.link)
+        
+        heartAction.image = UIImage(named: isHearted ? "heartFilled" : "heart")?.withRenderingMode(.alwaysTemplate)
+        heartAction.backgroundColor = AppColors.primary
+        
+        return UISwipeActionsConfiguration(actions: [heartAction])
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -563,16 +780,17 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         if let url = URL(string: items[indexPath.row].link) {
-            // Mark item as read
             items[indexPath.row].isRead = true
             configureCell(tableView.cellForRow(at: indexPath)!, with: items[indexPath.row])
             saveReadState()
             
             let safariVC = SFSafariViewController(url: url)
+            safariVC.dismissButtonStyle = .close
             safariVC.delegate = self
             present(safariVC, animated: true)
         }
     }
+    
 }
 
 extension HomeFeedViewController: SFSafariViewControllerDelegate {
