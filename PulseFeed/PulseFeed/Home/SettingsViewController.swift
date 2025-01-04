@@ -93,7 +93,7 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate{
     }
     
     @objc private func importOPML() {
-        let documentPicker = UIDocumentPickerViewController(documentTypes: ["public.xml"], in: .import)
+        let documentPicker = UIDocumentPickerViewController(documentTypes: ["org.opml.opml", "public.xml", "public.data", "public.content", "public.plain-text", ".opml", "com.apple.opml"], in: .import)
         documentPicker.delegate = self
         documentPicker.allowsMultipleSelection = false
         present(documentPicker, animated: true)
