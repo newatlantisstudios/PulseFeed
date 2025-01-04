@@ -786,6 +786,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             
             let safariVC = SFSafariViewController(url: url)
             safariVC.dismissButtonStyle = .close
+            safariVC.preferredControlTintColor = AppColors.accent
             safariVC.delegate = self
             present(safariVC, animated: true)
         }
