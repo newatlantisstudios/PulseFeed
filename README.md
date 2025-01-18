@@ -12,6 +12,9 @@ Key Features:
 
 Perfect for users who want a pure, minimalist approach to reading their favorite web content.
 
+Apple App Store Link:
+https://apps.apple.com/us/app/pulsefeed/id6739989650
+
 ![Simulator Screenshot - iPhone 16 Pro Max - 2025-01-03 at 21 48 30](https://github.com/user-attachments/assets/9f620721-be5b-4aa3-ab38-f415c3bb9825)
 ![Simulator Screenshot - iPhone 16 Pro Max - 2025-01-03 at 21 48 44](https://github.com/user-attachments/assets/ea30b270-ff2b-4824-87b1-b6a0ba832d9a)
 ![Simulator Screenshot - iPhone 16 Pro Max - 2025-01-03 at 21 48 53](https://github.com/user-attachments/assets/efd90613-f49e-46b7-b73e-8cbbda39c4bc)
