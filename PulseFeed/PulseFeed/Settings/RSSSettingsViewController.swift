@@ -1,5 +1,4 @@
 import UIKit
-import CloudKit
 
 struct RSSFeed: Codable, Hashable {
     let url: String
@@ -10,9 +9,8 @@ struct RSSFeed: Codable, Hashable {
         case url, title, lastUpdated
     }
     
-    // Implement Hashable
+    // Use url as the unique identifier.
     func hash(into hasher: inout Hasher) {
-        // Use url as unique identifier since it should be unique for each feed
         hasher.combine(url)
     }
     
@@ -21,7 +19,8 @@ struct RSSFeed: Codable, Hashable {
     }
 }
 
-class RSSSettingsViewController : UIViewController, UITableViewDelegate, UITableViewDataSource {
+class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableViewDataSource {
+    
     private lazy var tableView: UITableView = {
         let table = UITableView()
         table.delegate = self
@@ -40,7 +39,8 @@ class RSSSettingsViewController : UIViewController, UITableViewDelegate, UITable
     }
     
     private var useICloud: Bool {
-        UserDefaults.standard.bool(forKey: "useICloud")
+        // The switch flag stored in UserDefaults.
+        return UserDefaults.standard.bool(forKey: "useICloud")
     }
     
     override func viewDidLoad() {
@@ -65,68 +65,45 @@ class RSSSettingsViewController : UIViewController, UITableViewDelegate, UITable
     }
     
     private func saveFeed(_ feed: RSSFeed) {
-        // Save locally first
-        var feeds = loadLocalFeeds()
-        feeds.append(feed)
-        saveLocally(feeds)
-        
-        // Save to iCloud if enabled
-        if useICloud {
-            saveToICloud(feed)
-        } else {
-            self.feeds = feeds
-        }
-    }
-    
-    private func saveLocally(_ feeds: [RSSFeed]) {
-        if let encodedData = try? JSONEncoder().encode(feeds) {
-            UserDefaults.standard.set(encodedData, forKey: "rssFeeds")
-        }
-    }
-    
-    private func saveToICloud(_ feed: RSSFeed) {
-        let record = CKRecord(recordType: "RSSFeed")
-        record.setValue(feed.url, forKey: "url")
-        record.setValue(feed.title, forKey: "title")
-        record.setValue(feed.lastUpdated, forKey: "lastUpdated")
-        
-        CKContainer.default().privateCloudDatabase.save(record) { [weak self] _, error in
-            DispatchQueue.main.async {
+        // First, load the current feeds.
+        loadLocalFeeds { currentFeeds in
+            var updatedFeeds = currentFeeds
+            updatedFeeds.append(feed)
+            // Save the updated array using the StorageManager.
+            StorageManager.shared.save(updatedFeeds, forKey: "rssFeeds") { error in
                 if let error = error {
-                    self?.showError("Failed to save to iCloud: \(error.localizedDescription)")
-                    return
+                    self.showError("Failed to save feeds: \(error.localizedDescription)")
+                } else {
+                    self.loadFeeds() // Reload after saving.
                 }
-                self?.loadFeeds()
             }
         }
     }
     
     private func loadFeeds() {
-        if useICloud {
-            loadFromICloud()
-        } else {
-            feeds = loadLocalFeeds().sorted { $0.title.lowercased() < $1.title.lowercased() }
+        StorageManager.shared.load(forKey: "rssFeeds") { (result: Result<[RSSFeed], Error>) in
+            switch result {
+            case .success(let loadedFeeds):
+                self.feeds = loadedFeeds.sorted { $0.title.lowercased() < $1.title.lowercased() }
+            case .failure(let error):
+                print("Error loading feeds: \(error.localizedDescription)")
+                self.feeds = []
+            }
+            // Debug: Print the loaded feeds.
+            print("Loaded RSS Feeds:")
+            for feed in self.feeds {
+                print("Title: \(feed.title) | URL: \(feed.url) | Last Updated: \(feed.lastUpdated)")
+            }
         }
     }
     
-    private func loadFromICloud() {
-        let query = CKQuery(recordType: "RSSFeed", predicate: NSPredicate(value: true))
-        CKContainer.default().privateCloudDatabase.perform(query, inZoneWith: nil) { [weak self] records, error in
-            DispatchQueue.main.async {
-                guard let records = records, error == nil else {
-                    self?.feeds = self?.loadLocalFeeds().sorted { $0.title.lowercased() < $1.title.lowercased() } ?? []
-                    return
-                }
-                
-                let cloudFeeds = records.compactMap { record -> RSSFeed? in
-                    guard let url = record["url"] as? String,
-                          let title = record["title"] as? String,
-                          let lastUpdated = record["lastUpdated"] as? Date else { return nil }
-                    return RSSFeed(url: url, title: title, lastUpdated: lastUpdated)
-                }.sorted { $0.title.lowercased() < $1.title.lowercased() }
-                
-                self?.feeds = cloudFeeds
-                self?.saveLocally(cloudFeeds) // Keep local copy in sync
+    private func loadLocalFeeds(completion: @escaping ([RSSFeed]) -> Void) {
+        StorageManager.shared.load(forKey: "rssFeeds") { (result: Result<[RSSFeed], Error>) in
+            switch result {
+            case .success(let feeds):
+                completion(feeds)
+            case .failure(_):
+                completion([])
             }
         }
     }
@@ -166,10 +143,6 @@ class RSSSettingsViewController : UIViewController, UITableViewDelegate, UITable
         ])
     }
     
-    @objc private func importButtonTapped() {
-        // Handle import button tap
-    }
-    
     @objc private func addButtonTapped() {
         let alert = UIAlertController(
             title: "Add RSS Feed",
@@ -195,7 +168,6 @@ class RSSSettingsViewController : UIViewController, UITableViewDelegate, UITable
         
         alert.addAction(addAction)
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        
         present(alert, animated: true)
     }
     
@@ -232,41 +204,7 @@ class RSSSettingsViewController : UIViewController, UITableViewDelegate, UITable
         return nil
     }
     
-    private func syncWithiCloud() {
-        let query = CKQuery(recordType: "RSSFeed", predicate: NSPredicate(value: true))
-        CKContainer.default().privateCloudDatabase.perform(query, inZoneWith: nil) { [weak self] records, error in
-            DispatchQueue.main.async {
-                guard let records = records, error == nil else { return }
-                let cloudFeeds = records.compactMap { record -> RSSFeed? in
-                    guard let url = record["url"] as? String,
-                          let title = record["title"] as? String,
-                          let lastUpdated = record["lastUpdated"] as? Date else { return nil }
-                    return RSSFeed(url: url, title: title, lastUpdated: lastUpdated)
-                }
-                self?.feeds = Array(Set(self?.feeds ?? []).union(cloudFeeds))
-            }
-        }
-    }
-    
-    private func loadLocalFeeds() -> [RSSFeed] {
-        guard let data = UserDefaults.standard.data(forKey: "rssFeeds"),
-              let feeds = try? JSONDecoder().decode([RSSFeed].self, from: data) else {
-            return []
-        }
-        return feeds
-    }
-    
-    private func showError(_ message: String) {
-        let alert = UIAlertController(
-            title: "Error",
-            message: message,
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
-    }
-    
-    // MARK: - UITableViewDataSource
+    // MARK: - UITableViewDataSource Methods
     
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         return feeds.count
@@ -282,33 +220,28 @@ class RSSSettingsViewController : UIViewController, UITableViewDelegate, UITable
         return cell
     }
     
-    // MARK: - UITableViewDelegate
+    // MARK: - UITableViewDelegate Methods
     
-    func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
+    func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle,
+                   forRowAt indexPath: IndexPath) {
         guard editingStyle == .delete else { return }
-        let feed = feeds[indexPath.row]
-        deleteFeed(feed, at: indexPath)
-    }
-    
-    private func deleteFeed(_ feed: RSSFeed, at indexPath: IndexPath) {
+        let _ = feeds[indexPath.row]
         feeds.remove(at: indexPath.row)
-        
-        if let encodedData = try? JSONEncoder().encode(feeds) {
-            UserDefaults.standard.set(encodedData, forKey: "rssFeeds")
-        }
-        
-        let predicate = NSPredicate(format: "url == %@", feed.url)
-        let query = CKQuery(recordType: "RSSFeed", predicate: predicate)
-        
-        CKContainer.default().privateCloudDatabase.perform(query, inZoneWith: nil) { [weak self] records, error in
-            guard let record = records?.first else { return }
-            CKContainer.default().privateCloudDatabase.delete(withRecordID: record.recordID) { _, error in
-                if let error = error {
-                    DispatchQueue.main.async {
-                        self?.showError("Failed to delete from iCloud: \(error.localizedDescription)")
-                    }
-                }
+        // Save the updated feeds array.
+        StorageManager.shared.save(feeds, forKey: "rssFeeds") { error in
+            if let error = error {
+                self.showError("Failed to update feeds: \(error.localizedDescription)")
             }
         }
+    }
+    
+    private func showError(_ message: String) {
+        let alert = UIAlertController(
+            title: "Error",
+            message: message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 }
