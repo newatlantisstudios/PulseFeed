@@ -41,7 +41,7 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         uiSwitch.translatesAutoresizingMaskIntoConstraints = false
         return uiSwitch
     }()
-    
+
     private lazy var tipJarButton: UIButton = {
         var configuration = UIButton.Configuration.filled()
         configuration.title = "Tip Jar"
@@ -49,9 +49,10 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         configuration.baseForegroundColor = .white
         configuration.baseBackgroundColor = .systemOrange
         configuration.buttonSize = .medium
-        
+
         let button = UIButton(configuration: configuration)
-        button.addTarget(self, action: #selector(openTipJar), for: .touchUpInside)
+        button.addTarget(
+            self, action: #selector(openTipJar), for: .touchUpInside)
         button.translatesAutoresizingMaskIntoConstraints = false
         return button
     }()
@@ -122,7 +123,7 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         button.translatesAutoresizingMaskIntoConstraints = false
         return button
     }()
-    
+
     private lazy var rssLoadingSpeedsButton: UIButton = {
         var configuration = UIButton.Configuration.filled()
         configuration.title = "RSS Feed Loading Speeds"
@@ -131,9 +132,55 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         configuration.baseBackgroundColor = .systemBlue
         configuration.buttonSize = .medium
         let button = UIButton(configuration: configuration)
-        button.addTarget(self, action: #selector(openRSSLoadingSpeeds), for: .touchUpInside)
+        button.addTarget(
+            self, action: #selector(openRSSLoadingSpeeds), for: .touchUpInside)
         button.translatesAutoresizingMaskIntoConstraints = false
         return button
+    }()
+
+    private lazy var fontSizeLabel: UILabel = {
+        let label = UILabel()
+        // If you’d like to show the current value
+        let currentSize = UserDefaults.standard.float(forKey: "fontSize")
+        label.text =
+            currentSize != 0
+            ? "Font Size: \(Int(currentSize))" : "Font Size: 16"
+        label.font = .systemFont(ofSize: 16)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
+    }()
+
+    private lazy var fontSizeSlider: UISlider = {
+        let slider = UISlider()
+        slider.minimumValue = 12
+        slider.maximumValue = 32
+
+        // Load previously saved value or default to 16
+        let savedValue = UserDefaults.standard.float(forKey: "fontSize")
+        slider.value = savedValue != 0 ? savedValue : 16
+
+        // Make the track colors more obvious
+        slider.minimumTrackTintColor = .systemBlue
+        slider.maximumTrackTintColor = .lightGray
+
+        // Use a larger “circle.fill” symbol for the thumb
+        if let thumbImage = UIImage(systemName: "circle.fill") {
+            // Tint the thumb to match minimumTrackTintColor
+            let tintedThumb = thumbImage.withTintColor(
+                .systemBlue, renderingMode: .alwaysOriginal)
+            slider.setThumbImage(tintedThumb, for: .normal)
+            slider.setThumbImage(tintedThumb, for: .highlighted)
+        }
+
+        // Scale the slider to make it taller
+        slider.transform = CGAffineTransform(scaleX: 1.0, y: 1.2)
+
+        // Handle value changes
+        slider.addTarget(
+            self, action: #selector(fontSizeSliderChanged(_:)),
+            for: .valueChanged)
+        slider.translatesAutoresizingMaskIntoConstraints = false
+        return slider
     }()
 
     // MARK: - View Lifecycle
@@ -158,10 +205,22 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         storageStack.spacing = 8
         storageStack.translatesAutoresizingMaskIntoConstraints = false
 
+        let fontSizeStack = UIStackView(arrangedSubviews: [
+            fontSizeLabel, fontSizeSlider,
+        ])
+        fontSizeStack.axis = .horizontal
+        fontSizeStack.spacing = 8
+        fontSizeStack.alignment = .center
+        fontSizeStack.translatesAutoresizingMaskIntoConstraints = false
+
+        fontSizeSlider.widthAnchor.constraint(equalToConstant: 200).isActive =
+            true
+
         // Create a main vertical stack view for all settings.
         let mainStack = UIStackView(arrangedSubviews: [
-            storageStack, importButton, exportButton, resetButton,
-            forceSyncButton, rssLoadingSpeedsButton, tipJarButton
+            storageStack, fontSizeStack, importButton, exportButton,
+            resetButton,
+            forceSyncButton, rssLoadingSpeedsButton, tipJarButton,
         ])
         mainStack.axis = .vertical
         mainStack.spacing = 16
@@ -177,15 +236,27 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
             exportButton.widthAnchor.constraint(equalToConstant: 140),
             resetButton.widthAnchor.constraint(equalToConstant: 140),
             forceSyncButton.widthAnchor.constraint(equalToConstant: 140),
-            rssLoadingSpeedsButton.widthAnchor.constraint(equalToConstant: 200)
+            rssLoadingSpeedsButton.widthAnchor.constraint(equalToConstant: 200),
+
         ])
     }
-    
+
+    @objc private func fontSizeSliderChanged(_ sender: UISlider) {
+        let fontSize = CGFloat(sender.value)
+        // Update the label to reflect the new font size
+        fontSizeLabel.text = "Font Size: \(Int(fontSize))"
+        // Store the value
+        UserDefaults.standard.set(Float(fontSize), forKey: "fontSize")
+        // Notify HomeFeedViewController to reload (so users see immediate changes)
+        NotificationCenter.default.post(
+            name: Notification.Name("fontSizeChanged"), object: nil)
+    }
+
     @objc private func openRSSLoadingSpeeds() {
         let rssLoadingVC = RSSLoadingSpeedsViewController(style: .plain)
         navigationController?.pushViewController(rssLoadingVC, animated: true)
     }
-    
+
     @objc private func openTipJar() {
         let tipJarVC = TipJarViewController()
         navigationController?.pushViewController(tipJarVC, animated: true)
@@ -193,36 +264,43 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
 
     // MARK: - Updated Storage Switch Action and Migration Helpers
     @objc private func forceSyncData() {
-        // Ensure that iCloud syncing is enabled
         let iCloudEnabled = UserDefaults.standard.bool(forKey: "useICloud")
         guard iCloudEnabled else {
             let alert = UIAlertController(
                 title: "iCloud Disabled",
                 message: "Force Sync is only available when iCloud syncing is enabled.",
-                preferredStyle: .alert)
+                preferredStyle: .alert
+            )
             alert.addAction(UIAlertAction(title: "OK", style: .default))
             present(alert, animated: true)
             return
         }
-        
-        // Display a warning alert explaining what data will be merged and synchronized.
+
         let warningMessage = """
-        This will merge and synchronize the following data from both iCloud and local storage:
-        
-        - RSS Feeds
-        - Favorites
-        - Bookmarks
-        - Read Articles
-        
-        Do you want to proceed?
-        """
-        let warningAlert = UIAlertController(title: "Force Sync Warning", message: warningMessage, preferredStyle: .alert)
-        warningAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
-        warningAlert.addAction(UIAlertAction(title: "Proceed", style: .default, handler: { _ in
-            self.performForceSync()
-        }))
+            This action will force a two-way merge between local data and iCloud. 
+            Feeds, favorites, bookmarks, and read items will be combined.
+
+            If there are discrepancies between iCloud and local storage, 
+            those entries will be joined so both remain in sync.
+
+            Do you want to proceed with the Force Sync?
+            """
+        let warningAlert = UIAlertController(
+            title: "Force Sync",
+            message: warningMessage,
+            preferredStyle: .alert
+        )
+        warningAlert.addAction(
+            UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
+        )
+        warningAlert.addAction(
+            UIAlertAction(title: "Proceed", style: .default) { _ in
+                self.performForceSync()
+            }
+        )
         present(warningAlert, animated: true)
     }
+
 
     private func performForceSync() {
         // Use a dispatch group to load all data concurrently.
@@ -232,14 +310,16 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         var cloudRSSFeeds: [RSSFeed] = []
         var localRSSFeeds: [RSSFeed] = []
         dispatchGroup.enter()
-        CloudKitStorage().load(forKey: "rssFeeds") { (result: Result<[RSSFeed], Error>) in
+        CloudKitStorage().load(forKey: "rssFeeds") {
+            (result: Result<[RSSFeed], Error>) in
             if case .success(let feeds) = result {
                 cloudRSSFeeds = feeds
             }
             dispatchGroup.leave()
         }
         dispatchGroup.enter()
-        UserDefaultsStorage().load(forKey: "rssFeeds") { (result: Result<[RSSFeed], Error>) in
+        UserDefaultsStorage().load(forKey: "rssFeeds") {
+            (result: Result<[RSSFeed], Error>) in
             if case .success(let feeds) = result {
                 localRSSFeeds = feeds
             }
@@ -250,14 +330,16 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         var cloudHearted: [String] = []
         var localHearted: [String] = []
         dispatchGroup.enter()
-        CloudKitStorage().load(forKey: "heartedItems") { (result: Result<[String], Error>) in
+        CloudKitStorage().load(forKey: "heartedItems") {
+            (result: Result<[String], Error>) in
             if case .success(let items) = result {
                 cloudHearted = items
             }
             dispatchGroup.leave()
         }
         dispatchGroup.enter()
-        UserDefaultsStorage().load(forKey: "heartedItems") { (result: Result<[String], Error>) in
+        UserDefaultsStorage().load(forKey: "heartedItems") {
+            (result: Result<[String], Error>) in
             if case .success(let items) = result {
                 localHearted = items
             }
@@ -268,14 +350,16 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         var cloudBookmarks: [String] = []
         var localBookmarks: [String] = []
         dispatchGroup.enter()
-        CloudKitStorage().load(forKey: "bookmarkedItems") { (result: Result<[String], Error>) in
+        CloudKitStorage().load(forKey: "bookmarkedItems") {
+            (result: Result<[String], Error>) in
             if case .success(let items) = result {
                 cloudBookmarks = items
             }
             dispatchGroup.leave()
         }
         dispatchGroup.enter()
-        UserDefaultsStorage().load(forKey: "bookmarkedItems") { (result: Result<[String], Error>) in
+        UserDefaultsStorage().load(forKey: "bookmarkedItems") {
+            (result: Result<[String], Error>) in
             if case .success(let items) = result {
                 localBookmarks = items
             }
@@ -286,14 +370,16 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         var cloudReadItems: [String] = []
         var localReadItems: [String] = []
         dispatchGroup.enter()
-        CloudKitStorage().load(forKey: "readItems") { (result: Result<[String], Error>) in
+        CloudKitStorage().load(forKey: "readItems") {
+            (result: Result<[String], Error>) in
             if case .success(let items) = result {
                 cloudReadItems = items
             }
             dispatchGroup.leave()
         }
         dispatchGroup.enter()
-        UserDefaultsStorage().load(forKey: "readItems") { (result: Result<[String], Error>) in
+        UserDefaultsStorage().load(forKey: "readItems") {
+            (result: Result<[String], Error>) in
             if case .success(let items) = result {
                 localReadItems = items
             }
@@ -302,25 +388,35 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
 
         dispatchGroup.notify(queue: .main) {
             // Merge the data from CloudKit and local storage.
-            let mergedRSSFeeds = self.mergeRSSFeeds(cloudFeeds: cloudRSSFeeds, localFeeds: localRSSFeeds)
-            let mergedHearted = Array(Set(cloudHearted).union(Set(localHearted)))
-            let mergedBookmarks = Array(Set(cloudBookmarks).union(Set(localBookmarks)))
-            let mergedReadItems = Array(Set(cloudReadItems).union(Set(localReadItems)))
+            let mergedRSSFeeds = self.mergeRSSFeeds(
+                cloudFeeds: cloudRSSFeeds, localFeeds: localRSSFeeds)
+            let mergedHearted = Array(
+                Set(cloudHearted).union(Set(localHearted)))
+            let mergedBookmarks = Array(
+                Set(cloudBookmarks).union(Set(localBookmarks)))
+            let mergedReadItems = Array(
+                Set(cloudReadItems).union(Set(localReadItems)))
 
             let saveGroup = DispatchGroup()
             var migrationSuccess = true
 
             // Consolidate all CloudKit updates into a single update call.
             let updates: [String: Data] = [
-                "rssFeeds": (try? JSONEncoder().encode(mergedRSSFeeds)) ?? Data(),
-                "heartedItems": (try? JSONEncoder().encode(mergedHearted)) ?? Data(),
-                "bookmarkedItems": (try? JSONEncoder().encode(mergedBookmarks)) ?? Data(),
-                "readItems": (try? JSONEncoder().encode(mergedReadItems)) ?? Data()
+                "rssFeeds": (try? JSONEncoder().encode(mergedRSSFeeds))
+                    ?? Data(),
+                "heartedItems": (try? JSONEncoder().encode(mergedHearted))
+                    ?? Data(),
+                "bookmarkedItems": (try? JSONEncoder().encode(mergedBookmarks))
+                    ?? Data(),
+                "readItems": (try? JSONEncoder().encode(mergedReadItems))
+                    ?? Data(),
             ]
             saveGroup.enter()
             CloudKitStorage().updateRecord(with: updates) { error in
                 if let error = error {
-                    print("Error saving merged data to CloudKit: \(error.localizedDescription)")
+                    print(
+                        "Error saving merged data to CloudKit: \(error.localizedDescription)"
+                    )
                     migrationSuccess = false
                 }
                 saveGroup.leave()
@@ -328,43 +424,62 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
 
             // Also save merged data to local storage.
             saveGroup.enter()
-            UserDefaultsStorage().save(mergedRSSFeeds, forKey: "rssFeeds") { error in
+            UserDefaultsStorage().save(mergedRSSFeeds, forKey: "rssFeeds") {
+                error in
                 if let error = error {
-                    print("Error saving merged RSS feeds locally: \(error.localizedDescription)")
+                    print(
+                        "Error saving merged RSS feeds locally: \(error.localizedDescription)"
+                    )
                     migrationSuccess = false
                 }
                 saveGroup.leave()
             }
             saveGroup.enter()
-            UserDefaultsStorage().save(mergedHearted, forKey: "heartedItems") { error in
+            UserDefaultsStorage().save(mergedHearted, forKey: "heartedItems") {
+                error in
                 if let error = error {
-                    print("Error saving merged hearted items locally: \(error.localizedDescription)")
+                    print(
+                        "Error saving merged hearted items locally: \(error.localizedDescription)"
+                    )
                     migrationSuccess = false
                 }
                 saveGroup.leave()
             }
             saveGroup.enter()
-            UserDefaultsStorage().save(mergedBookmarks, forKey: "bookmarkedItems") { error in
+            UserDefaultsStorage().save(
+                mergedBookmarks, forKey: "bookmarkedItems"
+            ) { error in
                 if let error = error {
-                    print("Error saving merged bookmarks locally: \(error.localizedDescription)")
+                    print(
+                        "Error saving merged bookmarks locally: \(error.localizedDescription)"
+                    )
                     migrationSuccess = false
                 }
                 saveGroup.leave()
             }
             saveGroup.enter()
-            UserDefaultsStorage().save(mergedReadItems, forKey: "readItems") { error in
+            UserDefaultsStorage().save(mergedReadItems, forKey: "readItems") {
+                error in
                 if let error = error {
-                    print("Error saving merged read items locally: \(error.localizedDescription)")
+                    print(
+                        "Error saving merged read items locally: \(error.localizedDescription)"
+                    )
                     migrationSuccess = false
                 }
                 saveGroup.leave()
             }
 
             saveGroup.notify(queue: .main) {
-                let alertTitle = migrationSuccess ? "Force Sync Succeeded" : "Force Sync Completed with Errors"
+                let alertTitle =
+                    migrationSuccess
+                    ? "Force Sync Succeeded"
+                    : "Force Sync Completed with Errors"
                 let alertMessage = "Data has been merged and synchronized."
-                let finalAlert = UIAlertController(title: alertTitle, message: alertMessage, preferredStyle: .alert)
-                finalAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                let finalAlert = UIAlertController(
+                    title: alertTitle, message: alertMessage,
+                    preferredStyle: .alert)
+                finalAlert.addAction(
+                    UIAlertAction(title: "OK", style: .default))
                 self.present(finalAlert, animated: true)
             }
         }
@@ -383,146 +498,72 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
 
     @objc private func storageSwitchChanged(_ sender: UISwitch) {
         if sender.isOn {
-            // User is turning on iCloud sync.
-            fetchLocalDataSummary { summary in
-                let alert = UIAlertController(
-                    title: "Transfer Data to iCloud?",
-                    message:
-                        "The following data will be transferred to iCloud:\n\(summary)",
-                    preferredStyle: .alert
-                )
-                alert.addAction(
-                    UIAlertAction(
-                        title: "Cancel", style: .cancel,
-                        handler: { _ in
-                            // User cancelled; revert the switch.
-                            sender.setOn(false, animated: true)
-                            UserDefaults.standard.set(
-                                false, forKey: "useICloud")
-                        }))
-                alert.addAction(
-                    UIAlertAction(
-                        title: "Transfer", style: .default,
-                        handler: { _ in
-                            // User confirmed: update storage method and migrate data.
-                            UserDefaults.standard.set(true, forKey: "useICloud")
-                            StorageManager.shared.method = .cloudKit
-                            self.migrateLocalDataToICloud { success in
-                                if success {
-                                    print("Migration to iCloud succeeded.")
-                                } else {
-                                    print(
-                                        "Migration to iCloud encountered errors."
-                                    )
-                                }
-                            }
-                            NotificationCenter.default.post(
-                                name: Notification.Name(
-                                    "iCloudSyncPreferenceChanged"), object: nil)
-                        }))
-                self.present(alert, animated: true)
-            }
+            // User is turning ON iCloud Sync
+            let alert = UIAlertController(
+                title: "Enable iCloud Sync?",
+                message: """
+                    Enabling iCloud will merge the local data on this device 
+                    with any existing iCloud data.
+
+                    After the merge, all your devices using iCloud 
+                    will share the same feeds, favorites, bookmarks, and read items.
+
+                    Do you want to enable iCloud syncing now?
+                    """,
+                preferredStyle: .alert
+            )
+            alert.addAction(
+                UIAlertAction(title: "Cancel", style: .cancel) { _ in
+                    // Revert the switch if the user cancels
+                    sender.setOn(false, animated: true)
+                }
+            )
+            alert.addAction(
+                UIAlertAction(title: "Enable", style: .default) { _ in
+                    // 1) Set the UserDefaults flag
+                    UserDefaults.standard.set(true, forKey: "useICloud")
+                    // 2) Switch StorageManager to CloudKit
+                    StorageManager.shared.method = .cloudKit
+                    // 3) Immediately merge/force sync data (pull + push)
+                    self.performForceSync()
+                }
+            )
+            present(alert, animated: true)
+
         } else {
-            // User is turning off iCloud sync.
-            fetchICloudDataSummary { summary in
-                let alert = UIAlertController(
-                    title: "Disable iCloud Syncing?",
-                    message:
-                        "Warning: Disabling iCloud syncing will stop syncing your data across devices and transfer the following data locally:\n\(summary)",
-                    preferredStyle: .alert
-                )
-                alert.addAction(
-                    UIAlertAction(
-                        title: "Cancel", style: .cancel,
-                        handler: { _ in
-                            // User cancelled; revert the switch.
-                            sender.setOn(true, animated: true)
-                            UserDefaults.standard.set(true, forKey: "useICloud")
-                        }))
-                alert.addAction(
-                    UIAlertAction(
-                        title: "Disable", style: .default,
-                        handler: { _ in
-                            // User confirmed: migrate data from iCloud to local storage.
-                            UserDefaults.standard.set(
-                                false, forKey: "useICloud")
-                            // Switch to local storage.
-                            StorageManager.shared.method = .userDefaults
-                            self.migrateICloudDataToLocal { success in
-                                if success {
-                                    print(
-                                        "Migration from iCloud to local succeeded."
-                                    )
-                                } else {
-                                    print(
-                                        "Migration from iCloud to local encountered errors."
-                                    )
-                                }
-                            }
-                            NotificationCenter.default.post(
-                                name: Notification.Name(
-                                    "iCloudSyncPreferenceChanged"), object: nil)
-                        }))
-                self.present(alert, animated: true)
-            }
+            // User is turning OFF iCloud Sync
+            let alert = UIAlertController(
+                title: "Disable iCloud Sync?",
+                message: """
+                    Disabling iCloud sync will stop data from 
+                    synchronizing across your devices. 
+                    
+                    Only local storage will be used on this device.
+
+                    Do you want to disable iCloud syncing?
+                    """,
+                preferredStyle: .alert
+            )
+            alert.addAction(
+                UIAlertAction(title: "Cancel", style: .cancel) { _ in
+                    // Revert the switch if user cancels
+                    sender.setOn(true, animated: true)
+                }
+            )
+            alert.addAction(
+                UIAlertAction(title: "Disable", style: .destructive) { _ in
+                    // 1) Turn off iCloud in UserDefaults
+                    UserDefaults.standard.set(false, forKey: "useICloud")
+                    // 2) Switch to local storage only
+                    StorageManager.shared.method = .userDefaults
+                    // (Optional) If you want to pull down iCloud data before going local,
+                    // you can call a “migrateICloudDataToLocal” method here.
+                }
+            )
+            present(alert, animated: true)
         }
     }
 
-    /// Gathers a summary of local data (from UserDefaults) to be migrated to iCloud.
-    private func fetchLocalDataSummary(completion: @escaping (String) -> Void) {
-        let group = DispatchGroup()
-        var rssFeedsCount = 0
-        var heartedCount = 0
-        var bookmarkedCount = 0
-        var readItemsCount = 0
-        let localStorage = UserDefaultsStorage()
-
-        group.enter()
-        localStorage.load(forKey: "rssFeeds") {
-            (result: Result<[RSSFeed], Error>) in
-            if case .success(let feeds) = result {
-                rssFeedsCount = feeds.count
-            }
-            group.leave()
-        }
-
-        group.enter()
-        localStorage.load(forKey: "heartedItems") {
-            (result: Result<[String], Error>) in
-            if case .success(let hearted) = result {
-                heartedCount = hearted.count
-            }
-            group.leave()
-        }
-
-        group.enter()
-        localStorage.load(forKey: "bookmarkedItems") {
-            (result: Result<[String], Error>) in
-            if case .success(let bookmarks) = result {
-                bookmarkedCount = bookmarks.count
-            }
-            group.leave()
-        }
-
-        group.enter()
-        localStorage.load(forKey: "readItems") {
-            (result: Result<[String], Error>) in
-            if case .success(let readItems) = result {
-                readItemsCount = readItems.count
-            }
-            group.leave()
-        }
-
-        group.notify(queue: .main) {
-            let summary = """
-                - RSS Feeds: \(rssFeedsCount)
-                - Favorites: \(heartedCount)
-                - Bookmarks: \(bookmarkedCount)
-                - Read Articles: \(readItemsCount)
-                """
-            completion(summary)
-        }
-    }
 
     /// Gathers a summary of iCloud data to be transferred locally.
     private func fetchICloudDataSummary(completion: @escaping (String) -> Void)
@@ -581,69 +622,27 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         }
     }
 
-    /// Migrates data from UserDefaults (local storage) to iCloud.
-    private func migrateLocalDataToICloud(completion: @escaping (Bool) -> Void)
-    {
-        // Get the shared UserDefaults.
-        let ud = UserDefaults.standard
-        var updates: [String: Data] = [:]
-
-        // For RSS Feeds (type [RSSFeed]).
-        if let rssFeedsData = ud.data(forKey: "rssFeeds") {
-            updates["rssFeeds"] = rssFeedsData
-        } else {
-            // Encode an empty array if no data is present.
-            updates["rssFeeds"] = try? JSONEncoder().encode([RSSFeed]())
-        }
-
-        // For Hearted Items (type [String]).
-        if let heartedData = ud.data(forKey: "heartedItems") {
-            updates["heartedItems"] = heartedData
-        } else {
-            updates["heartedItems"] = try? JSONEncoder().encode([String]())
-        }
-
-        // For Bookmarked Items (type [String]).
-        if let bookmarkedData = ud.data(forKey: "bookmarkedItems") {
-            updates["bookmarkedItems"] = bookmarkedData
-        } else {
-            updates["bookmarkedItems"] = try? JSONEncoder().encode([String]())
-        }
-
-        // For Read Items (type [String]).
-        if let readData = ud.data(forKey: "readItems") {
-            updates["readItems"] = readData
-        } else {
-            updates["readItems"] = try? JSONEncoder().encode([String]())
-        }
-
-        // Update all keys in a single CloudKit operation.
-        CloudKitStorage().updateRecord(with: updates) { error in
-            if let error = error {
-                print("Unified update error: \(error.localizedDescription)")
-            }
-            completion(error == nil)
-        }
-    }
     /// Migrates data from iCloud to local storage using UserDefaults.
-    private func migrateICloudDataToLocal(completion: @escaping (Bool) -> Void) {
+    private func migrateICloudDataToLocal(completion: @escaping (Bool) -> Void)
+    {
         // Define the keys and their expected types.
         let keysAndTypes: [(key: String, type: Any)] = [
             ("rssFeeds", [RSSFeed].self),
             ("heartedItems", [String].self),
             ("bookmarkedItems", [String].self),
-            ("readItems", [String].self)
+            ("readItems", [String].self),
         ]
-        
+
         let cloudStorage = CloudKitStorage()
         let ud = UserDefaults.standard
         let group = DispatchGroup()
         var migrationSuccess = true
-        
+
         for (key, type) in keysAndTypes {
             group.enter()
             if type as? [RSSFeed].Type != nil {
-                cloudStorage.load(forKey: key) { (result: Result<[RSSFeed], Error>) in
+                cloudStorage.load(forKey: key) {
+                    (result: Result<[RSSFeed], Error>) in
                     switch result {
                     case .success(let feeds):
                         if let encodedData = try? JSONEncoder().encode(feeds) {
@@ -659,7 +658,8 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                     group.leave()
                 }
             } else if type as? [String].Type != nil {
-                cloudStorage.load(forKey: key) { (result: Result<[String], Error>) in
+                cloudStorage.load(forKey: key) {
+                    (result: Result<[String], Error>) in
                     switch result {
                     case .success(let items):
                         if let encodedData = try? JSONEncoder().encode(items) {
@@ -676,7 +676,7 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                 }
             }
         }
-        
+
         group.notify(queue: .main) {
             completion(migrationSuccess)
         }
@@ -686,7 +686,10 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
 
     @objc private func importOPML() {
         let documentPicker = UIDocumentPickerViewController(
-            documentTypes: ["org.opml.opml", "public.xml", "public.data", "public.content", "public.plain-text", ".opml", "com.apple.opml"],
+            documentTypes: [
+                "org.opml.opml", "public.xml", "public.data", "public.content",
+                "public.plain-text", ".opml", "com.apple.opml",
+            ],
             in: .import
         )
         documentPicker.delegate = self
@@ -694,18 +697,21 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         present(documentPicker, animated: true)
     }
 
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+    func documentPicker(
+        _ controller: UIDocumentPickerViewController,
+        didPickDocumentsAt urls: [URL]
+    ) {
         guard let url = urls.first else { return }
-        
+
         guard let xmlData = try? Data(contentsOf: url) else {
             showError("Failed to read OPML file")
             return
         }
-        
+
         let parser = XMLParser(data: xmlData)
         let opmlDelegate = OPMLParserDelegate()
         parser.delegate = opmlDelegate
-        
+
         if parser.parse() {
             let importedFeeds = opmlDelegate.feeds
             // Load existing feeds asynchronously
@@ -713,17 +719,25 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                 var updatedFeeds = existingFeeds
                 updatedFeeds.append(contentsOf: importedFeeds)
                 let uniqueFeeds = Array(Set(updatedFeeds))
-                
+
                 // Save the merged feeds using the StorageManager
-                StorageManager.shared.save(uniqueFeeds, forKey: "rssFeeds") { error in
+                StorageManager.shared.save(uniqueFeeds, forKey: "rssFeeds") {
+                    error in
                     DispatchQueue.main.async {
                         if let error = error {
-                            self.showError("Failed to save imported feeds: \(error.localizedDescription)")
+                            self.showError(
+                                "Failed to save imported feeds: \(error.localizedDescription)"
+                            )
                         } else {
-                            let alert = UIAlertController(title: "Import Successful", message: "Feeds have been imported", preferredStyle: .alert)
-                            alert.addAction(UIAlertAction(title: "OK", style: .default))
+                            let alert = UIAlertController(
+                                title: "Import Successful",
+                                message: "Feeds have been imported",
+                                preferredStyle: .alert)
+                            alert.addAction(
+                                UIAlertAction(title: "OK", style: .default))
                             self.present(alert, animated: true)
-                            NotificationCenter.default.post(name: .feedsUpdated, object: nil)
+                            NotificationCenter.default.post(
+                                name: .feedsUpdated, object: nil)
                         }
                     }
                 }
@@ -733,44 +747,48 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         }
     }
 
-    
     @objc private func exportOPML() {
         // Load feeds via StorageManager instead of directly from UserDefaults.
-        StorageManager.shared.load(forKey: "rssFeeds") { (result: Result<[RSSFeed], Error>) in
+        StorageManager.shared.load(forKey: "rssFeeds") {
+            (result: Result<[RSSFeed], Error>) in
             DispatchQueue.main.async {
                 var feeds: [RSSFeed] = []
                 switch result {
                 case .success(let loadedFeeds):
                     feeds = loadedFeeds
                 case .failure(let error):
-                    self.showError("Failed to load feeds for export: \(error.localizedDescription)")
+                    self.showError(
+                        "Failed to load feeds for export: \(error.localizedDescription)"
+                    )
                     return
                 }
-                
+
                 // Create the OPML string.
                 let opml = """
-                <?xml version="1.0" encoding="UTF-8"?>
-                <opml version="1.0">
-                    <head>
-                        <title>PulseFeed Subscriptions</title>
-                    </head>
-                    <body>
-                        \(feeds.map { feed in
+                    <?xml version="1.0" encoding="UTF-8"?>
+                    <opml version="1.0">
+                        <head>
+                            <title>PulseFeed Subscriptions</title>
+                        </head>
+                        <body>
+                            \(feeds.map { feed in
                             """
                             <outline type="rss" text="\(feed.title)" xmlUrl="\(feed.url)"/>
                             """
                         }.joined(separator: "\n"))
-                    </body>
-                </opml>
-                """
-                
+                        </body>
+                    </opml>
+                    """
+
                 let tempDir = FileManager.default.temporaryDirectory
                 let fileName = "PulseFeed_\(Date().ISO8601Format()).opml"
                 let fileURL = tempDir.appendingPathComponent(fileName)
-                
+
                 do {
-                    try opml.write(to: fileURL, atomically: true, encoding: .utf8)
-                    let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+                    try opml.write(
+                        to: fileURL, atomically: true, encoding: .utf8)
+                    let activityVC = UIActivityViewController(
+                        activityItems: [fileURL], applicationActivities: nil)
                     self.present(activityVC, animated: true)
                 } catch {
                     self.showError(error.localizedDescription)
@@ -778,10 +796,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
             }
         }
     }
-    
+
     /// Asynchronously loads the RSS feeds using StorageManager.
     private func loadFeeds(completion: @escaping ([RSSFeed]) -> Void) {
-        StorageManager.shared.load(forKey: "rssFeeds") { (result: Result<[RSSFeed], Error>) in
+        StorageManager.shared.load(forKey: "rssFeeds") {
+            (result: Result<[RSSFeed], Error>) in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let feeds):
@@ -797,28 +816,34 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     @objc private func resetReadItems() {
         let alert = UIAlertController(
             title: "Reset Read Items",
-            message: "Are you sure you want to reset all read items? This cannot be undone.",
+            message:
+                "Are you sure you want to reset all read items? This cannot be undone.",
             preferredStyle: .alert)
 
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Reset", style: .destructive) { _ in
-            // Reset local storage.
-            UserDefaults.standard.removeObject(forKey: "readItems")
-            
-            // If iCloud syncing is enabled, reset iCloud storage as well.
-            if UserDefaults.standard.bool(forKey: "useICloud") {
-                CloudKitStorage().save([] as [String], forKey: "readItems") { error in
-                    if let error = error {
-                        print("Error resetting read items in iCloud: \(error.localizedDescription)")
-                    } else {
-                        print("Successfully reset read items in iCloud.")
+        alert.addAction(
+            UIAlertAction(title: "Reset", style: .destructive) { _ in
+                // Reset local storage.
+                UserDefaults.standard.removeObject(forKey: "readItems")
+
+                // If iCloud syncing is enabled, reset iCloud storage as well.
+                if UserDefaults.standard.bool(forKey: "useICloud") {
+                    CloudKitStorage().save([] as [String], forKey: "readItems")
+                    { error in
+                        if let error = error {
+                            print(
+                                "Error resetting read items in iCloud: \(error.localizedDescription)"
+                            )
+                        } else {
+                            print("Successfully reset read items in iCloud.")
+                        }
                     }
                 }
-            }
-            
-            // Notify other parts of the app.
-            NotificationCenter.default.post(name: Notification.Name("readItemsReset"), object: nil)
-        })
+
+                // Notify other parts of the app.
+                NotificationCenter.default.post(
+                    name: Notification.Name("readItemsReset"), object: nil)
+            })
 
         present(alert, animated: true)
     }

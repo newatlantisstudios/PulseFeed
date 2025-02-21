@@ -220,6 +220,52 @@ class StorageManager {
             return CloudKitStorage()
         }
     }
+    
+    func markAllAsRead(completion: @escaping (Bool, Error?) -> Void) {
+        // 1. Update local storage (UserDefaults)
+        UserDefaults.standard.set(true, forKey: "allItemsRead")
+        
+        // 2. Check if iCloud syncing is enabled
+        let iCloudSyncEnabled = UserDefaults.standard.bool(forKey: "iCloudSyncEnabled")
+        guard iCloudSyncEnabled else {
+            // If iCloud sync is disabled, complete after updating local storage.
+            completion(true, nil)
+            return
+        }
+        
+        // 3. Proceed with CloudKit sync if enabled.
+        let container = CKContainer.default()
+        let publicDB = container.publicCloudDatabase
+        let predicate = NSPredicate(value: true) // Adjust this predicate as needed.
+        let query = CKQuery(recordType: "FeedItem", predicate: predicate)
+        
+        publicDB.perform(query, inZoneWith: nil) { records, error in
+            if let error = error {
+                completion(false, error)
+                return
+            }
+            
+            guard let records = records, !records.isEmpty else {
+                completion(true, nil)
+                return
+            }
+            
+            // Update the "isRead" flag for each record.
+            for record in records {
+                record["isRead"] = true as CKRecordValue
+            }
+            
+            let modifyOperation = CKModifyRecordsOperation(recordsToSave: records, recordIDsToDelete: nil)
+            modifyOperation.modifyRecordsCompletionBlock = { savedRecords, deletedRecordIDs, operationError in
+                if let operationError = operationError {
+                    completion(false, operationError)
+                } else {
+                    completion(true, nil)
+                }
+            }
+            publicDB.add(modifyOperation)
+        }
+    }
 
     func save<T: Encodable>(_ value: T, forKey key: String, completion: @escaping (Error?) -> Void) {
         print("DEBUG: Saving data for key '\(key)' using \(method)")

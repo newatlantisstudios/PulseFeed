@@ -47,6 +47,29 @@ enum AppColors {
     }
 }
 
+extension AppColors {
+    static var dynamicIconColor: UIColor {
+        return UIColor { traitCollection in
+            return traitCollection.userInterfaceStyle == .dark ? .white : .black
+        }
+    }
+}
+
+extension AppColors {
+    static var navBarBackground: UIColor {
+        return UIColor { traitCollection in
+            switch traitCollection.userInterfaceStyle {
+            case .dark:
+                // Dark background in Dark Mode
+                return UIColor(hex: "121212")
+            default:
+                // Light background in Light Mode
+                return UIColor(hex: "FFFFFF") // or "F5F5F5", etc.
+            }
+        }
+    }
+}
+
 extension UIColor {
     convenience init(hex: String) {
         let scanner = Scanner(string: hex)
@@ -114,17 +137,21 @@ class HomeFeedViewController: UIViewController {
     }
     private var currentFeedType: FeedType = .rss {
         didSet {
-            updateNavigationButtons()
             updateTableViewContent()
+            updateNavigationButtons()
         }
     }
 
     // MARK: - Lifecycle
     override func viewDidLoad() {
         super.viewDidLoad()
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged(_:)), name: Notification.Name("fontSizeChanged"), object: nil)
+        
         setupLoadingIndicator()
         setupRefreshControl()
         setupNavigationBar()
+        updateNavigationButtons()
         setupTableView()
         setupScrollViewDelegate()
         setupNotificationObserver()
@@ -151,6 +178,26 @@ class HomeFeedViewController: UIViewController {
             }
         }
 
+    }
+    
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+
+        // If we haven’t loaded feeds yet, automatically show pull-to-refresh:
+        if !hasLoadedRSSFeeds {
+            // 1. Start the refresh spinner
+            refreshControl.beginRefreshing()
+
+            // 2. Adjust table offset so the spinner is visible
+            let offset = CGPoint(
+                x: 0,
+                y: tableView.contentOffset.y - refreshControl.frame.size.height
+            )
+            tableView.setContentOffset(offset, animated: true)
+
+            // 3. Call the same refresh method used by pull-to-refresh
+            refreshFeeds()
+        }
     }
 
     private func setupLoadingIndicator() {
@@ -184,6 +231,37 @@ class HomeFeedViewController: UIViewController {
             target: self, action: #selector(handleLongPress(_:)))
         tableView.addGestureRecognizer(longPressGesture)
     }
+    
+    private func updateNavigationButtons() {
+        guard let leftButtons = navigationItem.leftBarButtonItems, leftButtons.count >= 4 else {
+            return
+        }
+        
+        // leftButtons order: [rss, refresh, bookmark, heart]
+        // Update the RSS button image:
+        let rssImageName = (currentFeedType == .rss) ? "rssFilled" : "rss"
+        leftButtons[0].image = resizeImage(
+            UIImage(named: rssImageName),
+            targetSize: CGSize(width: 24, height: 24)
+        )?.withRenderingMode(.alwaysTemplate)
+        
+        // Do not change the refresh button (index 1)
+        
+        // Update the Bookmark button image:
+        let bookmarkImageName = (currentFeedType == .bookmarks) ? "bookmarkFilled" : "bookmark"
+        leftButtons[2].image = resizeImage(
+            UIImage(named: bookmarkImageName),
+            targetSize: CGSize(width: 24, height: 24)
+        )?.withRenderingMode(.alwaysTemplate)
+        
+        // Update the Heart button image:
+        let heartImageName = (currentFeedType == .heart) ? "heartFilled" : "heart"
+        leftButtons[3].image = resizeImage(
+            UIImage(named: heartImageName),
+            targetSize: CGSize(width: 24, height: 24)
+        )?.withRenderingMode(.alwaysTemplate)
+    }
+
 
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer)
     {
@@ -223,6 +301,10 @@ class HomeFeedViewController: UIViewController {
     @objc private func handleReadItemsReset() {
         loadRSSFeeds()
     }
+    
+    @objc private func fontSizeChanged(_ notification: Notification) {
+        tableView.reloadData()
+    }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
@@ -250,109 +332,86 @@ class HomeFeedViewController: UIViewController {
 
     // Load RSS feeds from storage and then fetch articles from each feed URL.
     private func loadRSSFeeds() {
-        loadingIndicator.startAnimating()
-        self.view.bringSubviewToFront(loadingIndicator)
-
+                
         StorageManager.shared.load(forKey: "rssFeeds") { [weak self] (result: Result<[RSSFeed], Error>) in
             guard let self = self else { return }
+            
             switch result {
             case .success(let feeds):
-                print("DEBUG: Loaded RSS Feeds:")
-                feeds.forEach { feed in
-                    print("DEBUG: Feed Title: \(feed.title), URL: \(feed.url), Last Updated: \(feed.lastUpdated)")
-                }
-
-                let allFeeds = feeds
-
-                // Load read items as [ReadItem] and extract links.
+                // Load read items (to filter out already-read links)
                 StorageManager.shared.load(forKey: "readItems") { (readResult: Result<[ReadItem], Error>) in
                     var readLinks: [String] = []
                     if case .success(let readItems) = readResult {
                         readLinks = readItems.map { $0.link }
-                        print("DEBUG: Loaded read links: \(readLinks)")
                     }
-
-                    let dispatchGroup = DispatchGroup()
+                    
+                    // We'll gather all live feed items in this array
                     var liveItems: [RSSItem] = []
-
-                    feeds.forEach { feed in
-                        guard let url = URL(string: feed.url) else { return }
-                        dispatchGroup.enter()
-
+                    
+                    // A dispatch group to wait until all feed network calls finish
+                    let fetchGroup = DispatchGroup()
+                    
+                    // 1) Fetch each feed
+                    for feed in feeds {
+                        guard let url = URL(string: feed.url) else { continue }
+                        
+                        fetchGroup.enter()
                         let startTime = Date()
                         let task = URLSession.shared.dataTask(with: url) { data, response, error in
+                            defer { fetchGroup.leave() }
+                            
                             let elapsedTime = Date().timeIntervalSince(startTime)
-                            DispatchQueue.main.async {
-                                if elapsedTime >= 45 {
-                                    FeedLoadTimeManager.shared.loadTimes[feed.title] = -1
-                                } else {
-                                    FeedLoadTimeManager.shared.loadTimes[feed.title] = elapsedTime
-                                }
-                            }
-                            defer { dispatchGroup.leave() }
-
-                            if elapsedTime >= 45 {
-                                print("DEBUG: Feed '\(feed.title)' skipped due to load time: \(elapsedTime) seconds")
+                            // Skip if it took too long or if there was an error
+                            if elapsedTime >= 45 || error != nil || data == nil {
                                 return
                             }
-
-                            guard let data = data, error == nil else {
-                                print("DEBUG: Error fetching RSS feed: \(error?.localizedDescription ?? "Unknown error")")
-                                return
-                            }
-
-                            let parser = XMLParser(data: data)
+                            
+                            // Parse
+                            let parser = XMLParser(data: data!)
                             let rssParser = RSSParser(source: feed.title)
                             parser.delegate = rssParser
+                            
                             if parser.parse() {
-                                let itemsFromFeed = rssParser.items
-                                let filteredItems = itemsFromFeed.filter { !readLinks.contains($0.link) }
-                                print("DEBUG: Feed '\(feed.title)' - fetched \(itemsFromFeed.count) items, filtered to \(filteredItems.count)")
-                                liveItems.append(contentsOf: filteredItems)
+                                // Filter out already-read links
+                                let filtered = rssParser.items.filter {
+                                    !readLinks.contains($0.link)
+                                }
+                                liveItems.append(contentsOf: filtered)
                             }
                         }
                         task.resume()
                     }
-
-                    dispatchGroup.notify(queue: .main) {
+                    
+                    // 2) After all feeds are fetched, we can do iCloud sync, then merges
+                    fetchGroup.notify(queue: .main) {
                         let dateFormatter = DateFormatter()
                         dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
                         dateFormatter.locale = Locale(identifier: "en_US_POSIX")
-
-                        // Sort live items by publication date.
-                        let sortedItems = liveItems.sorted { item1, item2 in
-                            guard let date1 = dateFormatter.date(from: item1.pubDate),
-                                  let date2 = dateFormatter.date(from: item2.pubDate) else { return false }
-                            return date1 > date2
+                        
+                        // Sort all newly fetched items by pubDate
+                        self.allItems = liveItems.sorted {
+                            guard
+                                let d1 = dateFormatter.date(from: $0.pubDate),
+                                let d2 = dateFormatter.date(from: $1.pubDate)
+                            else { return false }
+                            return d1 > d2
                         }
-
-                        // Save all fetched items so they can be later filtered by bookmarks/heart.
-                        self.allItems = sortedItems
-
-                        // For RSS feed type, display all items.
-                        self.items = self.allItems
-
-                        print("DEBUG: Total live items after filtering: \(self.items.count)")
-
-                        if self.items.isEmpty {
-                            self.footerRefreshButton?.setTitle("  No More Articles  ", for: .normal)
-                            self.footerRefreshButton?.isEnabled = false
-                        } else {
-                            self.footerRefreshButton?.setTitle("  Refresh Feed  ", for: .normal)
-                            self.footerRefreshButton?.isEnabled = true
-                        }
-
-                        if let markAllButton = self.tableView.tableFooterView?.subviews.first as? UIButton {
-                            markAllButton.setTitle(self.items.isEmpty ? "  Reached the end  " : "  Mark All as Read  ", for: .normal)
-                            markAllButton.isEnabled = !self.items.isEmpty
-                        }
-
-                        // Save live articles per feed into CloudKit.
-                        let groupedByFeed = Dictionary(grouping: self.items, by: { $0.source })
+                        
+                        // -----------------------------------------------------
+                        // *** iCloud Sync (Saving articles) ***
+                        // -----------------------------------------------------
+                        let groupedByFeed = Dictionary(grouping: self.allItems) { $0.source }
+                        
                         for (feedId, articles) in groupedByFeed {
+                            // Convert the RSSItems to your ArticleSummary struct
                             let summaries = articles.map { article in
-                                ArticleSummary(title: article.title, link: article.link, pubDate: article.pubDate)
+                                ArticleSummary(
+                                    title: article.title,
+                                    link: article.link,
+                                    pubDate: article.pubDate
+                                )
                             }
+                            
                             CloudKitStorage().saveArticles(forFeed: feedId, articles: summaries) { error in
                                 if let error = error {
                                     print("Error saving articles for feed \(feedId): \(error.localizedDescription)")
@@ -361,62 +420,82 @@ class HomeFeedViewController: UIViewController {
                                 }
                             }
                         }
-
-                        // For each feed, load cached articles and merge them with live articles.
-                        for feed in allFeeds {
+                        // -----------------------------------------------------
+                        
+                        // 3) Merge with any cached CloudKit items
+                        let mergeGroup = DispatchGroup()
+                        
+                        for feed in feeds {
+                            mergeGroup.enter()
                             CloudKitStorage().loadArticles(forFeed: feed.title) { result in
                                 switch result {
                                 case .success(let cachedArticles):
-                                    let unreadCachedArticles = cachedArticles.filter { !readLinks.contains($0.link) }
-                                    let liveArticles = self.items.filter { $0.source == feed.title }
-                                    var mergedArticles = liveArticles
-                                    for cached in unreadCachedArticles {
-                                        if !mergedArticles.contains(where: { $0.link == cached.link }) {
-                                            let rssItem = RSSItem(title: cached.title, link: cached.link, pubDate: cached.pubDate, source: feed.title, isRead: false)
-                                            mergedArticles.append(rssItem)
+                                    // Filter out read
+                                    let unreadCached = cachedArticles.filter {
+                                        !readLinks.contains($0.link)
+                                    }
+                                    
+                                    // Items from the live fetch for this feed
+                                    let liveForFeed = self.allItems.filter {
+                                        $0.source == feed.title
+                                    }
+                                    
+                                    var merged = liveForFeed
+                                    for cached in unreadCached {
+                                        // If cached item is not already in live items, add it
+                                        if !merged.contains(where: { $0.link == cached.link }) {
+                                            let newItem = RSSItem(
+                                                title: cached.title,
+                                                link: cached.link,
+                                                pubDate: cached.pubDate,
+                                                source: feed.title
+                                            )
+                                            merged.append(newItem)
                                         }
                                     }
-                                    self.items.removeAll { $0.source == feed.title }
-                                    self.items.append(contentsOf: mergedArticles)
-
-                                    let readCachedArticles = cachedArticles.filter { readLinks.contains($0.link) }
-                                    if !readCachedArticles.isEmpty {
-                                        let updatedCachedArticles = cachedArticles.filter { !readLinks.contains($0.link) }
-                                        CloudKitStorage().saveArticles(forFeed: feed.title, articles: updatedCachedArticles) { error in
-                                            if let error = error {
-                                                print("Error updating cached articles for feed \(feed.title): \(error.localizedDescription)")
-                                            } else {
-                                                print("Updated cached articles for feed \(feed.title)")
-                                            }
-                                        }
-                                    }
+                                    
+                                    // Remove old items for that feed, then append merged set
+                                    self.allItems.removeAll { $0.source == feed.title }
+                                    self.allItems.append(contentsOf: merged)
+                                    
                                 case .failure(let error):
                                     print("Error loading cached articles for feed \(feed.title): \(error.localizedDescription)")
                                 }
-                                DispatchQueue.main.async {
-                                    self.items.sort { item1, item2 in
-                                        guard let date1 = dateFormatter.date(from: item1.pubDate),
-                                              let date2 = dateFormatter.date(from: item2.pubDate) else { return false }
-                                        return date1 > date2
-                                    }
-                                    self.tableView.reloadData()
-                                }
+                                mergeGroup.leave()
                             }
                         }
-
-                        self.hasLoadedRSSFeeds = true
-
-                        self.tableView.reloadData()
-                        self.refreshControl.endRefreshing()
-                        self.updateFooterVisibility()
-                        self.loadingIndicator.stopAnimating()
+                        
+                        // 4) Once merges finish, do a final sort and reload
+                        mergeGroup.notify(queue: .main) {
+                            self.allItems.sort {
+                                guard
+                                    let d1 = dateFormatter.date(from: $0.pubDate),
+                                    let d2 = dateFormatter.date(from: $1.pubDate)
+                                else { return false }
+                                return d1 > d2
+                            }
+                            
+                            // For the RSS feed, set items to the final allItems
+                            self.items = self.allItems
+                            
+                            // Single final reload so the user doesn’t see partial changes
+                            self.tableView.reloadData()
+                            
+                            // Stop the spinner, show table, end pull-to-refresh
+                            self.refreshControl.endRefreshing()
+                            
+                            self.hasLoadedRSSFeeds = true
+                            self.updateFooterVisibility()
+                        }
                     }
                 }
+                
             case .failure(let error):
                 print("DEBUG: Error loading rssFeeds: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     self.refreshControl.endRefreshing()
                     self.loadingIndicator.stopAnimating()
+                    self.tableView.isHidden = false
                 }
             }
         }
@@ -533,11 +612,16 @@ class HomeFeedViewController: UIViewController {
     private func setupNavigationBar() {
         let appearance = UINavigationBarAppearance()
         appearance.configureWithOpaqueBackground()
-        appearance.backgroundColor = AppColors.primary
+        // Use your new dynamic color here:
+        appearance.backgroundColor = AppColors.navBarBackground
 
+        // Make title text dynamic too (white in Dark Mode, black in Light Mode)
+        let titleColor = UIColor { traitCollection in
+            return traitCollection.userInterfaceStyle == .dark ? .white : .black
+        }
         let titleAttributes: [NSAttributedString.Key: Any] = [
-            .foregroundColor: UIColor.white,
-            .font: UIFont.systemFont(ofSize: 17, weight: .semibold),
+            .foregroundColor: titleColor,
+            .font: UIFont.systemFont(ofSize: 17, weight: .semibold)
         ]
         appearance.titleTextAttributes = titleAttributes
         appearance.largeTitleTextAttributes = titleAttributes
@@ -546,80 +630,79 @@ class HomeFeedViewController: UIViewController {
         navigationController?.navigationBar.scrollEdgeAppearance = appearance
         navigationController?.navigationBar.compactAppearance = appearance
         if #available(iOS 15.0, *) {
-            navigationController?.navigationBar.compactScrollEdgeAppearance =
-                appearance
+            navigationController?.navigationBar.compactScrollEdgeAppearance = appearance
         }
+
         setupNavigationButtons()
-    }
-
-    private func setupNavigationButtons() {
-        let leftButtons = [
-            createBarButton(
-                imageName: "rss", action: #selector(rssButtonTapped)),
-            createBarButton(
-                imageName: "bookmark", action: #selector(bookmarkButtonTapped)),
-            createBarButton(
-                imageName: "heart", action: #selector(heartButtonTapped)),
-        ]
-
-        let rightButtons = [
-            createBarButton(
-                imageName: "settings", action: #selector(openSettings)),
-            createBarButton(
-                imageName: "edit", action: #selector(editButtonTapped)),
-        ]
-
-        navigationItem.leftBarButtonItems = leftButtons
-        navigationItem.rightBarButtonItems = rightButtons
         updateNavigationButtons()
     }
 
-    private func updateNavigationButtons() {
-        guard let leftButtons = navigationItem.leftBarButtonItems else {
-            return
-        }
-        leftButtons[0].image = resizeImage(
-            UIImage(named: "rss"), targetSize: CGSize(width: 24, height: 24))?
-            .withRenderingMode(.alwaysTemplate)
-        leftButtons[1].image = resizeImage(
-            UIImage(named: "bookmark"),
-            targetSize: CGSize(width: 24, height: 24))?.withRenderingMode(
-                .alwaysTemplate)
-        leftButtons[2].image = resizeImage(
-            UIImage(named: "heart"), targetSize: CGSize(width: 24, height: 24))?
-            .withRenderingMode(.alwaysTemplate)
+    private func setupNavigationButtons() {
+        // Create each bar button
+        let rssButton = createBarButton(
+            imageName: "rss",
+            action: #selector(rssButtonTapped),
+            tintColor: AppColors.dynamicIconColor
+        )
+        let refreshButton = createBarButton(
+            imageName: "refresh",
+            action: #selector(refreshButtonTapped),
+            tintColor: AppColors.dynamicIconColor
+        )
+        let bookmarkButton = createBarButton(
+            imageName: "bookmark",
+            action: #selector(bookmarkButtonTapped),
+            tintColor: AppColors.dynamicIconColor
+        )
+        let heartButton = createBarButton(
+            imageName: "heart",
+            action: #selector(heartButtonTapped),
+            tintColor: AppColors.dynamicIconColor
+        )
 
-        switch currentFeedType {
-        case .rss:
-            leftButtons[0].image = resizeImage(
-                UIImage(named: "rssFilled"),
-                targetSize: CGSize(width: 24, height: 24))?.withRenderingMode(
-                    .alwaysTemplate)
-        case .bookmarks:
-            leftButtons[1].image = resizeImage(
-                UIImage(named: "bookmarkFilled"),
-                targetSize: CGSize(width: 24, height: 24))?.withRenderingMode(
-                    .alwaysTemplate)
-        case .heart:
-            leftButtons[2].image = resizeImage(
-                UIImage(named: "heartFilled"),
-                targetSize: CGSize(width: 24, height: 24))?.withRenderingMode(
-                    .alwaysTemplate)
-        }
+        // Create your right-side buttons
+        let settingsButton = createBarButton(
+            imageName: "settings",
+            action: #selector(openSettings),
+            tintColor: AppColors.dynamicIconColor
+        )
+        let editButton = createBarButton(
+            imageName: "edit",
+            action: #selector(editButtonTapped),
+            tintColor: AppColors.dynamicIconColor
+        )
+
+        // Assign them in the order you want on the left side
+        navigationItem.leftBarButtonItems = [
+            rssButton,
+            refreshButton,
+            bookmarkButton,
+            heartButton
+        ]
+
+        // Assign the right-side buttons
+        navigationItem.rightBarButtonItems = [settingsButton, editButton]
     }
 
-    private func createBarButton(imageName: String, action: Selector)
-        -> UIBarButtonItem
-    {
+    private func createBarButton(
+        imageName: String,
+        action: Selector,
+        tintColor: UIColor = .white,
+        renderOriginal: Bool = false
+    ) -> UIBarButtonItem {
+        let renderingMode: UIImage.RenderingMode = renderOriginal ? .alwaysOriginal : .alwaysTemplate
+        let buttonImage = resizeImage(
+            UIImage(named: imageName),
+            targetSize: CGSize(width: 24, height: 24)
+        )?.withRenderingMode(renderingMode)
+
         let button = UIBarButtonItem(
-            image: resizeImage(
-                UIImage(named: imageName),
-                targetSize: CGSize(width: 24, height: 24))?.withRenderingMode(
-                    .alwaysTemplate),
+            image: buttonImage,
             style: .plain,
             target: self,
-            action: action)
-        button.tintColor = .white
+            action: action
+        )
+        button.tintColor = tintColor
         return button
     }
 
@@ -653,13 +736,11 @@ class HomeFeedViewController: UIViewController {
         footerView?.addSubview(markAllButton)
 
         markAllButton.backgroundColor = AppColors.primary
-        markAllButton.setTitle(
-            items.isEmpty ? "  Reached the end  " : "  Mark All as Read  ",
-            for: .normal)
+        // Show "No Articles" if the items array is empty; otherwise show the button title.
+        markAllButton.setTitle(items.isEmpty ? "No Articles" : "Mark All as Read", for: .normal)
         markAllButton.isEnabled = !items.isEmpty
         markAllButton.setTitleColor(.white, for: .normal)
-        markAllButton.titleLabel?.font = .systemFont(
-            ofSize: 16, weight: .semibold)
+        markAllButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
         markAllButton.layer.cornerRadius = 20
         markAllButton.layer.masksToBounds = true
 
@@ -680,39 +761,81 @@ class HomeFeedViewController: UIViewController {
         if currentFeedType == .bookmarks || currentFeedType == .heart {
             tableView.tableFooterView = nil
         } else {
-            if footerView == nil {
+            // If the footer view is already set up, update the button title and enabled state.
+            if let markAllButton = footerRefreshButton {
+                let newTitle = items.isEmpty ? "No Articles" : "Mark All as Read"
+                markAllButton.setTitle(newTitle, for: .normal)
+                markAllButton.isEnabled = !items.isEmpty
+            } else {
+                // Otherwise, create it
                 setupTableViewFooter()
             }
             tableView.tableFooterView = footerView
         }
     }
 
-    @objc private func markAllAsReadTapped() {
+    @IBAction func markAllAsReadTapped(_ sender: UIButton) {
+        // Only proceed if there are articles.
+        guard !items.isEmpty else { return }
+        
         let alert = UIAlertController(
             title: "Mark All as Read",
-            message: "Are you sure you want to mark all articles as read?",
-            preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(
-            UIAlertAction(title: "Mark All", style: .default) { [weak self] _ in
-                self?.markAllItemsAsRead()
-            })
-        present(alert, animated: true)
-    }
-
-    private func markAllItemsAsRead() {
-        for index in 0..<items.count {
-            items[index].isRead = true
-        }
-        saveReadState()
-        items.removeAll()
-        loadRSSFeeds()
+            message: "This action will mark all your feed items as read. Are you sure you want to continue?",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
+        
+        alert.addAction(UIAlertAction(title: "OK", style: .default, handler: { _ in
+            // Update local items: mark each one as read.
+            self.items = self.items.map { item in
+                var updatedItem = item
+                updatedItem.isRead = true
+                return updatedItem
+            }
+            
+            // Also update the full set if needed.
+            self.allItems = self.allItems.map { item in
+                var updatedItem = item
+                updatedItem.isRead = true
+                return updatedItem
+            }
+            
+            // Save the new read state locally (which also handles deduplication and cleanup).
+            self.saveReadState()
+            
+            // Reload the table view to update the UI immediately.
+            self.tableView.reloadData()
+            
+            // Now update storage—this will update both UserDefaults and iCloud.
+            StorageManager.shared.markAllAsRead { success, error in
+                DispatchQueue.main.async {
+                    if let error = error {
+                        print("Error marking all as read: \(error.localizedDescription)")
+                    }
+                    // Reload again in case any external state changed.
+                    self.tableView.reloadData()
+                }
+            }
+        }))
+        
+        self.present(alert, animated: true, completion: nil)
     }
 
     @objc private func refreshButtonTapped() {
-        footerLoadingIndicator?.startAnimating()
-        footerRefreshButton?.setTitle("  Loading...  ", for: .normal)
-        footerRefreshButton?.isEnabled = false
+        // 1) Manually begin showing the refresh spinner
+        if !refreshControl.isRefreshing {
+            refreshControl.beginRefreshing()
+            
+            // 2) Make sure the spinner is visible by adjusting the table offset
+            let offset = CGPoint(
+                x: 0,
+                y: tableView.contentOffset.y - refreshControl.frame.size.height
+            )
+            tableView.setContentOffset(offset, animated: true)
+        }
+        
+        // 3) Now do your actual refresh logic
         refreshFeeds()
     }
 
@@ -813,24 +936,22 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         ])
     }
 
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath)
-        -> UITableViewCell
-    {
-        let cell = tableView.dequeueReusableCell(
-            withIdentifier: "RSSCell", for: indexPath)
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "RSSCell", for: indexPath)
         let item = items[indexPath.row]
 
         var config = cell.defaultContentConfiguration()
         config.text = item.title
-        config.secondaryText =
-            "\(item.source) • \(getTimeAgo(from: item.pubDate))"
+        config.secondaryText = "\(item.source) • \(getTimeAgo(from: item.pubDate))"
         cell.backgroundColor = AppColors.background
-        config.textProperties.color =
-            item.isRead ? AppColors.secondary : AppColors.accent
+        config.textProperties.color = item.isRead ? AppColors.secondary : AppColors.accent
         config.secondaryTextProperties.color = AppColors.secondary
         config.secondaryTextProperties.font = .systemFont(ofSize: 12)
-        config.textProperties.font = .systemFont(
-            ofSize: 16, weight: item.isRead ? .regular : .medium)
+        
+        // Get the font size from UserDefaults (defaulting to 16 if not set)
+        let storedFontSize = CGFloat(UserDefaults.standard.float(forKey: "fontSize") != 0 ? UserDefaults.standard.float(forKey: "fontSize") : 16)
+        config.textProperties.font = .systemFont(ofSize: storedFontSize, weight: item.isRead ? .regular : .medium)
+        
         cell.accessoryType = .disclosureIndicator
         cell.contentConfiguration = config
         return cell
