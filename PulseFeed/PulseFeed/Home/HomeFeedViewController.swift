@@ -130,6 +130,17 @@ class HomeFeedViewController: UIViewController {
     private var bookmarkedItems: Set<String> = []
     private var allItems: [RSSItem] = []
     private var hasLoadedRSSFeeds = false
+    private var previousMinVisibleRow: Int = 0 // Track the topmost visible row
+    private var isSortedAscending = false // Add state for sorting order
+
+    // Add properties for Nav Bar Buttons
+    private var rssButton: UIBarButtonItem?
+    private var refreshButton: UIBarButtonItem?
+    private var bookmarkButton: UIBarButtonItem?
+    private var heartButton: UIBarButtonItem?
+    private var settingsButton: UIBarButtonItem?
+    private var editButton: UIBarButtonItem?
+    private var sortButton: UIBarButtonItem? // Add sort button property
 
     // Feed types; RSSFeed is managed separately.
     private enum FeedType {
@@ -240,7 +251,7 @@ class HomeFeedViewController: UIViewController {
         // leftButtons order: [rss, refresh, bookmark, heart]
         // Update the RSS button image:
         let rssImageName = (currentFeedType == .rss) ? "rssFilled" : "rss"
-        leftButtons[0].image = resizeImage(
+        rssButton?.image = resizeImage(
             UIImage(named: rssImageName),
             targetSize: CGSize(width: 24, height: 24)
         )?.withRenderingMode(.alwaysTemplate)
@@ -249,14 +260,14 @@ class HomeFeedViewController: UIViewController {
         
         // Update the Bookmark button image:
         let bookmarkImageName = (currentFeedType == .bookmarks) ? "bookmarkFilled" : "bookmark"
-        leftButtons[2].image = resizeImage(
+        bookmarkButton?.image = resizeImage(
             UIImage(named: bookmarkImageName),
             targetSize: CGSize(width: 24, height: 24)
         )?.withRenderingMode(.alwaysTemplate)
         
         // Update the Heart button image:
         let heartImageName = (currentFeedType == .heart) ? "heartFilled" : "heart"
-        leftButtons[3].image = resizeImage(
+        heartButton?.image = resizeImage(
             UIImage(named: heartImageName),
             targetSize: CGSize(width: 24, height: 24)
         )?.withRenderingMode(.alwaysTemplate)
@@ -332,7 +343,8 @@ class HomeFeedViewController: UIViewController {
 
     // Load RSS feeds from storage and then fetch articles from each feed URL.
     private func loadRSSFeeds() {
-                
+        startRefreshAnimation() // Start animation
+        
         StorageManager.shared.load(forKey: "rssFeeds") { [weak self] (result: Result<[RSSFeed], Error>) in
             guard let self = self else { return }
             
@@ -491,11 +503,21 @@ class HomeFeedViewController: UIViewController {
                                         let d1 = dateFormatter.date(from: $0.pubDate),
                                         let d2 = dateFormatter.date(from: $1.pubDate)
                                     else { return false }
-                                    return d1 > d2
+                                    // Use the current sort order state
+                                    return self.isSortedAscending ? d1 < d2 : d1 > d2
                                 }
 
-                                // Update the main data source ONCE
-                                self.allItems = finalAllItems
+                                // Filter items older than 30 days
+                                let thirtyDaysAgo = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
+                                let filteredItems = finalAllItems.filter { item in
+                                    guard let itemDate = dateFormatter.date(from: item.pubDate) else {
+                                        return false // Exclude if date can't be parsed
+                                    }
+                                    return itemDate >= thirtyDaysAgo
+                                }
+
+                                // Update the main data source ONCE with the filtered items
+                                self.allItems = filteredItems // Use the filtered list
 
                                 // Update the currently displayed items if RSS feed is active
                                 if self.currentFeedType == .rss {
@@ -508,6 +530,7 @@ class HomeFeedViewController: UIViewController {
                                 // Then, asynchronously stop the refresh control and update state
                                 // to allow reloadData() to begin processing before the spinner hides.
                                 DispatchQueue.main.async {
+                                    self.stopRefreshAnimation() // Stop animation
                                     self.refreshControl.endRefreshing()
                                     self.hasLoadedRSSFeeds = true
                                     self.updateFooterVisibility()
@@ -523,6 +546,7 @@ class HomeFeedViewController: UIViewController {
                     self.refreshControl.endRefreshing()
                     self.loadingIndicator.stopAnimating()
                     self.tableView.isHidden = false
+                    self.stopRefreshAnimation() // Stop animation on error too
                 }
             }
         }
@@ -531,19 +555,40 @@ class HomeFeedViewController: UIViewController {
     // New implementation for loading bookmarked feeds
     private func loadBookmarkedFeeds() {
         // Filter the complete list based on bookmarked links.
-        self.items = self.allItems.filter {
+        var filteredItems = self.allItems.filter {
             self.bookmarkedItems.contains($0.link)
         }
+        // Sort the filtered items based on the current sort order
+        sortFilteredItems(&filteredItems)
+        self.items = filteredItems
         tableView.reloadData()
     }
 
     // New implementation for loading hearted feeds
     private func loadHeartedFeeds() {
         // Filter the complete list based on hearted links.
-        self.items = self.allItems.filter {
+        var filteredItems = self.allItems.filter {
             self.heartedItems.contains($0.link)
         }
+        // Sort the filtered items based on the current sort order
+        sortFilteredItems(&filteredItems)
+        self.items = filteredItems
         tableView.reloadData()
+    }
+
+    // Helper function to sort a given array of items based on the current setting
+    private func sortFilteredItems(_ itemsToSort: inout [RSSItem]) {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+
+        itemsToSort.sort {
+            guard let date1 = dateFormatter.date(from: $0.pubDate),
+                  let date2 = dateFormatter.date(from: $1.pubDate) else {
+                return false // Keep original order if dates are invalid
+            }
+            return self.isSortedAscending ? date1 < date2 : date1 > date2
+        }
     }
 
     // MARK: - Data Loading and Saving
@@ -666,34 +711,47 @@ class HomeFeedViewController: UIViewController {
 
     private func setupNavigationButtons() {
         // Create each bar button
-        let rssButton = createBarButton(
+        rssButton = createBarButton(
             imageName: "rss",
             action: #selector(rssButtonTapped),
             tintColor: AppColors.dynamicIconColor
         )
-        let refreshButton = createBarButton(
+        refreshButton = createBarButton(
             imageName: "refresh",
             action: #selector(refreshButtonTapped),
             tintColor: AppColors.dynamicIconColor
         )
-        let bookmarkButton = createBarButton(
+        bookmarkButton = createBarButton(
             imageName: "bookmark",
             action: #selector(bookmarkButtonTapped),
             tintColor: AppColors.dynamicIconColor
         )
-        let heartButton = createBarButton(
+        heartButton = createBarButton(
             imageName: "heart",
             action: #selector(heartButtonTapped),
             tintColor: AppColors.dynamicIconColor
         )
 
+        // Special handling for SF Symbol for the sort button
+        let sortButtonImage = resizeImage(
+            UIImage(systemName: "arrow.up.arrow.down"), // Use systemName for SF Symbols
+            targetSize: CGSize(width: 24, height: 24)
+        )?.withRenderingMode(.alwaysTemplate)
+        sortButton = UIBarButtonItem(
+            image: sortButtonImage,
+            style: .plain,
+            target: self,
+            action: #selector(sortButtonTapped)
+        )
+        sortButton?.tintColor = AppColors.dynamicIconColor
+
         // Create your right-side buttons
-        let settingsButton = createBarButton(
+        settingsButton = createBarButton(
             imageName: "settings",
             action: #selector(openSettings),
             tintColor: AppColors.dynamicIconColor
         )
-        let editButton = createBarButton(
+        editButton = createBarButton(
             imageName: "edit",
             action: #selector(editButtonTapped),
             tintColor: AppColors.dynamicIconColor
@@ -705,10 +763,10 @@ class HomeFeedViewController: UIViewController {
             refreshButton,
             bookmarkButton,
             heartButton
-        ]
+        ].compactMap { $0 } // Use properties and compactMap to handle potential nils
 
         // Assign the right-side buttons
-        navigationItem.rightBarButtonItems = [settingsButton, editButton]
+        navigationItem.rightBarButtonItems = [settingsButton, editButton, sortButton].compactMap { $0 } // Add sortButton here
     }
 
     private func createBarButton(
@@ -867,6 +925,7 @@ class HomeFeedViewController: UIViewController {
     }
 
     @objc private func refreshFeeds() {
+        startRefreshAnimation() // Start animation
         loadRSSFeeds()
     }
 
@@ -893,6 +952,59 @@ class HomeFeedViewController: UIViewController {
         navigationController?.pushViewController(settingsVC, animated: true)
     }
 
+    @objc private func sortButtonTapped() {
+        let alert = UIAlertController(title: "Sort Articles", message: nil, preferredStyle: .actionSheet)
+
+        let newestFirstAction = UIAlertAction(title: "Newest First", style: .default) { [weak self] _ in
+            self?.sortItems(ascending: false)
+        }
+        // Optionally, add a checkmark if this is the current sort order
+        if !isSortedAscending {
+            newestFirstAction.setValue(true, forKey: "checked")
+        }
+
+        let oldestFirstAction = UIAlertAction(title: "Oldest First", style: .default) { [weak self] _ in
+            self?.sortItems(ascending: true)
+        }
+        // Optionally, add a checkmark
+        if isSortedAscending {
+            oldestFirstAction.setValue(true, forKey: "checked")
+        }
+
+
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+
+        alert.addAction(newestFirstAction)
+        alert.addAction(oldestFirstAction)
+        alert.addAction(cancelAction)
+
+        // For iPad compatibility
+        if let popoverController = alert.popoverPresentationController {
+            popoverController.barButtonItem = sortButton
+        }
+
+        present(alert, animated: true)
+    }
+
+    // MARK: - Sorting Logic
+    private func sortItems(ascending: Bool) {
+        isSortedAscending = ascending
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+
+        items.sort {
+            guard let date1 = dateFormatter.date(from: $0.pubDate),
+                  let date2 = dateFormatter.date(from: $1.pubDate) else {
+                // Handle cases where date parsing might fail, maybe keep original order?
+                return false
+            }
+            return ascending ? date1 < date2 : date1 > date2
+        }
+        tableView.reloadData()
+        // Optional: Update the sort button icon if needed
+    }
+
     // MARK: - Image Resizing and Trait Changes
     func resizeImage(_ image: UIImage?, targetSize: CGSize) -> UIImage? {
         guard let image = image else { return nil }
@@ -914,10 +1026,73 @@ class HomeFeedViewController: UIViewController {
             tableView.reloadData()
         }
     }
+
+    // MARK: - Refresh Button Animation
+    private func startRefreshAnimation() {
+        // Ensure we have a refresh button and access its view
+        guard let buttonView = refreshButton?.value(forKey: "view") as? UIView else { return }
+
+        // Check if animation is already running
+        if buttonView.layer.animation(forKey: "rotationAnimation") != nil {
+            return // Already animating
+        }
+
+        let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
+        rotation.toValue = NSNumber(value: Double.pi * 2)
+        rotation.duration = 1.0 // Adjust duration as needed
+        rotation.isCumulative = true
+        rotation.repeatCount = .infinity
+        buttonView.layer.add(rotation, forKey: "rotationAnimation")
+    }
+
+    private func stopRefreshAnimation() {
+        // Ensure we have a refresh button and access its view
+        guard let buttonView = refreshButton?.value(forKey: "view") as? UIView else { return }
+
+        // Remove the animation
+        buttonView.layer.removeAnimation(forKey: "rotationAnimation")
+    }
 }
 
 // MARK: - TableView Delegate and DataSource
 extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        // Ensure we're dealing with the table view's scroll view
+        guard scrollView == tableView else { return }
+
+        // Get the index paths of the currently visible rows
+        guard let visibleRows = tableView.indexPathsForVisibleRows, !visibleRows.isEmpty else {
+            return
+        }
+
+        // Find the minimum row index among visible rows
+        let currentMinVisibleRow = visibleRows.map { $0.row }.min() ?? 0
+
+        // Check if the user scrolled down past the previously tracked top row
+        if currentMinVisibleRow > previousMinVisibleRow {
+            var indexPathsToUpdate: [IndexPath] = []
+
+            // Iterate through the rows that have just scrolled off the top
+            for index in previousMinVisibleRow..<currentMinVisibleRow {
+                // Ensure the index is valid and the item is not already read
+                if index >= 0 && index < items.count && !items[index].isRead {
+                    items[index].isRead = true
+                    indexPathsToUpdate.append(IndexPath(row: index, section: 0))
+                }
+            }
+
+            // If any items were marked as read, save the state and reload the rows
+            if !indexPathsToUpdate.isEmpty {
+                saveReadState()
+                // Use .none to avoid animation glitches during scrolling
+                tableView.reloadRows(at: indexPathsToUpdate, with: .none)
+            }
+        }
+
+        // Update the tracker for the next scroll event
+        previousMinVisibleRow = currentMinVisibleRow
+    }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int)
         -> Int

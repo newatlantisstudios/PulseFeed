@@ -121,7 +121,6 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
             target: self,
             action: action
         )
-        button.tintColor = .white
         return button
     }
     

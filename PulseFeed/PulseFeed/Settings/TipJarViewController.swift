@@ -9,6 +9,18 @@ class TipJarViewController: UIViewController, SKProductsRequestDelegate, SKPayme
                                              "com.newatlantisstudios.pulsefeed.tip5"]
     private var products: [SKProduct] = []
     
+    // MARK: - UI Elements
+
+    private lazy var descriptionLabel: UILabel = {
+        let label = UILabel()
+        label.text = "Enjoying PulseFeed? Consider leaving a tip to support future development!"
+        label.numberOfLines = 0 // Allows multiple lines
+        label.textAlignment = .center
+        label.font = UIFont.preferredFont(forTextStyle: .body)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
+    }()
+    
     // UI Buttons for each tip option.
     private lazy var tip1Button: UIButton = {
         var configuration = UIButton.Configuration.filled()
@@ -78,7 +90,16 @@ class TipJarViewController: UIViewController, SKProductsRequestDelegate, SKPayme
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         
+        view.addSubview(descriptionLabel) // Add the label to the view
+
         NSLayoutConstraint.activate([
+            // Constraints for the description label
+            descriptionLabel.bottomAnchor.constraint(equalTo: stack.topAnchor, constant: -30), // Position above the stack
+            descriptionLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
+            descriptionLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
+            descriptionLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+            // Existing constraints for the button stack
             stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: view.centerYAnchor)
         ])

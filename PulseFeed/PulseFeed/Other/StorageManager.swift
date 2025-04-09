@@ -96,50 +96,72 @@ struct CloudKitStorage: ArticleStorage {
         do {
             let data = try JSONEncoder().encode(value)
             print(
-                "CloudKitStorage: Attempting to save data for key '\(key)' with size \(data.count) bytes."
+                "CloudKitStorage: Attempting to save data for key '\\(key)' with size \\(data.count) bytes using CKModifyRecordsOperation."
             )
+
+            // Fetch the record first to get the latest change tag or create a new one
             database.fetch(withRecordID: recordID) { record, error in
-                if let record = record {
-                    record[key] = data as CKRecordValue
-                    self.database.save(record) { _, error in
-                        DispatchQueue.main.async {
-                            if let error = error {
-                                print(
-                                    "CloudKitStorage: Error saving data for key '\(key)': \(error.localizedDescription)"
-                                )
-                            } else {
-                                print(
-                                    "CloudKitStorage: Successfully saved data for key '\(key)'."
-                                )
-                            }
-                            completion(error)
-                        }
+                // Handle fetch error (excluding 'unknownItem', which means we create a new record)
+                if let ckError = error as? CKError, ckError.code != .unknownItem {
+                    DispatchQueue.main.async {
+                        print("CloudKitStorage: Error fetching record before saving key '\\(key)': \\(error!.localizedDescription)")
+                        completion(error)
                     }
-                } else {
-                    let newRecord = CKRecord(
-                        recordType: "RSSFeeds", recordID: self.recordID)
-                    newRecord[key] = data as CKRecordValue
-                    self.database.save(newRecord) { _, error in
-                        DispatchQueue.main.async {
-                            if let error = error {
-                                print(
-                                    "CloudKitStorage: Error creating new record for key '\(key)': \(error.localizedDescription)"
-                                )
-                            } else {
-                                print(
-                                    "CloudKitStorage: Successfully created new record and saved data for key '\(key)'."
-                                )
+                    return
+                }
+                 if let error = error, !(error is CKError) {
+                     DispatchQueue.main.async {
+                        print("CloudKitStorage: Non-CKError fetching record before saving key '\\(key)': \\(error.localizedDescription)")
+                        completion(error)
+                    }
+                    return
+                }
+
+                let recordToSave = record ?? CKRecord(recordType: "RSSFeeds", recordID: self.recordID)
+                recordToSave[key] = data as CKRecordValue
+
+                // Use CKModifyRecordsOperation for saving
+                let modifyOperation = CKModifyRecordsOperation(recordsToSave: [recordToSave], recordIDsToDelete: nil)
+                // Use .ifServerRecordUnchanged to prevent overwriting concurrent changes
+                modifyOperation.savePolicy = .ifServerRecordUnchanged
+
+                modifyOperation.modifyRecordsCompletionBlock = { savedRecords, deletedRecordIDs, operationError in
+                    DispatchQueue.main.async {
+                        if let opError = operationError as? CKError {
+                            // Handle specific CloudKit errors
+                            switch opError.code {
+                            case .serverRecordChanged:
+                                // Conflict detected! The record changed on the server.
+                                // For now, we just report the error. A more robust solution
+                                // might involve refetching, merging, and retrying.
+                                print("CloudKitStorage: Conflict detected (serverRecordChanged) while saving key '\\(key)'. Changes not saved. Error: \\(opError.localizedDescription)")
+                                completion(opError) // Pass the conflict error back
+                            default:
+                                // Handle other CloudKit errors
+                                print("CloudKitStorage: CKError saving key '\\(key)': \\(opError.localizedDescription)")
+                                completion(opError)
                             }
-                            completion(error)
+                        } else if let opError = operationError {
+                             // Handle non-CloudKit errors during the save operation
+                             print("CloudKitStorage: Non-CKError saving key '\\(key)': \\(opError.localizedDescription)")
+                             completion(opError)
+                        } else {
+                            // Success
+                            print("CloudKitStorage: Successfully saved data for key '\\(key)' using operation.")
+                            completion(nil)
                         }
                     }
                 }
+                self.database.add(modifyOperation) // Add the operation to the database queue
             }
         } catch {
+            // Handle JSON encoding error
             print(
-                "CloudKitStorage: Error encoding data for key '\(key)': \(error.localizedDescription)"
+                "CloudKitStorage: Error encoding data for key '\\(key)': \\(error.localizedDescription)"
             )
-            completion(error)
+            DispatchQueue.main.async {
+                completion(error)
+            }
         }
     }
 
