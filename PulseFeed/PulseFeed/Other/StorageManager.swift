@@ -170,7 +170,8 @@ struct CloudKitStorage: ArticleStorage {
                     do {
                         let value = try JSONDecoder().decode(T.self, from: data)
                         print(
-                            "CloudKitStorage: Successfully loaded data for key '\(key)': \(value)"
+                            //"CloudKitStorage: Successfully loaded data for key '\(key)': \(value)"
+                            "CloudKitStorage: Successfully loaded data for key '\(key)'"
                         )
                         completion(.success(value))
                     } catch {
@@ -194,6 +195,129 @@ struct CloudKitStorage: ArticleStorage {
                                             "No data found"
                                     ])))
                     }
+                }
+            }
+        }
+    }
+
+    /// Saves an array of ArticleSummary for a given feed, merging with existing articles.
+    /// - Parameters:
+    ///   - feedId: A unique identifier for the feed (for example, a slug or the feed URL hash).
+    ///   - newArticles: An array of ArticleSummary items representing NEW articles to add.
+    ///   - completion: Completion handler with an optional error.
+    func saveArticles(forFeed feedId: String,
+                      articles newArticles: [ArticleSummary],
+                      completion: @escaping (Error?) -> Void) {
+
+        // Create a unique record ID per feed.
+        let recordID = CKRecord.ID(recordName: "feedArticlesRecord-\(feedId)")
+
+        database.fetch(withRecordID: recordID) { (record, error) in
+
+            // Handle fetch error (excluding 'unknownItem', which is handled below)
+            if let error = error as? CKError, error.code != .unknownItem {
+                DispatchQueue.main.async {
+                    print("Error fetching record for feed \(feedId) before saving: \(error.localizedDescription)")
+                    completion(error)
+                }
+                return
+            }
+            // Handle non-CKError fetch errors
+            if let error = error, !(error is CKError) {
+                 DispatchQueue.main.async {
+                    print("Non-CKError fetching record for feed \(feedId) before saving: \(error.localizedDescription)")
+                    completion(error)
+                }
+                return
+            }
+
+            let currentRecord = record ?? CKRecord(recordType: "RSSFeedArticles", recordID: recordID)
+            var existingArticles: [ArticleSummary] = []
+
+            // Decode existing articles if the record exists and has data
+            if let existingData = currentRecord["articles"] as? Data {
+                do {
+                    existingArticles = try JSONDecoder().decode([ArticleSummary].self, from: existingData)
+                } catch {
+                    print("Warning: Could not decode existing articles for feed \(feedId). Starting fresh. Error: \(error.localizedDescription)")
+                    // Proceed with an empty existingArticles array
+                }
+            }
+
+            // Merge and Deduplicate
+            var combinedArticlesDict = Dictionary(existingArticles.map { ($0.link, $0) }, uniquingKeysWith: { (current, _) in current })
+            for article in newArticles {
+                combinedArticlesDict[article.link] = article // Add or overwrite with the new article
+            }
+
+            var finalArticles = Array(combinedArticlesDict.values)
+
+            // Limit the saved articles
+            if finalArticles.count > 5000 {
+                 // Sort by date string descending before limiting (best effort)
+                finalArticles.sort { $0.pubDate > $1.pubDate }
+                finalArticles = Array(finalArticles.prefix(5000))
+            }
+
+            // Encode the final merged list
+            do {
+                let finalData = try JSONEncoder().encode(finalArticles)
+                currentRecord["articles"] = finalData as CKRecordValue
+
+                // Save the record using CKModifyRecordsOperation with .changedKeys policy
+                let modifyOperation = CKModifyRecordsOperation(recordsToSave: [currentRecord], recordIDsToDelete: nil)
+                modifyOperation.savePolicy = .changedKeys // Apply the policy here
+                modifyOperation.modifyRecordsCompletionBlock = { savedRecords, deletedRecordIDs, operationError in
+                    DispatchQueue.main.async {
+                        if let opError = operationError {
+                            print("Error saving merged articles for feed \(feedId) using operation: \(opError.localizedDescription)")
+                            // Handle specific CloudKit errors if necessary (e.g., .serverRecordChanged for conflict)
+                        } else {
+                            print("Successfully saved \(finalArticles.count) merged articles for feed \(feedId).")
+                        }
+                        completion(operationError) // Pass the operation error back
+                    }
+                }
+                self.database.add(modifyOperation) // Add the operation to the database queue
+
+            } catch {
+                // Handle encoding error
+                DispatchQueue.main.async {
+                    print("Error encoding final articles for feed \(feedId): \(error.localizedDescription)")
+                    completion(error)
+                }
+            }
+        }
+    }
+
+    /// Loads the saved ArticleSummary array for a given feed.
+    /// - Parameters:
+    ///   - feedId: The unique identifier for the feed.
+    ///   - completion: Completion handler returning a Result with either the array of ArticleSummary or an Error.
+    func loadArticles(forFeed feedId: String,
+                      completion: @escaping (Result<[ArticleSummary], Error>) -> Void) {
+        let recordID = CKRecord.ID(recordName: "feedArticlesRecord-\(feedId)")
+        database.fetch(withRecordID: recordID) { (record, error) in
+            DispatchQueue.main.async {
+                if let ckError = error as? CKError, ckError.code == .unknownItem {
+                    // Record not found; return an empty array.
+                    completion(.success([]))
+                    return
+                }
+                if let error = error {
+                    completion(.failure(error))
+                    return
+                }
+                if let record = record, let data = record["articles"] as? Data {
+                    do {
+                        let articles = try JSONDecoder().decode([ArticleSummary].self, from: data)
+                        completion(.success(articles))
+                    } catch {
+                        completion(.failure(error))
+                    }
+                } else {
+                    // Record exists but no 'articles' data, or record is nil without error (unlikely)
+                    completion(.success([]))
                 }
             }
         }
@@ -283,80 +407,4 @@ struct ArticleSummary: Codable {
     let title: String
     let link: String
     let pubDate: String
-}
-
-// MARK: - CloudKitStorage Extension for Per-Feed Articles
-extension CloudKitStorage {
-    
-    /// Saves an array of ArticleSummary for a given feed.
-    /// - Parameters:
-    ///   - feedId: A unique identifier for the feed (for example, a slug or the feed URL hash).
-    ///   - articles: An array of ArticleSummary items.
-    ///   - completion: Completion handler with an optional error.
-    func saveArticles(forFeed feedId: String,
-                      articles: [ArticleSummary],
-                      completion: @escaping (Error?) -> Void) {
-        // Limit the saved articles to the most recent 5000.
-        let limitedArticles = articles.count > 5000 ? Array(articles.suffix(5000)) : articles
-        
-        do {
-            let data = try JSONEncoder().encode(limitedArticles)
-            // Create a unique record ID per feed.
-            let recordID = CKRecord.ID(recordName: "feedArticlesRecord-\(feedId)")
-            database.fetch(withRecordID: recordID) { (record, error) in
-                if let record = record {
-                    // Update the existing record.
-                    record["articles"] = data as CKRecordValue
-                    self.database.save(record) { _, error in
-                        DispatchQueue.main.async {
-                            completion(error)
-                        }
-                    }
-                } else {
-                    // If no record exists, create a new one.
-                    let newRecord = CKRecord(recordType: "RSSFeedArticles", recordID: recordID)
-                    newRecord["articles"] = data as CKRecordValue
-                    self.database.save(newRecord) { _, error in
-                        DispatchQueue.main.async {
-                            completion(error)
-                        }
-                    }
-                }
-            }
-        } catch {
-            completion(error)
-        }
-    }
-    
-    /// Loads the saved ArticleSummary array for a given feed.
-    /// - Parameters:
-    ///   - feedId: The unique identifier for the feed.
-    ///   - completion: Completion handler returning a Result with either the array of ArticleSummary or an Error.
-    func loadArticles(forFeed feedId: String,
-                      completion: @escaping (Result<[ArticleSummary], Error>) -> Void) {
-        let recordID = CKRecord.ID(recordName: "feedArticlesRecord-\(feedId)")
-        database.fetch(withRecordID: recordID) { (record, error) in
-            DispatchQueue.main.async {
-                if let ckError = error as? CKError, ckError.code == .unknownItem {
-                    // Record not found; return an empty array.
-                    completion(.success([]))
-                    return
-                }
-                if let error = error {
-                    completion(.failure(error))
-                    return
-                }
-                if let record = record, let data = record["articles"] as? Data {
-                    do {
-                        let articles = try JSONDecoder().decode([ArticleSummary].self, from: data)
-                        completion(.success(articles))
-                    } catch {
-                        completion(.failure(error))
-                    }
-                } else {
-                    completion(.success([]))
-                }
-            }
-        }
-    }
 }

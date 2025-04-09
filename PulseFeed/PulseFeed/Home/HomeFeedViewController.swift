@@ -183,7 +183,7 @@ class HomeFeedViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
 
-        // If we haven’t loaded feeds yet, automatically show pull-to-refresh:
+        // If we haven't loaded feeds yet, automatically show pull-to-refresh:
         if !hasLoadedRSSFeeds {
             // 1. Start the refresh spinner
             refreshControl.beginRefreshing()
@@ -387,105 +387,132 @@ class HomeFeedViewController: UIViewController {
                         let dateFormatter = DateFormatter()
                         dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
                         dateFormatter.locale = Locale(identifier: "en_US_POSIX")
-                        
-                        // Sort all newly fetched items by pubDate
-                        self.allItems = liveItems.sorted {
+
+                        // Sort all newly fetched items by pubDate initially
+                        let sortedLiveItems = liveItems.sorted {
                             guard
                                 let d1 = dateFormatter.date(from: $0.pubDate),
                                 let d2 = dateFormatter.date(from: $1.pubDate)
                             else { return false }
                             return d1 > d2
                         }
-                        
-                        // -----------------------------------------------------
-                        // *** iCloud Sync (Saving articles) ***
-                        // -----------------------------------------------------
-                        let groupedByFeed = Dictionary(grouping: self.allItems) { $0.source }
-                        
-                        for (feedId, articles) in groupedByFeed {
-                            // Convert the RSSItems to your ArticleSummary struct
-                            let summaries = articles.map { article in
-                                ArticleSummary(
-                                    title: article.title,
-                                    link: article.link,
-                                    pubDate: article.pubDate
-                                )
-                            }
-                            
-                            CloudKitStorage().saveArticles(forFeed: feedId, articles: summaries) { error in
-                                if let error = error {
-                                    print("Error saving articles for feed \(feedId): \(error.localizedDescription)")
-                                } else {
-                                    print("Successfully saved live articles for feed \(feedId)")
-                                }
-                            }
-                        }
-                        // -----------------------------------------------------
-                        
-                        // 3) Merge with any cached CloudKit items
+
+                        // Temp storage for merged items per feed
+                        var mergedItemsByFeed: [String: [RSSItem]] = [:]
+                        // Keep track of new articles found during merge
+                        var feedArticlesToSave: [String: [ArticleSummary]] = [:]
                         let mergeGroup = DispatchGroup()
-                        
+
                         for feed in feeds {
                             mergeGroup.enter()
                             CloudKitStorage().loadArticles(forFeed: feed.title) { result in
+                                // Holds merged items for this specific feed
+                                var itemsForThisFeed: [RSSItem] = []
+                                // Holds only the articles fetched live for comparison
+                                let liveForFeed = sortedLiveItems.filter { $0.source == feed.title }
+
                                 switch result {
                                 case .success(let cachedArticles):
-                                    // Filter out read
+                                    // Filter out read items from cache
                                     let unreadCached = cachedArticles.filter {
                                         !readLinks.contains($0.link)
                                     }
-                                    
-                                    // Items from the live fetch for this feed
-                                    let liveForFeed = self.allItems.filter {
-                                        $0.source == feed.title
-                                    }
-                                    
-                                    var merged = liveForFeed
+
+                                    // Start with live items for this feed
+                                    itemsForThisFeed = liveForFeed
+                                    let liveLinks = Set(liveForFeed.map { $0.link })
+                                    var newArticlesForCloudKit: [ArticleSummary] = []
+
+                                    // Add cached items if they aren't already in the live list
                                     for cached in unreadCached {
-                                        // If cached item is not already in live items, add it
-                                        if !merged.contains(where: { $0.link == cached.link }) {
+                                        if !liveLinks.contains(cached.link) {
                                             let newItem = RSSItem(
                                                 title: cached.title,
                                                 link: cached.link,
                                                 pubDate: cached.pubDate,
                                                 source: feed.title
                                             )
-                                            merged.append(newItem)
+                                            itemsForThisFeed.append(newItem)
                                         }
                                     }
-                                    
-                                    // Remove old items for that feed, then append merged set
-                                    self.allItems.removeAll { $0.source == feed.title }
-                                    self.allItems.append(contentsOf: merged)
-                                    
+
+                                    // Identify articles that were fetched live but not in the cache (these are new)
+                                    let cachedLinks = Set(cachedArticles.map { $0.link })
+                                    newArticlesForCloudKit = liveForFeed
+                                        .filter { !cachedLinks.contains($0.link) }
+                                        .map { ArticleSummary(title: $0.title, link: $0.link, pubDate: $0.pubDate) }
+
+                                    if !newArticlesForCloudKit.isEmpty {
+                                        feedArticlesToSave[feed.title] = newArticlesForCloudKit
+                                    }
+
                                 case .failure(let error):
                                     print("Error loading cached articles for feed \(feed.title): \(error.localizedDescription)")
+                                    // If loading cache fails, still use the live items for this feed
+                                    itemsForThisFeed = liveForFeed
+                                    // Assume all live items are new if cache fails
+                                    let newArticles = itemsForThisFeed.map { ArticleSummary(title: $0.title, link: $0.link, pubDate: $0.pubDate) }
+                                    if !newArticles.isEmpty {
+                                        feedArticlesToSave[feed.title] = newArticles
+                                    }
                                 }
+
+                                // Store the merged items for this feed temporarily
+                                mergedItemsByFeed[feed.title] = itemsForThisFeed
+
                                 mergeGroup.leave()
                             }
                         }
-                        
-                        // 4) Once merges finish, do a final sort and reload
-                        mergeGroup.notify(queue: .main) {
-                            self.allItems.sort {
-                                guard
-                                    let d1 = dateFormatter.date(from: $0.pubDate),
-                                    let d2 = dateFormatter.date(from: $1.pubDate)
-                                else { return false }
-                                return d1 > d2
+
+                        // 4) Once merges finish, save *only* the new articles to CloudKit
+                        mergeGroup.notify(queue: .global(qos: .background)) { // Runs after all loadArticles complete
+                            let saveGroup = DispatchGroup()
+                            for (feedId, articles) in feedArticlesToSave {
+                                if articles.isEmpty { continue } // Skip saving if no new articles
+                                saveGroup.enter()
+                                CloudKitStorage().saveArticles(forFeed: feedId, articles: articles) { error in
+                                    if let error = error {
+                                        print("Error saving NEW articles for feed \(feedId): \(error.localizedDescription)")
+                                    } else {
+                                        print("Successfully saved \(articles.count) NEW live articles for feed \(feedId)")
+                                    }
+                                    saveGroup.leave()
+                                }
                             }
-                            
-                            // For the RSS feed, set items to the final allItems
-                            self.items = self.allItems
-                            
-                            // Single final reload so the user doesn’t see partial changes
-                            self.tableView.reloadData()
-                            
-                            // Stop the spinner, show table, end pull-to-refresh
-                            self.refreshControl.endRefreshing()
-                            
-                            self.hasLoadedRSSFeeds = true
-                            self.updateFooterVisibility()
+
+                            // 5) After saving, update UI on the main thread
+                            saveGroup.notify(queue: .main) { // Runs after all saveArticles complete
+                                // Combine all items from the temporary storage
+                                var finalAllItems = mergedItemsByFeed.values.flatMap { $0 }
+
+                                // Final sort of the combined list
+                                finalAllItems.sort {
+                                    guard
+                                        let d1 = dateFormatter.date(from: $0.pubDate),
+                                        let d2 = dateFormatter.date(from: $1.pubDate)
+                                    else { return false }
+                                    return d1 > d2
+                                }
+
+                                // Update the main data source ONCE
+                                self.allItems = finalAllItems
+
+                                // Update the currently displayed items if RSS feed is active
+                                if self.currentFeedType == .rss {
+                                    self.items = self.allItems
+                                }
+
+                                // Reload the table first
+                                self.tableView.reloadData()
+
+                                // Then, asynchronously stop the refresh control and update state
+                                // to allow reloadData() to begin processing before the spinner hides.
+                                DispatchQueue.main.async {
+                                    self.refreshControl.endRefreshing()
+                                    self.hasLoadedRSSFeeds = true
+                                    self.updateFooterVisibility()
+                                }
+                            }
                         }
                     }
                 }
