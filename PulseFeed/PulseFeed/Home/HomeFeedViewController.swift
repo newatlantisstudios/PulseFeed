@@ -131,7 +131,8 @@ class HomeFeedViewController: UIViewController {
     private var allItems: [RSSItem] = []
     private var hasLoadedRSSFeeds = false
     private var previousMinVisibleRow: Int = 0 // Track the topmost visible row
-    private var isSortedAscending = false // Add state for sorting order
+    private var isSortedAscending: Bool = false // Add state for sorting order
+    private var readLinks: Set<String> = [] // Store normalized read links
 
     // Add properties for Nav Bar Buttons
     private var rssButton: UIBarButtonItem?
@@ -189,6 +190,12 @@ class HomeFeedViewController: UIViewController {
             }
         }
 
+        // Restore sort order from UserDefaults
+        if UserDefaults.standard.object(forKey: "articleSortAscending") != nil {
+            isSortedAscending = UserDefaults.standard.bool(forKey: "articleSortAscending")
+        } else {
+            isSortedAscending = false // Default to newest first if not set
+        }
     }
     
     override func viewDidAppear(_ animated: Bool) {
@@ -284,6 +291,20 @@ class HomeFeedViewController: UIViewController {
         }
     }
 
+    private var saveReadStateWorkItem: DispatchWorkItem?
+    private let saveReadStateDebounceInterval: TimeInterval = 1.5
+    private var hasResetCloudKitReadItemsThisSession = false
+
+    // Debounced save for read state
+    private func scheduleSaveReadState() {
+        saveReadStateWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.saveReadState()
+        }
+        saveReadStateWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + saveReadStateDebounceInterval, execute: workItem)
+    }
+
     private func showMarkAboveAlert(for indexPath: IndexPath) {
         let alert = UIAlertController(
             title: "Mark as Read",
@@ -298,11 +319,22 @@ class HomeFeedViewController: UIViewController {
         present(alert, animated: true)
     }
 
+    // Helper to normalize links for consistent comparison
+    private func normalizeLink(_ link: String) -> String {
+        var urlString = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        if urlString.hasSuffix("/") {
+            urlString = String(urlString.dropLast())
+        }
+        // Optionally, add more normalization (e.g., always https, remove query params)
+        return urlString
+    }
+
     private func markItemsAboveAsRead(_ indexPath: IndexPath) {
         for index in 0...indexPath.row {
             items[index].isRead = true
+            print("Marking as read and saving link: \(self.normalizeLink(items[index].link))")
         }
-        saveReadState()
+        scheduleSaveReadState()
         let indexPaths = (0...indexPath.row).map {
             IndexPath(row: $0, section: 0)
         }
@@ -351,12 +383,14 @@ class HomeFeedViewController: UIViewController {
             switch result {
             case .success(let feeds):
                 // Load read items (to filter out already-read links)
-                StorageManager.shared.load(forKey: "readItems") { (readResult: Result<[ReadItem], Error>) in
-                    var readLinks: [String] = []
+                StorageManager.shared.load(forKey: "readItems") { (readResult: Result<[String], Error>) in
+                    var readLinks: Set<String> = []
                     if case .success(let readItems) = readResult {
-                        readLinks = readItems.map { $0.link }
+                        readLinks = Set(readItems.map { self.normalizeLink($0) })
                     }
-                    
+                    print("[loadRSSFeeds] Loaded read links: \(readLinks)")
+                    self.readLinks = readLinks // Store for later use
+                    // Print normalized links for all items after loading feeds (after parsing, before filtering)
                     // We'll gather all live feed items in this array
                     var liveItems: [RSSItem] = []
                     
@@ -386,8 +420,14 @@ class HomeFeedViewController: UIViewController {
                             if parser.parse() {
                                 // Filter out already-read links
                                 let filtered = rssParser.items.filter {
-                                    !readLinks.contains($0.link)
+                                    let normLink = self.normalizeLink($0.link)
+                                    if readLinks.contains(normLink) {
+                                        print("Filtering out read article: \(normLink)")
+                                        return false
+                                    }
+                                    return true
                                 }
+                                print("Feed \(feed.title): Filtered out \(rssParser.items.count - filtered.count) read articles out of \(rssParser.items.count)")
                                 liveItems.append(contentsOf: filtered)
                             }
                         }
@@ -425,9 +465,9 @@ class HomeFeedViewController: UIViewController {
 
                                 switch result {
                                 case .success(let cachedArticles):
-                                    // Filter out read items from cache
+                                    // Filter out read items from cache (normalize link)
                                     let unreadCached = cachedArticles.filter {
-                                        !readLinks.contains($0.link)
+                                        !self.readLinks.contains(self.normalizeLink($0.link))
                                     }
 
                                     // Start with live items for this feed
@@ -438,11 +478,13 @@ class HomeFeedViewController: UIViewController {
                                     // Add cached items if they aren't already in the live list
                                     for cached in unreadCached {
                                         if !liveLinks.contains(cached.link) {
+                                            let normLink = self.normalizeLink(cached.link)
                                             let newItem = RSSItem(
                                                 title: cached.title,
                                                 link: cached.link,
                                                 pubDate: cached.pubDate,
-                                                source: feed.title
+                                                source: feed.title,
+                                                isRead: self.readLinks.contains(normLink)
                                             )
                                             itemsForThisFeed.append(newItem)
                                         }
@@ -516,9 +558,22 @@ class HomeFeedViewController: UIViewController {
                                     return itemDate >= thirtyDaysAgo
                                 }
 
+                                // Debug: Check for any read articles still in filteredItems
+                                for item in filteredItems {
+                                    let normLink = self.normalizeLink(item.link)
+                                    if self.readLinks.contains(normLink) {
+                                        print("ERROR: Read article still in filteredItems: \(item.title) (\(normLink))")
+                                    }
+                                }
+
                                 // Update the main data source ONCE with the filtered items
                                 self.allItems = filteredItems // Use the filtered list
-
+                                // Set isRead for all items in allItems
+                                for i in 0..<self.allItems.count {
+                                    let normLink = self.normalizeLink(self.allItems[i].link)
+                                    self.allItems[i].isRead = self.readLinks.contains(normLink)
+                                }
+                                print("Final article count after filtering: \(filteredItems.count)")
                                 // Update the currently displayed items if RSS feed is active
                                 if self.currentFeedType == .rss {
                                     self.items = self.allItems
@@ -593,39 +648,64 @@ class HomeFeedViewController: UIViewController {
 
     // MARK: - Data Loading and Saving
 
+    // One-time CloudKit readItems reset for migration issues
+    private func resetCloudKitReadItemsIfNeeded(completion: (() -> Void)? = nil) {
+        CloudKitStorage().save([String](), forKey: "readItems") { error in
+            if let error = error {
+                print("Error resetting CloudKit readItems: \(error.localizedDescription)")
+            } else {
+                print("Successfully reset CloudKit readItems to empty array.")
+            }
+            completion?()
+        }
+    }
+
     // Save read state using asynchronous storage
     private func saveReadState() {
-        StorageManager.shared.load(forKey: "readItems") {
-            [weak self] (result: Result<[ReadItem], Error>) in
+        StorageManager.shared.load(forKey: "readItems") { [weak self] (result: Result<[String], Error>) in
             guard let self = self else { return }
-            var existingReadItems: [ReadItem] = []
+            var existingReadLinks: [String] = []
+            var needsCloudKitReset = false
             if case .success(let items) = result {
-                existingReadItems = items
+                existingReadLinks = items
+            } else if case .failure(let error) = result {
+                // If the error is a decoding error, trigger a one-time reset
+                if (error.localizedDescription.contains("correct format") || error.localizedDescription.contains("decode")) && !self.hasResetCloudKitReadItemsThisSession {
+                    print("Decoding error detected for readItems. Attempting CloudKit reset.")
+                    needsCloudKitReset = true
+                } else if (error.localizedDescription.contains("correct format") || error.localizedDescription.contains("decode")) && self.hasResetCloudKitReadItemsThisSession {
+                    // Suppress repeated logs after first reset
+                    return
+                }
+            }
+
+            // If a reset is needed, do it and then try again
+            if needsCloudKitReset {
+                self.hasResetCloudKitReadItemsThisSession = true
+                self.resetCloudKitReadItemsIfNeeded {
+                    // After reset, try saving again
+                    self.saveReadState()
+                }
+                return
             }
 
             // Map new read items with current date.
             let newReadItems = self.items.filter { $0.isRead }.map {
-                ReadItem(link: $0.link, readDate: Date())
+                ReadItem(link: self.normalizeLink($0.link), readDate: Date())
             }
-            existingReadItems.append(contentsOf: newReadItems)
+            // Combine links from CloudKit and new read items
+            var allReadLinks = Set(existingReadLinks.map { self.normalizeLink($0) })
+            allReadLinks.formUnion(newReadItems.map { $0.link })
 
-            // Deduplicate: Keep the latest readDate for each link.
-            var uniqueItems = [String: ReadItem]()
-            for item in existingReadItems {
-                if let existing = uniqueItems[item.link] {
-                    uniqueItems[item.link] =
-                        item.readDate > existing.readDate ? item : existing
-                } else {
-                    uniqueItems[item.link] = item
-                }
-            }
-            let dedupedItems = Array(uniqueItems.values)
+            print("[saveReadState] existingReadLinks: \(existingReadLinks)")
+            print("[saveReadState] newReadItems: \(newReadItems.map { $0.link })")
+            print("[saveReadState] allReadLinks to save: \(Array(allReadLinks))")
 
-            // Cleanup items: Remove those older than 30 days and enforce a max count.
-            let cleanedItems = self.cleanupReadItems(
-                dedupedItems, maxAge: 30 * 24 * 60 * 60, maxCount: 5000)
+            // Save [ReadItem] locally if you want to keep readDate for local use
+            // UserDefaults.standard.set(try? JSONEncoder().encode(allReadItems), forKey: "readItems")
 
-            StorageManager.shared.save(cleanedItems, forKey: "readItems") {
+            // Save only [String] (links) to StorageManager (and thus CloudKit)
+            StorageManager.shared.save(Array(allReadLinks), forKey: "readItems") {
                 error in
                 if let error = error {
                     print(
@@ -636,22 +716,6 @@ class HomeFeedViewController: UIViewController {
                 }
             }
         }
-    }
-
-    private func cleanupReadItems(
-        _ items: [ReadItem], maxAge: TimeInterval, maxCount: Int
-    ) -> [ReadItem] {
-        // Remove items older than maxAge (e.g., 30 days)
-        let cutoffDate = Date().addingTimeInterval(-maxAge)
-        var filteredItems = items.filter { $0.readDate >= cutoffDate }
-
-        // If the list still exceeds the max count, keep only the most recent ones.
-        if filteredItems.count > maxCount {
-            filteredItems.sort { $0.readDate > $1.readDate }
-            filteredItems = Array(filteredItems.prefix(maxCount))
-        }
-
-        return filteredItems
     }
 
     // Helper function to load cached articles for a given feed from CloudKit.
@@ -989,6 +1053,8 @@ class HomeFeedViewController: UIViewController {
     // MARK: - Sorting Logic
     private func sortItems(ascending: Bool) {
         isSortedAscending = ascending
+        // Save sort order to UserDefaults
+        UserDefaults.standard.set(ascending, forKey: "articleSortAscending")
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
         dateFormatter.locale = Locale(identifier: "en_US_POSIX")
@@ -1061,13 +1127,19 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         // Ensure we're dealing with the table view's scroll view
         guard scrollView == tableView else { return }
 
+        print("scrollViewDidScroll called")
+
         // Get the index paths of the currently visible rows
         guard let visibleRows = tableView.indexPathsForVisibleRows, !visibleRows.isEmpty else {
+            print("No visible rows")
             return
         }
 
+        print("Visible rows: \(visibleRows.map { $0.row })")
+
         // Find the minimum row index among visible rows
         let currentMinVisibleRow = visibleRows.map { $0.row }.min() ?? 0
+        print("previousMinVisibleRow: \(previousMinVisibleRow), currentMinVisibleRow: \(currentMinVisibleRow)")
 
         // Check if the user scrolled down past the previously tracked top row
         if currentMinVisibleRow > previousMinVisibleRow {
@@ -1075,16 +1147,21 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
 
             // Iterate through the rows that have just scrolled off the top
             for index in previousMinVisibleRow..<currentMinVisibleRow {
-                // Ensure the index is valid and the item is not already read
-                if index >= 0 && index < items.count && !items[index].isRead {
-                    items[index].isRead = true
-                    indexPathsToUpdate.append(IndexPath(row: index, section: 0))
+                // Ensure the index is valid
+                if index >= 0 && index < items.count {
+                    let normLink = self.normalizeLink(items[index].link)
+                    if !items[index].isRead && !readLinks.contains(normLink) {
+                        print("Marking article at index \(index) as read: \(items[index].title)")
+                        items[index].isRead = true
+                        indexPathsToUpdate.append(IndexPath(row: index, section: 0))
+                    }
                 }
             }
 
             // If any items were marked as read, save the state and reload the rows
             if !indexPathsToUpdate.isEmpty {
-                saveReadState()
+                print("Saving read state and reloading rows: \(indexPathsToUpdate.map { $0.row })")
+                scheduleSaveReadState()
                 // Use .none to avoid animation glitches during scrolling
                 tableView.reloadRows(at: indexPathsToUpdate, with: .none)
             }
@@ -1168,7 +1245,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             if let cell = tableView.cellForRow(at: indexPath) {
                 configureCell(cell, with: items[indexPath.row])
             }
-            saveReadState()
+            scheduleSaveReadState()
 
             let configuration = SFSafariViewController.Configuration()
             configuration.entersReaderIfAvailable = true
