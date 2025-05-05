@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import UIKit
 
 enum StorageMethod {
     case userDefaults, cloudKit
@@ -345,10 +346,21 @@ struct CloudKitStorage: ArticleStorage {
 /// Singleton that provides a unified interface for storage.
 class StorageManager {
     static let shared = StorageManager()
+    
+    // Flag to track if we've synchronized on app launch
+    private var hasSyncedOnLaunch = false
+    
+    // Flag to track if subscriptions are set up
+    private var hasSetupSubscriptions = false
 
     var method: StorageMethod = .userDefaults {
         didSet {
             print("DEBUG: StorageManager method set to: \(method)")
+            
+            // If switching to CloudKit, set up subscriptions
+            if method == .cloudKit && !hasSetupSubscriptions {
+                setupCloudKitSubscriptions()
+            }
         }
     }
 
@@ -363,62 +375,668 @@ class StorageManager {
         }
     }
     
-    func markAllAsRead(completion: @escaping (Bool, Error?) -> Void) {
-        // 1. Update local storage (UserDefaults)
-        UserDefaults.standard.set(true, forKey: "allItemsRead")
+    init() {
+        // Set up notification to sync when app becomes active
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppBecameActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
         
-        // 2. Check if iCloud syncing is enabled
-        let iCloudSyncEnabled = UserDefaults.standard.bool(forKey: "iCloudSyncEnabled")
-        guard iCloudSyncEnabled else {
-            // If iCloud sync is disabled, complete after updating local storage.
-            completion(true, nil)
+        // Set up to receive CloudKit remote notifications
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleRemoteNotification),
+            name: Notification.Name("CKRemoteChangeNotification"),
+            object: nil
+        )
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    // Setup CloudKit subscriptions to be notified of changes
+    private func setupCloudKitSubscriptions() {
+        guard method == .cloudKit else { return }
+        
+        let database = CKContainer.default().privateCloudDatabase
+        
+        // Create subscription for rssFeedsRecord with ID
+        let rssFeedsID = CKRecord.ID(recordName: "rssFeedsRecord")
+        let predicate = NSPredicate(format: "recordID = %@", rssFeedsID)
+        
+        let subscription = CKQuerySubscription(recordType: "RSSFeeds", 
+                                              predicate: predicate,
+                                              subscriptionID: "PulseFeed-RSSFeeds-Subscription",
+                                              options: [.firesOnRecordUpdate, .firesOnRecordCreation])
+        
+        let notificationInfo = CKSubscription.NotificationInfo()
+        notificationInfo.shouldSendContentAvailable = true // Silent push notification
+        subscription.notificationInfo = notificationInfo
+        
+        database.save(subscription) { subscription, error in
+            if let error = error {
+                if let ckError = error as? CKError, ckError.code == .serverRejectedRequest {
+                    // Subscription may already exist, which is fine
+                    print("DEBUG: CloudKit subscription may already exist: \(error.localizedDescription)")
+                    self.hasSetupSubscriptions = true
+                } else {
+                    print("ERROR: Failed to create CloudKit subscription: \(error.localizedDescription)")
+                }
+            } else {
+                print("DEBUG: Successfully created CloudKit subscription")
+                self.hasSetupSubscriptions = true
+            }
+        }
+    }
+    
+    // Handle CloudKit remote notification
+    @objc private func handleRemoteNotification(_ notification: Notification) {
+        print("DEBUG: Received CloudKit remote change notification")
+        
+        // Sync with CloudKit to get the latest data
+        syncFromCloudKit { success in
+            print("DEBUG: CloudKit sync after remote notification completed with success: \(success)")
+        }
+    }
+    
+    /// Called when the app becomes active to sync with CloudKit
+    @objc private func handleAppBecameActive() {
+        // Only sync if using CloudKit
+        if method == .cloudKit {
+            syncFromCloudKit()
+        }
+    }
+    
+    /// Performs a full sync from CloudKit, pulling down the latest read states, bookmarks, and favorites
+    func syncFromCloudKit(completion: ((Bool) -> Void)? = nil) {
+        guard method == .cloudKit else {
+            print("DEBUG: Skipping CloudKit sync - not using CloudKit")
+            completion?(false)
             return
         }
         
-        // 3. Proceed with CloudKit sync if enabled.
-        let container = CKContainer.default()
-        let publicDB = container.publicCloudDatabase
-        let predicate = NSPredicate(value: true) // Adjust this predicate as needed.
-        let query = CKQuery(recordType: "FeedItem", predicate: predicate)
+        print("DEBUG: Starting CloudKit sync...")
         
-        publicDB.perform(query, inZoneWith: nil) { records, error in
-            if let error = error {
-                completion(false, error)
-                return
+        // Using a dispatch group to sync all three types of data
+        let syncGroup = DispatchGroup()
+        var syncSuccess = true
+        
+        // 1. Sync read items
+        syncGroup.enter()
+        syncReadItemsFromCloud { success in
+            if !success {
+                syncSuccess = false
+            }
+            syncGroup.leave()
+        }
+        
+        // 2. Sync bookmarked items
+        syncGroup.enter()
+        syncBookmarkedItemsFromCloud { success in
+            if !success {
+                syncSuccess = false
+            }
+            syncGroup.leave()
+        }
+        
+        // 3. Sync hearted items
+        syncGroup.enter()
+        syncHeartedItemsFromCloud { success in
+            if !success {
+                syncSuccess = false
+            }
+            syncGroup.leave()
+        }
+        
+        // Final callback after all syncs complete
+        syncGroup.notify(queue: .main) {
+            self.hasSyncedOnLaunch = true
+            completion?(syncSuccess)
+        }
+    }
+    
+    /// Syncs read items from CloudKit
+    private func syncReadItemsFromCloud(completion: @escaping (Bool) -> Void) {
+        CloudKitStorage().load(forKey: "readItems") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else { 
+                completion(false)
+                return 
             }
             
-            guard let records = records, !records.isEmpty else {
-                completion(true, nil)
-                return
-            }
-            
-            // Update the "isRead" flag for each record.
-            for record in records {
-                record["isRead"] = true as CKRecordValue
-            }
-            
-            let modifyOperation = CKModifyRecordsOperation(recordsToSave: records, recordIDsToDelete: nil)
-            modifyOperation.modifyRecordsCompletionBlock = { savedRecords, deletedRecordIDs, operationError in
-                if let operationError = operationError {
-                    completion(false, operationError)
-                } else {
-                    completion(true, nil)
+            switch result {
+            case .success(let cloudReadItems):
+                print("DEBUG: Fetched \(cloudReadItems.count) read items from CloudKit")
+                
+                // Normalize the items
+                let normalizedCloudItems = cloudReadItems.map { self.normalizeLink($0) }
+                
+                // Get and merge local items 
+                var localItems: [String] = []
+                if let data = UserDefaults.standard.data(forKey: "readItems") {
+                    do {
+                        localItems = try JSONDecoder().decode([String].self, from: data)
+                    } catch {
+                        print("ERROR: Failed to decode local read items: \(error.localizedDescription)")
+                        // Continue with empty localItems array
+                    }
                 }
+                
+                let normalizedLocalItems = localItems.map { self.normalizeLink($0) }
+                
+                // Merge the two sets
+                let merged = Array(Set(normalizedCloudItems).union(Set(normalizedLocalItems)))
+                print("DEBUG: Merged read items - Cloud: \(normalizedCloudItems.count), Local: \(normalizedLocalItems.count), Result: \(merged.count)")
+                
+                // Update local storage
+                if let encodedData = try? JSONEncoder().encode(merged) {
+                    UserDefaults.standard.set(encodedData, forKey: "readItems")
+                    
+                    // Notify that read items were updated
+                    NotificationCenter.default.post(name: Notification.Name("readItemsUpdated"), object: nil)
+                    
+                    // If the cloud had more items than local, we should update CloudKit as well to ensure consistency
+                    if normalizedCloudItems.count < merged.count {
+                        self.mergeAndSaveReadItems(merged) { error in
+                            if let error = error {
+                                print("ERROR: Failed to update CloudKit after sync: \(error.localizedDescription)")
+                                completion(false)
+                            } else {
+                                print("DEBUG: Successfully synchronized read items with CloudKit")
+                                completion(true)
+                            }
+                        }
+                    } else {
+                        print("DEBUG: Local read items updated from CloudKit (no need to update cloud)")
+                        completion(true)
+                    }
+                } else {
+                    print("ERROR: Failed to encode merged read items")
+                    completion(false)
+                }
+                
+            case .failure(let error):
+                print("ERROR: Failed to fetch read items from CloudKit: \(error.localizedDescription)")
+                completion(false)
             }
-            publicDB.add(modifyOperation)
+        }
+    }
+    
+    /// Syncs bookmarked items from CloudKit
+    private func syncBookmarkedItemsFromCloud(completion: @escaping (Bool) -> Void) {
+        CloudKitStorage().load(forKey: "bookmarkedItems") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else { 
+                completion(false)
+                return 
+            }
+            
+            switch result {
+            case .success(let cloudBookmarkedItems):
+                print("DEBUG: Fetched \(cloudBookmarkedItems.count) bookmarked items from CloudKit")
+                
+                // Normalize the items
+                let normalizedCloudItems = cloudBookmarkedItems.map { self.normalizeLink($0) }
+                
+                // Get and merge local items 
+                var localItems: [String] = []
+                if let data = UserDefaults.standard.data(forKey: "bookmarkedItems") {
+                    do {
+                        localItems = try JSONDecoder().decode([String].self, from: data)
+                    } catch {
+                        print("ERROR: Failed to decode local bookmarked items: \(error.localizedDescription)")
+                        // Continue with empty localItems array
+                    }
+                }
+                
+                let normalizedLocalItems = localItems.map { self.normalizeLink($0) }
+                
+                // Merge the two sets
+                let merged = Array(Set(normalizedCloudItems).union(Set(normalizedLocalItems)))
+                print("DEBUG: Merged bookmarked items - Cloud: \(normalizedCloudItems.count), Local: \(normalizedLocalItems.count), Result: \(merged.count)")
+                
+                // Update local storage
+                if let encodedData = try? JSONEncoder().encode(merged) {
+                    UserDefaults.standard.set(encodedData, forKey: "bookmarkedItems")
+                    
+                    // Notify that bookmarked items were updated
+                    NotificationCenter.default.post(name: Notification.Name("bookmarkedItemsUpdated"), object: nil)
+                    
+                    // If the cloud had more items than local, we should update CloudKit as well to ensure consistency
+                    if normalizedCloudItems.count < merged.count {
+                        self.mergeAndSaveBookmarkedItems(merged) { error in
+                            if let error = error {
+                                print("ERROR: Failed to update CloudKit after bookmarked sync: \(error.localizedDescription)")
+                                completion(false)
+                            } else {
+                                print("DEBUG: Successfully synchronized bookmarked items with CloudKit")
+                                completion(true)
+                            }
+                        }
+                    } else {
+                        print("DEBUG: Local bookmarked items updated from CloudKit (no need to update cloud)")
+                        completion(true)
+                    }
+                } else {
+                    print("ERROR: Failed to encode merged bookmarked items")
+                    completion(false)
+                }
+                
+            case .failure(let error):
+                print("ERROR: Failed to fetch bookmarked items from CloudKit: \(error.localizedDescription)")
+                completion(false)
+            }
+        }
+    }
+    
+    /// Syncs hearted items from CloudKit
+    private func syncHeartedItemsFromCloud(completion: @escaping (Bool) -> Void) {
+        CloudKitStorage().load(forKey: "heartedItems") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else { 
+                completion(false)
+                return 
+            }
+            
+            switch result {
+            case .success(let cloudHeartedItems):
+                print("DEBUG: Fetched \(cloudHeartedItems.count) hearted items from CloudKit")
+                
+                // Normalize the items
+                let normalizedCloudItems = cloudHeartedItems.map { self.normalizeLink($0) }
+                
+                // Get and merge local items 
+                var localItems: [String] = []
+                if let data = UserDefaults.standard.data(forKey: "heartedItems") {
+                    do {
+                        localItems = try JSONDecoder().decode([String].self, from: data)
+                    } catch {
+                        print("ERROR: Failed to decode local hearted items: \(error.localizedDescription)")
+                        // Continue with empty localItems array
+                    }
+                }
+                
+                let normalizedLocalItems = localItems.map { self.normalizeLink($0) }
+                
+                // Merge the two sets
+                let merged = Array(Set(normalizedCloudItems).union(Set(normalizedLocalItems)))
+                print("DEBUG: Merged hearted items - Cloud: \(normalizedCloudItems.count), Local: \(normalizedLocalItems.count), Result: \(merged.count)")
+                
+                // Update local storage
+                if let encodedData = try? JSONEncoder().encode(merged) {
+                    UserDefaults.standard.set(encodedData, forKey: "heartedItems")
+                    
+                    // Notify that hearted items were updated
+                    NotificationCenter.default.post(name: Notification.Name("heartedItemsUpdated"), object: nil)
+                    
+                    // If the cloud had more items than local, we should update CloudKit as well to ensure consistency
+                    if normalizedCloudItems.count < merged.count {
+                        self.mergeAndSaveHeartedItems(merged) { error in
+                            if let error = error {
+                                print("ERROR: Failed to update CloudKit after hearted sync: \(error.localizedDescription)")
+                                completion(false)
+                            } else {
+                                print("DEBUG: Successfully synchronized hearted items with CloudKit")
+                                completion(true)
+                            }
+                        }
+                    } else {
+                        print("DEBUG: Local hearted items updated from CloudKit (no need to update cloud)")
+                        completion(true)
+                    }
+                } else {
+                    print("ERROR: Failed to encode merged hearted items")
+                    completion(false)
+                }
+                
+            case .failure(let error):
+                print("ERROR: Failed to fetch hearted items from CloudKit: \(error.localizedDescription)")
+                completion(false)
+            }
+        }
+    }
+    
+    func markAllAsRead(completion: @escaping (Bool, Error?) -> Void) {
+        // 1. Set a flag to indicate all items have been read
+        // We'll set this again after processing is complete
+        _ = UserDefaults.standard.bool(forKey: "allItemsRead")
+        
+        // 2. Collect all article links from all feeds
+        // This is a more efficient approach than updating each article record
+        var allLinks: [String] = []
+        
+        // We'll look for the home feed controller to extract article links
+        // Find the root view controller
+        guard let keyWindow = UIApplication.shared.connectedScenes
+                .filter({$0.activationState == .foregroundActive})
+                .compactMap({$0 as? UIWindowScene})
+                .first?.windows
+                .filter({$0.isKeyWindow}).first,
+              let rootNavController = keyWindow.rootViewController as? UINavigationController,
+              let homeVC = rootNavController.viewControllers.first as? HomeFeedViewController else {
+            
+            // Fallback if we couldn't access the view controller
+            completion(false, NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not access HomeViewController"]))
+            return
+        }
+        
+        // Get all article links from the HomeFeedViewController's allItems array
+        allLinks = homeVC.allItems.map { normalizeLink($0.link) }
+        
+        // If we couldn't get the links, return an error
+        if allLinks.isEmpty {
+            completion(false, NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "No articles found to mark as read"]))
+            return
+        }
+        
+        // 3. Save locally first for immediate feedback
+        if let data = try? JSONEncoder().encode(allLinks) {
+            UserDefaults.standard.set(data, forKey: "readItems")
+            UserDefaults.standard.set(true, forKey: "allItemsRead")
+            
+            // Post notification to update UI immediately
+            NotificationCenter.default.post(name: Notification.Name("readItemsUpdated"), object: nil)
+        }
+        
+        // 4. Then update CloudKit with retry mechanism for robustness
+        saveToCloudKitWithRetry(allLinks, forKey: "readItems", retryCount: 3) { error in
+            if let error = error {
+                print("WARNING: CloudKit sync failed but local data was updated: \(error.localizedDescription)")
+                // Still return success since local data was updated
+                completion(true, error)
+            } else {
+                print("DEBUG: Successfully saved read items to CloudKit")
+                completion(true, nil)
+            }
         }
     }
 
     func save<T: Encodable>(_ value: T, forKey key: String, completion: @escaping (Error?) -> Void) {
-        if key == "readItems" && method == .cloudKit {
+        if method == .cloudKit {
             guard value is [String] else {
-                print("ERROR: Attempting to save non-[String] to readItems in CloudKit! Value type: \(type(of: value))")
-                completion(NSError(domain: "StorageManager", code: -2, userInfo: [NSLocalizedDescriptionKey: "readItems must be [String]!"]))
+                print("ERROR: Attempting to save non-[String] to '\(key)' in CloudKit! Value type: \(type(of: value))")
+                completion(NSError(domain: "StorageManager", code: -2, userInfo: [NSLocalizedDescriptionKey: "\(key) must be [String]!"]))
                 return
             }
+            
+            // Special handling for items that need merging with CloudKit
+            if let items = value as? [String] {
+                switch key {
+                case "readItems":
+                    mergeAndSaveReadItems(items, completion: completion)
+                    return
+                case "bookmarkedItems":
+                    mergeAndSaveBookmarkedItems(items, completion: completion)
+                    return
+                case "heartedItems":
+                    mergeAndSaveHeartedItems(items, completion: completion)
+                    return
+                default:
+                    break
+                }
+            }
         }
+        
         print("DEBUG: Saving data for key '\(key)' using \(method)")
         storage.save(value, forKey: key, completion: completion)
+    }
+    
+    /// Special handling for read items to ensure proper syncing across devices
+    private func mergeAndSaveReadItems(_ newReadItems: [String], completion: @escaping (Error?) -> Void) {
+        // First normalize all the new links
+        let normalizedNewItems = newReadItems.map { normalizeLink($0) }
+        
+        // Always fetch from CloudKit first to ensure we have latest data
+        CloudKitStorage().load(forKey: "readItems") { (result: Result<[String], Error>) in
+            switch result {
+            case .success(let cloudItems):
+                // Normalize cloud items
+                let normalizedCloudItems = cloudItems.map { self.normalizeLink($0) }
+                
+                // Merge the two sets
+                let merged = Array(Set(normalizedCloudItems).union(Set(normalizedNewItems)))
+                print("DEBUG: Merged read items - Cloud: \(normalizedCloudItems.count), New: \(normalizedNewItems.count), Result: \(merged.count)")
+                
+                // Save to UserDefaults immediately to ensure local state is consistent
+                if let data = try? JSONEncoder().encode(merged) {
+                    UserDefaults.standard.set(data, forKey: "readItems")
+                }
+                
+                // Save to CloudKit with retry for conflict handling
+                self.saveToCloudKitWithRetry(merged, forKey: "readItems", retryCount: 3) { error in
+                    if let error = error {
+                        print("ERROR: Failed to save merged read items to CloudKit after retries: \(error.localizedDescription)")
+                    } else {
+                        print("DEBUG: Successfully saved merged read items to CloudKit")
+                    }
+                    completion(error)
+                }
+                
+            case .failure(let error):
+                print("ERROR: Failed to fetch read items from CloudKit for merging: \(error.localizedDescription)")
+                
+                // Save locally even if CloudKit fails
+                if let data = try? JSONEncoder().encode(normalizedNewItems) {
+                    UserDefaults.standard.set(data, forKey: "readItems")
+                }
+                
+                // If we can't fetch from CloudKit, just save the new items
+                self.saveToCloudKitWithRetry(normalizedNewItems, forKey: "readItems", retryCount: 3, completion: completion)
+            }
+        }
+    }
+    
+    /// Special handling for bookmarked items to ensure proper syncing across devices
+    private func mergeAndSaveBookmarkedItems(_ newBookmarkedItems: [String], completion: @escaping (Error?) -> Void) {
+        // First normalize all the new links
+        let normalizedNewItems = newBookmarkedItems.map { normalizeLink($0) }
+        
+        // Always fetch from CloudKit first to ensure we have latest data
+        CloudKitStorage().load(forKey: "bookmarkedItems") { (result: Result<[String], Error>) in
+            switch result {
+            case .success(let cloudItems):
+                // Normalize cloud items
+                let normalizedCloudItems = cloudItems.map { self.normalizeLink($0) }
+                
+                // Merge the two sets
+                let merged = Array(Set(normalizedCloudItems).union(Set(normalizedNewItems)))
+                print("DEBUG: Merged bookmarked items - Cloud: \(normalizedCloudItems.count), New: \(normalizedNewItems.count), Result: \(merged.count)")
+                
+                // Save to UserDefaults immediately to ensure local state is consistent
+                if let data = try? JSONEncoder().encode(merged) {
+                    UserDefaults.standard.set(data, forKey: "bookmarkedItems")
+                }
+                
+                // Save to CloudKit with retry for conflict handling
+                self.saveToCloudKitWithRetry(merged, forKey: "bookmarkedItems", retryCount: 3) { error in
+                    if let error = error {
+                        print("ERROR: Failed to save merged bookmarked items to CloudKit after retries: \(error.localizedDescription)")
+                    } else {
+                        print("DEBUG: Successfully saved merged bookmarked items to CloudKit")
+                    }
+                    completion(error)
+                }
+                
+            case .failure(let error):
+                print("ERROR: Failed to fetch bookmarked items from CloudKit for merging: \(error.localizedDescription)")
+                
+                // Save locally even if CloudKit fails
+                if let data = try? JSONEncoder().encode(normalizedNewItems) {
+                    UserDefaults.standard.set(data, forKey: "bookmarkedItems")
+                }
+                
+                // If we can't fetch from CloudKit, just save the new items
+                self.saveToCloudKitWithRetry(normalizedNewItems, forKey: "bookmarkedItems", retryCount: 3, completion: completion)
+            }
+        }
+    }
+    
+    /// Special handling for hearted items to ensure proper syncing across devices
+    private func mergeAndSaveHeartedItems(_ newHeartedItems: [String], completion: @escaping (Error?) -> Void) {
+        // First normalize all the new links
+        let normalizedNewItems = newHeartedItems.map { normalizeLink($0) }
+        
+        // Always fetch from CloudKit first to ensure we have latest data
+        CloudKitStorage().load(forKey: "heartedItems") { (result: Result<[String], Error>) in
+            switch result {
+            case .success(let cloudItems):
+                // Normalize cloud items
+                let normalizedCloudItems = cloudItems.map { self.normalizeLink($0) }
+                
+                // Merge the two sets
+                let merged = Array(Set(normalizedCloudItems).union(Set(normalizedNewItems)))
+                print("DEBUG: Merged hearted items - Cloud: \(normalizedCloudItems.count), New: \(normalizedNewItems.count), Result: \(merged.count)")
+                
+                // Save to UserDefaults immediately to ensure local state is consistent
+                if let data = try? JSONEncoder().encode(merged) {
+                    UserDefaults.standard.set(data, forKey: "heartedItems")
+                }
+                
+                // Save to CloudKit with retry for conflict handling
+                self.saveToCloudKitWithRetry(merged, forKey: "heartedItems", retryCount: 3) { error in
+                    if let error = error {
+                        print("ERROR: Failed to save merged hearted items to CloudKit after retries: \(error.localizedDescription)")
+                    } else {
+                        print("DEBUG: Successfully saved merged hearted items to CloudKit")
+                    }
+                    completion(error)
+                }
+                
+            case .failure(let error):
+                print("ERROR: Failed to fetch hearted items from CloudKit for merging: \(error.localizedDescription)")
+                
+                // Save locally even if CloudKit fails
+                if let data = try? JSONEncoder().encode(normalizedNewItems) {
+                    UserDefaults.standard.set(data, forKey: "heartedItems")
+                }
+                
+                // If we can't fetch from CloudKit, just save the new items
+                self.saveToCloudKitWithRetry(normalizedNewItems, forKey: "heartedItems", retryCount: 3, completion: completion)
+            }
+        }
+    }
+    
+    /// Helper method to save to CloudKit with retries for conflict handling
+    private func saveToCloudKitWithRetry<T: Encodable>(_ value: T, forKey key: String, retryCount: Int, completion: @escaping (Error?) -> Void) {
+        guard retryCount > 0 else {
+            completion(NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Max retry count exceeded"]))
+            return
+        }
+        
+        // We'll handle CloudKit operations directly
+        
+        // Setup database and recordID
+        let database = CKContainer.default().privateCloudDatabase
+        let recordID = CKRecord.ID(recordName: "rssFeedsRecord")
+        
+        // First fetch the record to get the latest version
+        database.fetch(withRecordID: recordID) { record, error in
+            // Handle specific server record not found error
+            if let ckError = error as? CKError, ckError.code == .unknownItem {
+                // Record doesn't exist yet, create new one
+                let newRecord = CKRecord(recordType: "RSSFeeds", recordID: recordID)
+                
+                do {
+                    let data = try JSONEncoder().encode(value)
+                    newRecord[key] = data as CKRecordValue
+                    
+                    database.save(newRecord) { savedRecord, saveError in
+                        DispatchQueue.main.async {
+                            if let saveError = saveError {
+                                print("ERROR: Failed to save new record: \(saveError.localizedDescription)")
+                                // Try again with one less retry
+                                self.saveToCloudKitWithRetry(value, forKey: key, retryCount: retryCount - 1, completion: completion)
+                            } else {
+                                print("DEBUG: Successfully created new record with key \(key)")
+                                completion(nil)
+                            }
+                        }
+                    }
+                } catch {
+                    print("ERROR: Failed to encode data: \(error.localizedDescription)")
+                    completion(error)
+                }
+                return
+            }
+            
+            // Handle other fetch errors
+            if let error = error {
+                print("ERROR: Failed to fetch record: \(error.localizedDescription)")
+                completion(error)
+                return
+            }
+            
+            // We got the record, update it
+            if let record = record {
+                do {
+                    let data = try JSONEncoder().encode(value)
+                    record[key] = data as CKRecordValue
+                    
+                    // Use modify operation for better conflict handling
+                    let modifyOperation = CKModifyRecordsOperation(recordsToSave: [record], recordIDsToDelete: nil)
+                    modifyOperation.savePolicy = .changedKeys
+                    
+                    modifyOperation.modifyRecordsResultBlock = { result in
+                        DispatchQueue.main.async {
+                            switch result {
+                            case .success:
+                                print("DEBUG: Successfully saved data for key \(key)")
+                                completion(nil)
+                                
+                            case .failure(let error):
+                                if let ckError = error as? CKError, ckError.code == .serverRecordChanged {
+                                    print("DEBUG: Server record changed, retrying with updated record")
+                                    // Retry with one less retry count
+                                    self.saveToCloudKitWithRetry(value, forKey: key, retryCount: retryCount - 1, completion: completion)
+                                } else {
+                                    print("ERROR: Failed to save data: \(error.localizedDescription)")
+                                    completion(error)
+                                }
+                            }
+                        }
+                    }
+                    
+                    database.add(modifyOperation)
+                    
+                } catch {
+                    print("ERROR: Failed to encode data: \(error.localizedDescription)")
+                    completion(error)
+                }
+            } else {
+                // No record and no error, shouldn't happen but create new record just in case
+                print("WARNING: No record and no error, creating new record")
+                let newRecord = CKRecord(recordType: "RSSFeeds", recordID: recordID)
+                
+                do {
+                    let data = try JSONEncoder().encode(value)
+                    newRecord[key] = data as CKRecordValue
+                    
+                    database.save(newRecord) { savedRecord, saveError in
+                        DispatchQueue.main.async {
+                            completion(saveError)
+                        }
+                    }
+                } catch {
+                    completion(error)
+                }
+            }
+        }
+    }
+    
+    /// Helper to normalize links for consistent comparison across devices
+    /// This is a public method so it can be used by the rest of the app
+    func normalizeLink(_ link: String) -> String {
+        var urlString = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        if urlString.hasSuffix("/") {
+            urlString = String(urlString.dropLast())
+        }
+        
+        // Standardize on https if the URL has http
+        if urlString.lowercased().hasPrefix("http://") {
+            urlString = "https://" + urlString.dropFirst(7)
+        }
+        
+        return urlString
     }
 
     func load<T: Decodable>(forKey key: String, completion: @escaping (Result<T, Error>) -> Void) {

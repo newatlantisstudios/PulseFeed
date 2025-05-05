@@ -92,14 +92,71 @@ extension UIColor {
 
 // MARK: - Helper Function
 private func getTimeAgo(from dateString: String) -> String {
-    let dateFormatter = DateFormatter()
-    dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
-    dateFormatter.locale = Locale(identifier: "en_US_POSIX")
-    dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+    // Create multiple date formatters to handle different RSS date formats
+    let primaryFormatter = DateFormatter()
+    primaryFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+    primaryFormatter.locale = Locale(identifier: "en_US_POSIX")
+    primaryFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+    
+    // Helper function to parse dates with multiple formatters
+    func parseDate(_ dateString: String) -> Date? {
+        // Skip empty strings
+        if dateString.isEmpty {
+            return nil
+        }
+        
+        // Try standard RSS format first
+        if let date = primaryFormatter.date(from: dateString) {
+            return date
+        }
+        
+        // Try local timezone format (like PDT)
+        let localFormatter = DateFormatter()
+        localFormatter.locale = Locale(identifier: "en_US_POSIX")
+        localFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        
+        // Common RSS format with different timezone (PDT/PST/EDT etc)
+        localFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        if let date = localFormatter.date(from: dateString) {
+            return date
+        }
+        
+        // Try with offset timezone like -0700
+        localFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+        if let date = localFormatter.date(from: dateString) {
+            return date
+        }
+        
+        // Try ISO 8601 format
+        localFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+        if let date = localFormatter.date(from: dateString) {
+            return date
+        }
+        
+        // Try more fallback formats
+        let formats = [
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd HH:mm",
+            "EEE, dd MMM yyyy",
+            "dd MMM yyyy HH:mm:ss Z",
+            "EEE, dd MMM yyyy HH:mm zzz"  // No seconds
+        ]
+        
+        for format in formats {
+            localFormatter.dateFormat = format
+            if let date = localFormatter.date(from: dateString) {
+                return date
+            }
+        }
+        
+        return nil
+    }
 
-    guard let date = dateFormatter.date(from: dateString) else {
+    guard let date = parseDate(dateString) else {
         return dateString
     }
+    
     let now = Date()
     let components = Calendar.current.dateComponents(
         [.minute, .hour, .day], from: date, to: now)
@@ -126,13 +183,24 @@ class HomeFeedViewController: UIViewController {
     private var footerRefreshButton: UIButton?
     private var footerView: UIView?
     private var loadingIndicator: UIActivityIndicatorView!
+    private var loadingLabel: UILabel! // Add label to show which feed is loading
     private var heartedItems: Set<String> = []
     private var bookmarkedItems: Set<String> = []
-    private var allItems: [RSSItem] = []
+    private var _allItems: [RSSItem] = []
     private var hasLoadedRSSFeeds = false
     private var previousMinVisibleRow: Int = 0 // Track the topmost visible row
     private var isSortedAscending: Bool = false // Add state for sorting order
     private var readLinks: Set<String> = [] // Store normalized read links
+    
+    // Property to access allItems
+    var allItems: [RSSItem] {
+        get {
+            return _allItems
+        }
+        set {
+            _allItems = newValue
+        }
+    }
 
     // Add properties for Nav Bar Buttons
     private var rssButton: UIBarButtonItem?
@@ -160,14 +228,24 @@ class HomeFeedViewController: UIViewController {
         
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged(_:)), name: Notification.Name("fontSizeChanged"), object: nil)
         
+        // Setup UI elements in proper order to ensure navigation buttons are ready for animation
         setupLoadingIndicator()
         setupRefreshControl()
-        setupNavigationBar()
+        setupNavigationBar() // This sets up all navigation buttons including the refresh button
         updateNavigationButtons()
         setupTableView()
         setupScrollViewDelegate()
         setupNotificationObserver()
         setupLongPressGesture()
+        
+        // Hide tableView initially until articles are loaded
+        tableView.isHidden = true
+        loadingIndicator.startAnimating()
+        
+        // Start the animation immediately
+        startRefreshAnimation()
+        
+        // Load the feeds (which will also start the animation again as a backup)
         loadRSSFeeds()
 
         // Load hearted items
@@ -194,35 +272,64 @@ class HomeFeedViewController: UIViewController {
         if UserDefaults.standard.object(forKey: "articleSortAscending") != nil {
             isSortedAscending = UserDefaults.standard.bool(forKey: "articleSortAscending")
         } else {
-            isSortedAscending = false // Default to newest first if not set
+            // Default to newest first (false = descending order) if not set
+            isSortedAscending = false
+            // Save the default value to UserDefaults
+            UserDefaults.standard.set(false, forKey: "articleSortAscending")
         }
     }
     
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
 
+        // If the tableView is still hidden, make sure the refresh icon is spinning
+        if tableView.isHidden {
+            startRefreshAnimation()
+        }
+
         // If we haven't loaded feeds yet, automatically show pull-to-refresh:
         if !hasLoadedRSSFeeds {
-            // 1. Start the refresh spinner
+            // Keep tableView hidden while refreshing
+            tableView.isHidden = true
+            loadingIndicator.startAnimating()
+            
+            // Ensure refresh icon is spinning (with a small delay to ensure it works)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.startRefreshAnimation()
+            }
+            
+            // 1. Start the refresh spinner but keep it invisible until tableView is shown
             refreshControl.beginRefreshing()
 
-            // 2. Adjust table offset so the spinner is visible
-            let offset = CGPoint(
-                x: 0,
-                y: tableView.contentOffset.y - refreshControl.frame.size.height
-            )
-            tableView.setContentOffset(offset, animated: true)
-
-            // 3. Call the same refresh method used by pull-to-refresh
+            // 2. Call the same refresh method used by pull-to-refresh
             refreshFeeds()
         }
     }
 
     private func setupLoadingIndicator() {
+        // Setup main loading indicator
         loadingIndicator = UIActivityIndicatorView(style: .large)
         loadingIndicator.center = view.center
         loadingIndicator.hidesWhenStopped = true
         view.addSubview(loadingIndicator)
+        
+        // Setup loading label below the indicator
+        loadingLabel = UILabel()
+        loadingLabel.textAlignment = .center
+        loadingLabel.textColor = AppColors.secondary
+        loadingLabel.font = UIFont.systemFont(ofSize: 14)
+        loadingLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(loadingLabel)
+        
+        NSLayoutConstraint.activate([
+            loadingLabel.topAnchor.constraint(equalTo: loadingIndicator.bottomAnchor, constant: 12),
+            loadingLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            loadingLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            loadingLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
+        ])
+        
+        // Initially hide the label
+        loadingLabel.isHidden = true
     }
 
     // MARK: - Setup Methods
@@ -237,6 +344,27 @@ class HomeFeedViewController: UIViewController {
             self,
             selector: #selector(handleReadItemsReset),
             name: Notification.Name("readItemsReset"),
+            object: nil)
+            
+        // Add observer for when read items are updated (e.g. from CloudKit sync)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleReadItemsUpdated),
+            name: Notification.Name("readItemsUpdated"),
+            object: nil)
+            
+        // Add observer for bookmarked items updates
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleBookmarkedItemsUpdated),
+            name: Notification.Name("bookmarkedItemsUpdated"),
+            object: nil)
+            
+        // Add observer for hearted items updates
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleHeartedItemsUpdated),
+            name: Notification.Name("heartedItemsUpdated"),
             object: nil)
     }
 
@@ -321,12 +449,8 @@ class HomeFeedViewController: UIViewController {
 
     // Helper to normalize links for consistent comparison
     private func normalizeLink(_ link: String) -> String {
-        var urlString = link.trimmingCharacters(in: .whitespacesAndNewlines)
-        if urlString.hasSuffix("/") {
-            urlString = String(urlString.dropLast())
-        }
-        // Optionally, add more normalization (e.g., always https, remove query params)
-        return urlString
+        // Use the StorageManager's normalization method for consistency
+        return StorageManager.shared.normalizeLink(link)
     }
 
     private func markItemsAboveAsRead(_ indexPath: IndexPath) {
@@ -345,6 +469,88 @@ class HomeFeedViewController: UIViewController {
         loadRSSFeeds()
     }
     
+    @objc private func handleReadItemsUpdated() {
+        // Load the updated read items from UserDefaults
+        StorageManager.shared.load(forKey: "readItems") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else { return }
+            
+            switch result {
+            case .success(let readItems):
+                DispatchQueue.main.async {
+                    // Update our cached read links
+                    self.readLinks = Set(readItems.map { self.normalizeLink($0) })
+                    
+                    // Update the read state for all items
+                    for i in 0..<self._allItems.count {
+                        let normLink = self.normalizeLink(self._allItems[i].link)
+                        self._allItems[i].isRead = self.readLinks.contains(normLink)
+                    }
+                    
+                    // Update the current items if needed
+                    for i in 0..<self.items.count {
+                        let normLink = self.normalizeLink(self.items[i].link)
+                        self.items[i].isRead = self.readLinks.contains(normLink)
+                    }
+                    
+                    // Reload the table view to show the updated read states
+                    self.tableView.reloadData()
+                }
+            case .failure(let error):
+                print("ERROR: Failed to load updated read items: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    @objc private func handleBookmarkedItemsUpdated() {
+        // Load the updated bookmarked items from UserDefaults
+        StorageManager.shared.load(forKey: "bookmarkedItems") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else { return }
+            
+            switch result {
+            case .success(let bookmarkedItems):
+                DispatchQueue.main.async {
+                    // Update our cached bookmarked links
+                    self.bookmarkedItems = Set(bookmarkedItems)
+                    
+                    // If currently viewing bookmarked feed, refresh it
+                    if self.currentFeedType == .bookmarks {
+                        self.loadBookmarkedFeeds()
+                    } else {
+                        // Otherwise just reload the table to update swipe actions
+                        self.tableView.reloadData()
+                    }
+                }
+            case .failure(let error):
+                print("ERROR: Failed to load updated bookmarked items: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    @objc private func handleHeartedItemsUpdated() {
+        // Load the updated hearted items from UserDefaults
+        StorageManager.shared.load(forKey: "heartedItems") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else { return }
+            
+            switch result {
+            case .success(let heartedItems):
+                DispatchQueue.main.async {
+                    // Update our cached hearted links
+                    self.heartedItems = Set(heartedItems)
+                    
+                    // If currently viewing hearted feed, refresh it
+                    if self.currentFeedType == .heart {
+                        self.loadHeartedFeeds()
+                    } else {
+                        // Otherwise just reload the table to update swipe actions
+                        self.tableView.reloadData()
+                    }
+                }
+            case .failure(let error):
+                print("ERROR: Failed to load updated hearted items: \(error.localizedDescription)")
+            }
+        }
+    }
+    
     @objc private func fontSizeChanged(_ notification: Notification) {
         tableView.reloadData()
     }
@@ -358,23 +564,75 @@ class HomeFeedViewController: UIViewController {
         switch currentFeedType {
         case .rss:
             if !hasLoadedRSSFeeds {
+                // If feeds haven't been loaded yet, hide tableView and load them
+                tableView.isHidden = true
+                loadingIndicator.startAnimating()
+                startRefreshAnimation() // Start refresh button animation
                 items.removeAll()
                 loadRSSFeeds()
             } else {
                 // Use the cached items from the initial load.
+                // Hide the tableView briefly while reloading
+                tableView.isHidden = true
+                loadingIndicator.startAnimating()
+                startRefreshAnimation() // Start refresh button animation
+                
                 items = allItems
                 tableView.reloadData()
+                
+                // Show tableView after a short delay to ensure smooth transition
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    self.tableView.isHidden = false
+                    self.loadingIndicator.stopAnimating()
+                    self.loadingLabel.isHidden = true
+                    self.stopRefreshAnimation() // Stop refresh button animation
+                }
             }
         case .bookmarks:
+            // For bookmarks and heart feeds, briefly hide the tableView while loading
+            tableView.isHidden = true
+            loadingIndicator.startAnimating()
+            startRefreshAnimation() // Start refresh button animation
+            
             loadBookmarkedFeeds()
+            
+            // Show tableView after a short delay to ensure smooth transition
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.tableView.isHidden = false
+                self.loadingIndicator.stopAnimating()
+                self.loadingLabel.isHidden = true
+                self.stopRefreshAnimation() // Stop refresh button animation
+            }
         case .heart:
+            // For bookmarks and heart feeds, briefly hide the tableView while loading
+            tableView.isHidden = true
+            loadingIndicator.startAnimating()
+            startRefreshAnimation() // Start refresh button animation
+            
             loadHeartedFeeds()
+            
+            // Show tableView after a short delay to ensure smooth transition
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.tableView.isHidden = false
+                self.loadingIndicator.stopAnimating()
+                self.loadingLabel.isHidden = true
+                self.stopRefreshAnimation() // Stop refresh button animation
+            }
         }
         updateFooterVisibility()
     }
 
     // Load RSS feeds from storage and then fetch articles from each feed URL.
     private func loadRSSFeeds() {
+        // Hide tableView and show loading indicator
+        tableView.isHidden = true
+        loadingIndicator.startAnimating()
+        
+        // Show the loading label with initial message
+        loadingLabel.text = "Loading feeds..."
+        loadingLabel.isHidden = false
+        
+        // Make sure the refresh icon is spinning
         startRefreshAnimation() // Start animation
         
         StorageManager.shared.load(forKey: "rssFeeds") { [weak self] (result: Result<[RSSFeed], Error>) in
@@ -388,7 +646,7 @@ class HomeFeedViewController: UIViewController {
                     if case .success(let readItems) = readResult {
                         readLinks = Set(readItems.map { self.normalizeLink($0) })
                     }
-                    print("[loadRSSFeeds] Loaded read links: \(readLinks)")
+                    //print("[loadRSSFeeds] Loaded read links: \(readLinks)")
                     self.readLinks = readLinks // Store for later use
                     // Print normalized links for all items after loading feeds (after parsing, before filtering)
                     // We'll gather all live feed items in this array
@@ -403,13 +661,39 @@ class HomeFeedViewController: UIViewController {
                         
                         fetchGroup.enter()
                         let startTime = Date()
+                        
+                        // Update loading label with current feed
+                        DispatchQueue.main.async {
+                            // Show load time if available
+                            let previousLoadTime = FeedLoadTimeManager.shared.getLoadTime(for: feed.title)
+                            if previousLoadTime > 0 {
+                                let timeString = String(format: "%.1f", previousLoadTime)
+                                self.loadingLabel.text = "Loading \(feed.title)... (est. \(timeString)s)"
+                            } else {
+                                self.loadingLabel.text = "Loading \(feed.title)..."
+                            }
+                        }
+                        
                         let task = URLSession.shared.dataTask(with: url) { data, response, error in
-                            defer { fetchGroup.leave() }
+                            defer { 
+                                let elapsedTime = Date().timeIntervalSince(startTime)
+                                // Record the load time for this feed
+                                FeedLoadTimeManager.shared.recordLoadTime(for: feed.title, time: elapsedTime)
+                                fetchGroup.leave() 
+                            }
                             
                             let elapsedTime = Date().timeIntervalSince(startTime)
                             // Skip if it took too long or if there was an error
                             if elapsedTime >= 45 || error != nil || data == nil {
                                 return
+                            }
+                            
+                            // Update loading label to show feed loaded successfully
+                            DispatchQueue.main.async {
+                                if self.loadingLabel.text?.contains(feed.title) == true {
+                                    let timeString = String(format: "%.1f", elapsedTime)
+                                    self.loadingLabel.text = "Loaded \(feed.title) in \(timeString)s"
+                                }
                             }
                             
                             // Parse
@@ -422,7 +706,7 @@ class HomeFeedViewController: UIViewController {
                                 let filtered = rssParser.items.filter {
                                     let normLink = self.normalizeLink($0.link)
                                     if readLinks.contains(normLink) {
-                                        print("Filtering out read article: \(normLink)")
+                                        //print("Filtering out read article: \(normLink)")
                                         return false
                                     }
                                     return true
@@ -436,17 +720,110 @@ class HomeFeedViewController: UIViewController {
                     
                     // 2) After all feeds are fetched, we can do iCloud sync, then merges
                     fetchGroup.notify(queue: .main) {
+                        // Show that all feeds have been loaded
+                        self.loadingLabel.text = "All feeds loaded, processing articles..."
                         let dateFormatter = DateFormatter()
                         dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
                         dateFormatter.locale = Locale(identifier: "en_US_POSIX")
 
-                        // Sort all newly fetched items by pubDate initially
+                        // Create enhanced date parsing that handles multiple formats
+                        let primaryFormatter = dateFormatter
+                        
+                        // Helper function to parse dates with multiple formatters
+                        func parseDate(_ dateString: String) -> Date? {
+                            // Skip empty strings
+                            if dateString.isEmpty {
+                                return nil
+                            }
+                            
+                            // Try standard RSS format first
+                            if let date = primaryFormatter.date(from: dateString) {
+                                return date
+                            }
+                            
+                            // Try local timezone format (like PDT)
+                            let localFormatter = DateFormatter()
+                            localFormatter.locale = Locale(identifier: "en_US_POSIX")
+                            
+                            // Common RSS format with different timezone (PDT/PST/EDT etc)
+                            localFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+                            if let date = localFormatter.date(from: dateString) {
+                                return date
+                            }
+                            
+                            // Try with time zone without seconds
+                            localFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm zzz"
+                            if let date = localFormatter.date(from: dateString) {
+                                return date
+                            }
+                            
+                            // Try with offset timezone like -0700
+                            localFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+                            if let date = localFormatter.date(from: dateString) {
+                                return date
+                            }
+                            
+                            // Try ISO 8601 format
+                            localFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+                            if let date = localFormatter.date(from: dateString) {
+                                return date
+                            }
+                            
+                            // Try more fallback formats
+                            let formats = [
+                                "yyyy-MM-dd HH:mm:ss",
+                                "yyyy-MM-dd'T'HH:mm:ss",
+                                "yyyy-MM-dd HH:mm",
+                                "EEE, dd MMM yyyy",
+                                "dd MMM yyyy HH:mm:ss Z"
+                            ]
+                            
+                            for format in formats {
+                                localFormatter.dateFormat = format
+                                if let date = localFormatter.date(from: dateString) {
+                                    return date
+                                }
+                            }
+                            
+                            // If we get here, we couldn't parse the date with standard formats
+                            return nil
+                        }
+                        
+                        // Sort all newly fetched items by pubDate initially with improved date parsing
                         let sortedLiveItems = liveItems.sorted {
-                            guard
-                                let d1 = dateFormatter.date(from: $0.pubDate),
-                                let d2 = dateFormatter.date(from: $1.pubDate)
-                            else { return false }
-                            return d1 > d2
+                            // Get dates for both items
+                            let date1 = parseDate($0.pubDate)
+                            let date2 = parseDate($1.pubDate)
+                            
+                            // If both dates can be parsed, use them for comparison
+                            if let d1 = date1, let d2 = date2 {
+                                return self.isSortedAscending ? d1 < d2 : d1 > d2
+                            }
+                            
+                            // If only one date can be parsed, the one with a valid date should come first
+                            if date1 != nil {
+                                return self.isSortedAscending ? false : true  // Valid date first
+                            }
+                            if date2 != nil {
+                                return self.isSortedAscending ? true : false  // Valid date first
+                            }
+                            
+                            // If neither date can be parsed and both are not empty, compare strings
+                            if !$0.pubDate.isEmpty && !$1.pubDate.isEmpty {
+                                // Just use string comparison as a fallback
+                                return self.isSortedAscending ? $0.pubDate < $1.pubDate : $0.pubDate > $1.pubDate
+                            }
+                            
+                            // Place empty dates at the end
+                            if $0.pubDate.isEmpty {
+                                return self.isSortedAscending ? true : false
+                            }
+                            if $1.pubDate.isEmpty {
+                                return self.isSortedAscending ? false : true
+                            }
+                            
+                            // If we're here, both are empty - considered equal
+                            return false
                         }
 
                         // Temp storage for merged items per feed
@@ -539,14 +916,62 @@ class HomeFeedViewController: UIViewController {
                                 // Combine all items from the temporary storage
                                 var finalAllItems = mergedItemsByFeed.values.flatMap { $0 }
 
-                                // Final sort of the combined list
+                                // Create more robust date formatters for different RSS formats
+                                let primaryFormatter = dateFormatter
+                                
+                                // Secondary formatter for alternative formats
+                                let alternateFormatter = DateFormatter()
+                                alternateFormatter.locale = Locale(identifier: "en_US_POSIX")
+                                alternateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ" // ISO 8601
+                                
+                                // Helper function to parse dates with multiple formatters
+                                func parseDate(_ dateString: String) -> Date? {
+                                    if let date = primaryFormatter.date(from: dateString) {
+                                        return date
+                                    } else if let date = alternateFormatter.date(from: dateString) {
+                                        return date
+                                    } else {
+                                        // Try one more common format as a fallback
+                                        alternateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                                        return alternateFormatter.date(from: dateString)
+                                    }
+                                }
+                                
+                                // Final sort of the combined list with improved date parsing
                                 finalAllItems.sort {
-                                    guard
-                                        let d1 = dateFormatter.date(from: $0.pubDate),
-                                        let d2 = dateFormatter.date(from: $1.pubDate)
-                                    else { return false }
-                                    // Use the current sort order state
-                                    return self.isSortedAscending ? d1 < d2 : d1 > d2
+                                    // Get dates for both items
+                                    let date1 = parseDate($0.pubDate)
+                                    let date2 = parseDate($1.pubDate)
+                                    
+                                    // If both dates can be parsed, use them for comparison
+                                    if let d1 = date1, let d2 = date2 {
+                                        return self.isSortedAscending ? d1 < d2 : d1 > d2
+                                    }
+                                    
+                                    // If only one date can be parsed, the one with a valid date should come first
+                                    if date1 != nil {
+                                        return self.isSortedAscending ? false : true  // Valid date first
+                                    }
+                                    if date2 != nil {
+                                        return self.isSortedAscending ? true : false  // Valid date first
+                                    }
+                                    
+                                    // If neither date can be parsed and both are not empty, compare strings
+                                    if !$0.pubDate.isEmpty && !$1.pubDate.isEmpty {
+                                        // Just use string comparison as a fallback
+                                        return self.isSortedAscending ? $0.pubDate < $1.pubDate : $0.pubDate > $1.pubDate
+                                    }
+                                    
+                                    // Place empty dates at the end
+                                    if $0.pubDate.isEmpty {
+                                        return self.isSortedAscending ? true : false
+                                    }
+                                    if $1.pubDate.isEmpty {
+                                        return self.isSortedAscending ? false : true
+                                    }
+                                    
+                                    // If we're here, both are empty - considered equal
+                                    return false
                                 }
 
                                 // Filter items older than 30 days
@@ -567,28 +992,37 @@ class HomeFeedViewController: UIViewController {
                                 }
 
                                 // Update the main data source ONCE with the filtered items
-                                self.allItems = filteredItems // Use the filtered list
+                                self._allItems = filteredItems // Use the filtered list
                                 // Set isRead for all items in allItems
-                                for i in 0..<self.allItems.count {
-                                    let normLink = self.normalizeLink(self.allItems[i].link)
-                                    self.allItems[i].isRead = self.readLinks.contains(normLink)
+                                for i in 0..<self._allItems.count {
+                                    let normLink = self.normalizeLink(self._allItems[i].link)
+                                    self._allItems[i].isRead = self.readLinks.contains(normLink)
                                 }
                                 print("Final article count after filtering: \(filteredItems.count)")
                                 // Update the currently displayed items if RSS feed is active
                                 if self.currentFeedType == .rss {
-                                    self.items = self.allItems
+                                    self.items = self._allItems
                                 }
 
-                                // Reload the table first
+                                // First, reload the table while it's still hidden
                                 self.tableView.reloadData()
 
-                                // Then, asynchronously stop the refresh control and update state
-                                // to allow reloadData() to begin processing before the spinner hides.
+                                // Then, asynchronously update state
+                                // to allow reloadData() to begin processing before showing the tableView
                                 DispatchQueue.main.async {
-                                    self.stopRefreshAnimation() // Stop animation
                                     self.refreshControl.endRefreshing()
                                     self.hasLoadedRSSFeeds = true
                                     self.updateFooterVisibility()
+                                    
+                                    // Only show the tableView after everything is ready
+                                    // Add a small delay to ensure UI has fully processed the data
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                        // Stop all animations only after tableView is ready to be shown
+                                        self.stopRefreshAnimation() // Stop refresh button animation
+                                        self.loadingIndicator.stopAnimating()
+                                        self.loadingLabel.isHidden = true
+                                        self.tableView.isHidden = false
+                                    }
                                 }
                             }
                         }
@@ -599,9 +1033,16 @@ class HomeFeedViewController: UIViewController {
                 print("DEBUG: Error loading rssFeeds: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     self.refreshControl.endRefreshing()
-                    self.loadingIndicator.stopAnimating()
-                    self.tableView.isHidden = false
-                    self.stopRefreshAnimation() // Stop animation on error too
+                    // Show tableView even on error, but ensure it's reloaded first
+                    self.tableView.reloadData()
+                    
+                    // Stop animations only after tableView is ready to be shown
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        self.stopRefreshAnimation() // Stop animation on error too
+                        self.loadingIndicator.stopAnimating()
+                        self.loadingLabel.isHidden = true
+                        self.tableView.isHidden = false
+                    }
                 }
             }
         }
@@ -609,40 +1050,142 @@ class HomeFeedViewController: UIViewController {
 
     // New implementation for loading bookmarked feeds
     private func loadBookmarkedFeeds() {
-        // Filter the complete list based on bookmarked links.
-        var filteredItems = self.allItems.filter {
-            self.bookmarkedItems.contains($0.link)
+        // Filter the complete list based on bookmarked links using normalized links
+        var filteredItems = self._allItems.filter { item in
+            let normalizedLink = self.normalizeLink(item.link)
+            return self.bookmarkedItems.contains { self.normalizeLink($0) == normalizedLink }
         }
         // Sort the filtered items based on the current sort order
         sortFilteredItems(&filteredItems)
         self.items = filteredItems
+        // Reload data before showing the tableView
         tableView.reloadData()
     }
 
     // New implementation for loading hearted feeds
     private func loadHeartedFeeds() {
-        // Filter the complete list based on hearted links.
-        var filteredItems = self.allItems.filter {
-            self.heartedItems.contains($0.link)
+        // Filter the complete list based on hearted links using normalized links
+        var filteredItems = self._allItems.filter { item in
+            let normalizedLink = self.normalizeLink(item.link)
+            return self.heartedItems.contains { self.normalizeLink($0) == normalizedLink }
         }
         // Sort the filtered items based on the current sort order
         sortFilteredItems(&filteredItems)
         self.items = filteredItems
+        // Reload data before showing the tableView
         tableView.reloadData()
     }
 
     // Helper function to sort a given array of items based on the current setting
     private func sortFilteredItems(_ itemsToSort: inout [RSSItem]) {
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
-        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        // Create a more robust date formatter that can handle different RSS date formats
+        let primaryFormatter = DateFormatter()
+        primaryFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+        primaryFormatter.locale = Locale(identifier: "en_US_POSIX")
+        
+        // Secondary formatter for alternative formats that might appear
+        let alternateFormatter = DateFormatter()
+        alternateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        alternateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ" // ISO 8601 format
+        
+        // Helper function to parse dates with multiple formatters
+        func parseDate(_ dateString: String) -> Date? {
+            // Skip empty strings
+            if dateString.isEmpty {
+                return nil
+            }
+            
+            // Try standard RSS format first
+            if let date = primaryFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Try local timezone format (like PDT)
+            let localFormatter = DateFormatter()
+            localFormatter.locale = Locale(identifier: "en_US_POSIX")
+            
+            // Common RSS format with different timezone (PDT/PST/EDT etc)
+            localFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+            if let date = localFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Try with time zone without seconds
+            localFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm zzz"
+            if let date = localFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Try with offset timezone like -0700
+            localFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+            if let date = localFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Try ISO 8601 format
+            if let date = alternateFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Try more fallback formats
+            let formats = [
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy-MM-dd'T'HH:mm:ss",
+                "yyyy-MM-dd HH:mm",
+                "EEE, dd MMM yyyy",
+                "dd MMM yyyy HH:mm:ss Z"
+            ]
+            
+            for format in formats {
+                localFormatter.dateFormat = format
+                if let date = localFormatter.date(from: dateString) {
+                    return date
+                }
+            }
+            
+            // If we get here, we couldn't parse the date with standard formats
+            return nil
+        }
 
         itemsToSort.sort {
-            guard let date1 = dateFormatter.date(from: $0.pubDate),
-                  let date2 = dateFormatter.date(from: $1.pubDate) else {
-                return false // Keep original order if dates are invalid
+            // Get dates for both items
+            let date1 = parseDate($0.pubDate)
+            let date2 = parseDate($1.pubDate)
+            
+            // If both dates can be parsed, use them for comparison
+            if let d1 = date1, let d2 = date2 {
+                return self.isSortedAscending ? d1 < d2 : d1 > d2
             }
-            return self.isSortedAscending ? date1 < date2 : date1 > date2
+            
+            // If only one date can be parsed, the one with a valid date should come first
+            if date1 != nil {
+                return self.isSortedAscending ? false : true  // Valid date first in descending order
+            }
+            if date2 != nil {
+                return self.isSortedAscending ? true : false  // Valid date first in descending order
+            }
+            
+            // If neither date can be parsed and both are not empty, compare strings
+            if !$0.pubDate.isEmpty && !$1.pubDate.isEmpty {
+                // Just use string comparison as a fallback
+                return self.isSortedAscending ? $0.pubDate < $1.pubDate : $0.pubDate > $1.pubDate
+            }
+            
+            // Place empty dates at the end
+            if $0.pubDate.isEmpty {
+                return self.isSortedAscending ? true : false
+            }
+            if $1.pubDate.isEmpty {
+                return self.isSortedAscending ? false : true
+            }
+            
+            // If we're here, both are empty - considered equal
+            return false
+        }
+        
+        // Debug printing - print first and last dates after sorting
+        if !itemsToSort.isEmpty {
+            print("Sorted items - first item date: \(itemsToSort.first?.pubDate ?? "none"), last item date: \(itemsToSort.last?.pubDate ?? "none"), ascending: \(self.isSortedAscending)")
         }
     }
 
@@ -662,58 +1205,28 @@ class HomeFeedViewController: UIViewController {
 
     // Save read state using asynchronous storage
     private func saveReadState() {
-        StorageManager.shared.load(forKey: "readItems") { [weak self] (result: Result<[String], Error>) in
-            guard let self = self else { return }
-            var existingReadLinks: [String] = []
-            var needsCloudKitReset = false
-            if case .success(let items) = result {
-                existingReadLinks = items
-            } else if case .failure(let error) = result {
-                // If the error is a decoding error, trigger a one-time reset
-                if (error.localizedDescription.contains("correct format") || error.localizedDescription.contains("decode")) && !self.hasResetCloudKitReadItemsThisSession {
-                    print("Decoding error detected for readItems. Attempting CloudKit reset.")
-                    needsCloudKitReset = true
-                } else if (error.localizedDescription.contains("correct format") || error.localizedDescription.contains("decode")) && self.hasResetCloudKitReadItemsThisSession {
-                    // Suppress repeated logs after first reset
-                    return
-                }
-            }
-
-            // If a reset is needed, do it and then try again
-            if needsCloudKitReset {
-                self.hasResetCloudKitReadItemsThisSession = true
-                self.resetCloudKitReadItemsIfNeeded {
-                    // After reset, try saving again
-                    self.saveReadState()
-                }
-                return
-            }
-
-            // Map new read items with current date.
-            let newReadItems = self.items.filter { $0.isRead }.map {
-                ReadItem(link: self.normalizeLink($0.link), readDate: Date())
-            }
-            // Combine links from CloudKit and new read items
-            var allReadLinks = Set(existingReadLinks.map { self.normalizeLink($0) })
-            allReadLinks.formUnion(newReadItems.map { $0.link })
-
-            print("[saveReadState] existingReadLinks: \(existingReadLinks)")
-            print("[saveReadState] newReadItems: \(newReadItems.map { $0.link })")
-            print("[saveReadState] allReadLinks to save: \(Array(allReadLinks))")
-
-            // Save [ReadItem] locally if you want to keep readDate for local use
-            // UserDefaults.standard.set(try? JSONEncoder().encode(allReadItems), forKey: "readItems")
-
-            // Save only [String] (links) to StorageManager (and thus CloudKit)
-            StorageManager.shared.save(Array(allReadLinks), forKey: "readItems") {
-                error in
-                if let error = error {
-                    print(
-                        "Error saving cleaned read items: \(error.localizedDescription)"
-                    )
-                } else {
-                    print("Successfully saved cleaned read items.")
-                }
+        // Map all read items to their normalized links
+        let newReadLinks = self.items.filter { $0.isRead }.map { self.normalizeLink($0.link) }
+        
+        // Also include any read items from allItems that may not be in the current view
+        let allReadLinks = self._allItems.filter { $0.isRead }.map { self.normalizeLink($0.link) }
+        
+        // Combine both sets
+        let combinedReadLinks = Set(newReadLinks).union(Set(allReadLinks))
+        
+        if combinedReadLinks.isEmpty {
+            print("No read items to save")
+            return
+        }
+        
+        print("[saveReadState] Saving \(combinedReadLinks.count) read links")
+        
+        // Use the improved merge-based save function in StorageManager
+        StorageManager.shared.save(Array(combinedReadLinks), forKey: "readItems") { error in
+            if let error = error {
+                print("Error saving read items: \(error.localizedDescription)")
+            } else {
+                print("Successfully saved read items")
             }
         }
     }
@@ -972,16 +1485,13 @@ class HomeFeedViewController: UIViewController {
     }
 
     @objc private func refreshButtonTapped() {
-        // 1) Manually begin showing the refresh spinner
+        // 1) Hide tableView and show loading indicator
+        tableView.isHidden = true
+        loadingIndicator.startAnimating()
+        
+        // 2) Manually begin showing the refresh spinner (it will be hidden with the tableView)
         if !refreshControl.isRefreshing {
             refreshControl.beginRefreshing()
-            
-            // 2) Make sure the spinner is visible by adjusting the table offset
-            let offset = CGPoint(
-                x: 0,
-                y: tableView.contentOffset.y - refreshControl.frame.size.height
-            )
-            tableView.setContentOffset(offset, animated: true)
         }
         
         // 3) Now do your actual refresh logic
@@ -989,6 +1499,9 @@ class HomeFeedViewController: UIViewController {
     }
 
     @objc private func refreshFeeds() {
+        // Hide tableView and show loading indicator during refresh
+        tableView.isHidden = true
+        loadingIndicator.startAnimating()
         startRefreshAnimation() // Start animation
         loadRSSFeeds()
     }
@@ -1022,7 +1535,7 @@ class HomeFeedViewController: UIViewController {
         let newestFirstAction = UIAlertAction(title: "Newest First", style: .default) { [weak self] _ in
             self?.sortItems(ascending: false)
         }
-        // Optionally, add a checkmark if this is the current sort order
+        // Add a checkmark if this is the current sort order
         if !isSortedAscending {
             newestFirstAction.setValue(true, forKey: "checked")
         }
@@ -1030,11 +1543,10 @@ class HomeFeedViewController: UIViewController {
         let oldestFirstAction = UIAlertAction(title: "Oldest First", style: .default) { [weak self] _ in
             self?.sortItems(ascending: true)
         }
-        // Optionally, add a checkmark
+        // Add a checkmark if this is the current sort order
         if isSortedAscending {
             oldestFirstAction.setValue(true, forKey: "checked")
         }
-
 
         let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
 
@@ -1055,20 +1567,164 @@ class HomeFeedViewController: UIViewController {
         isSortedAscending = ascending
         // Save sort order to UserDefaults
         UserDefaults.standard.set(ascending, forKey: "articleSortAscending")
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
-        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        
+        // Create a more robust date formatter that can handle different RSS date formats
+        let primaryFormatter = DateFormatter()
+        primaryFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+        primaryFormatter.locale = Locale(identifier: "en_US_POSIX")
+        
+        // Secondary formatter for alternative formats that might appear
+        let alternateFormatter = DateFormatter()
+        alternateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        alternateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ" // ISO 8601 format
+        
+        // Helper function to parse dates with multiple formatters
+        func parseDate(_ dateString: String) -> Date? {
+            // Skip empty strings
+            if dateString.isEmpty {
+                return nil
+            }
+            
+            // Try standard RSS format first
+            if let date = primaryFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Try local timezone format (like PDT)
+            let localFormatter = DateFormatter()
+            localFormatter.locale = Locale(identifier: "en_US_POSIX")
+            
+            // Common RSS format with different timezone (PDT/PST/EDT etc)
+            localFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+            if let date = localFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Try with time zone without seconds
+            localFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm zzz"
+            if let date = localFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Try with offset timezone like -0700
+            localFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+            if let date = localFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Try ISO 8601 format
+            if let date = alternateFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Try more fallback formats
+            let formats = [
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy-MM-dd'T'HH:mm:ss",
+                "yyyy-MM-dd HH:mm",
+                "EEE, dd MMM yyyy",
+                "dd MMM yyyy HH:mm:ss Z"
+            ]
+            
+            for format in formats {
+                localFormatter.dateFormat = format
+                if let date = localFormatter.date(from: dateString) {
+                    return date
+                }
+            }
+            
+            // If we get here, we couldn't parse the date with standard formats
+            return nil
+        }
 
+        // Log before sorting
+        if !items.isEmpty {
+            print("Before sorting - first item date: \(items.first?.pubDate ?? "none"), last item date: \(items.last?.pubDate ?? "none")")
+        }
+
+        // Sort the current items
         items.sort {
-            guard let date1 = dateFormatter.date(from: $0.pubDate),
-                  let date2 = dateFormatter.date(from: $1.pubDate) else {
-                // Handle cases where date parsing might fail, maybe keep original order?
+            // Get dates for both items
+            let date1 = parseDate($0.pubDate)
+            let date2 = parseDate($1.pubDate)
+            
+            // If both dates can be parsed, use them for comparison
+            if let d1 = date1, let d2 = date2 {
+                return ascending ? d1 < d2 : d1 > d2
+            }
+            
+            // If only one date can be parsed, the one with a valid date should come first
+            if date1 != nil {
+                return ascending ? false : true  // Valid date first in descending order
+            }
+            if date2 != nil {
+                return ascending ? true : false  // Valid date first in descending order
+            }
+            
+            // If neither date can be parsed and both are not empty, compare strings
+            if !$0.pubDate.isEmpty && !$1.pubDate.isEmpty {
+                // Just use string comparison as a fallback
+                return ascending ? $0.pubDate < $1.pubDate : $0.pubDate > $1.pubDate
+            }
+            
+            // Place empty dates at the end
+            if $0.pubDate.isEmpty {
+                return ascending ? true : false
+            }
+            if $1.pubDate.isEmpty {
+                return ascending ? false : true
+            }
+            
+            // If we're here, both are empty - considered equal
+            return false
+        }
+        
+        // Log after sorting
+        if !items.isEmpty {
+            print("After sorting - first item date: \(items.first?.pubDate ?? "none"), last item date: \(items.last?.pubDate ?? "none"), ascending: \(ascending)")
+        }
+        
+        // Also sort the allItems array if we're viewing the RSS feed
+        if currentFeedType == .rss {
+            _allItems.sort {
+                // Get dates for both items
+                let date1 = parseDate($0.pubDate)
+                let date2 = parseDate($1.pubDate)
+                
+                // If both dates can be parsed, use them for comparison
+                if let d1 = date1, let d2 = date2 {
+                    return ascending ? d1 < d2 : d1 > d2
+                }
+                
+                // If only one date can be parsed, the one with a valid date should come first
+                if date1 != nil {
+                    return ascending ? false : true  // Valid date first in descending order
+                }
+                if date2 != nil {
+                    return ascending ? true : false  // Valid date first in descending order
+                }
+                
+                // If neither date can be parsed and both are not empty, compare strings
+                if !$0.pubDate.isEmpty && !$1.pubDate.isEmpty {
+                    // Just use string comparison as a fallback
+                    return ascending ? $0.pubDate < $1.pubDate : $0.pubDate > $1.pubDate
+                }
+                
+                // Place empty dates at the end
+                if $0.pubDate.isEmpty {
+                    return ascending ? true : false
+                }
+                if $1.pubDate.isEmpty {
+                    return ascending ? false : true
+                }
+                
+                // If we're here, both are empty - considered equal
                 return false
             }
-            return ascending ? date1 < date2 : date1 > date2
         }
+        
+        // Reload the table to show newly sorted items
         tableView.reloadData()
-        // Optional: Update the sort button icon if needed
     }
 
     // MARK: - Image Resizing and Trait Changes
@@ -1095,28 +1751,51 @@ class HomeFeedViewController: UIViewController {
 
     // MARK: - Refresh Button Animation
     private func startRefreshAnimation() {
-        // Ensure we have a refresh button and access its view
-        guard let buttonView = refreshButton?.value(forKey: "view") as? UIView else { return }
-
-        // Check if animation is already running
-        if buttonView.layer.animation(forKey: "rotationAnimation") != nil {
-            return // Already animating
+        // Create a direct animation on the UIBarButtonItem
+        guard let refreshButton = self.refreshButton else {
+            print("Refresh button not available")
+            return
         }
-
-        let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
-        rotation.toValue = NSNumber(value: Double.pi * 2)
-        rotation.duration = 1.0 // Adjust duration as needed
-        rotation.isCumulative = true
+        
+        // Create a UIImageView to hold the animation
+        let imageView = UIImageView(image: UIImage(named: "refresh")?.withRenderingMode(.alwaysTemplate))
+        imageView.tintColor = AppColors.dynamicIconColor
+        imageView.contentMode = .scaleAspectFit
+        
+        // Set up the rotation animation
+        let rotation = CABasicAnimation(keyPath: "transform.rotation")
+        rotation.fromValue = 0.0
+        rotation.toValue = CGFloat.pi * 2.0
+        rotation.duration = 1.0
         rotation.repeatCount = .infinity
-        buttonView.layer.add(rotation, forKey: "rotationAnimation")
+        rotation.isRemovedOnCompletion = false
+        
+        // Apply the animation
+        imageView.layer.add(rotation, forKey: "rotationAnimation")
+        
+        // Resize to match bar button item size
+        let resizedImageView = UIView(frame: CGRect(x: 0, y: 0, width: 30, height: 30))
+        imageView.frame = CGRect(x: 0, y: 0, width: 24, height: 24)
+        imageView.center = CGPoint(x: resizedImageView.bounds.midX, y: resizedImageView.bounds.midY)
+        resizedImageView.addSubview(imageView)
+        
+        // Replace the current button with this animated view
+        refreshButton.customView = resizedImageView
     }
-
+    
     private func stopRefreshAnimation() {
-        // Ensure we have a refresh button and access its view
-        guard let buttonView = refreshButton?.value(forKey: "view") as? UIView else { return }
-
-        // Remove the animation
-        buttonView.layer.removeAnimation(forKey: "rotationAnimation")
+        // Return to the normal button state
+        guard let refreshButton = self.refreshButton else { return }
+        
+        // Remove the custom view to restore the normal button
+        refreshButton.customView = nil
+        
+        // Recreate the standard button
+        refreshButton.image = resizeImage(
+            UIImage(named: "refresh"),
+            targetSize: CGSize(width: 24, height: 24)
+        )?.withRenderingMode(.alwaysTemplate)
+        refreshButton.tintColor = AppColors.dynamicIconColor
     }
 }
 
@@ -1127,19 +1806,19 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         // Ensure we're dealing with the table view's scroll view
         guard scrollView == tableView else { return }
 
-        print("scrollViewDidScroll called")
+        //print("scrollViewDidScroll called")
 
         // Get the index paths of the currently visible rows
         guard let visibleRows = tableView.indexPathsForVisibleRows, !visibleRows.isEmpty else {
-            print("No visible rows")
+            //print("No visible rows")
             return
         }
 
-        print("Visible rows: \(visibleRows.map { $0.row })")
+        //print("Visible rows: \(visibleRows.map { $0.row })")
 
         // Find the minimum row index among visible rows
         let currentMinVisibleRow = visibleRows.map { $0.row }.min() ?? 0
-        print("previousMinVisibleRow: \(previousMinVisibleRow), currentMinVisibleRow: \(currentMinVisibleRow)")
+        //print("previousMinVisibleRow: \(previousMinVisibleRow), currentMinVisibleRow: \(currentMinVisibleRow)")
 
         // Check if the user scrolled down past the previously tracked top row
         if currentMinVisibleRow > previousMinVisibleRow {
@@ -1151,7 +1830,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
                 if index >= 0 && index < items.count {
                     let normLink = self.normalizeLink(items[index].link)
                     if !items[index].isRead && !readLinks.contains(normLink) {
-                        print("Marking article at index \(index) as read: \(items[index].title)")
+                        //print("Marking article at index \(index) as read: \(items[index].title)")
                         items[index].isRead = true
                         indexPathsToUpdate.append(IndexPath(row: index, section: 0))
                     }
@@ -1160,7 +1839,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
 
             // If any items were marked as read, save the state and reload the rows
             if !indexPathsToUpdate.isEmpty {
-                print("Saving read state and reloading rows: \(indexPathsToUpdate.map { $0.row })")
+                //print("Saving read state and reloading rows: \(indexPathsToUpdate.map { $0.row })")
                 scheduleSaveReadState()
                 // Use .none to avoid animation glitches during scrolling
                 tableView.reloadRows(at: indexPathsToUpdate, with: .none)
@@ -1182,9 +1861,10 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
         let item = items[indexPath.row]
+        let normalizedLink = normalizeLink(item.link)
 
-        // Configure Heart Action using local state
-        let isHearted = heartedItems.contains(item.link)
+        // Configure Heart Action using local state with normalized link
+        let isHearted = heartedItems.contains { normalizeLink($0) == normalizedLink }
         let heartAction = UIContextualAction(style: .normal, title: nil) {
             (action, view, completion) in
             self.toggleHeart(for: item) {
@@ -1196,8 +1876,8 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             .withRenderingMode(.alwaysTemplate)
         heartAction.backgroundColor = AppColors.primary
 
-        // Configure Bookmark Action using local state
-        let isBookmarked = bookmarkedItems.contains(item.link)
+        // Configure Bookmark Action using local state with normalized link
+        let isBookmarked = bookmarkedItems.contains { normalizeLink($0) == normalizedLink }
         let bookmarkAction = UIContextualAction(style: .normal, title: nil) {
             (action, view, completion) in
             self.toggleBookmark(for: item) {
@@ -1275,10 +1955,18 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
     private func toggleHeart(
         for item: RSSItem, completion: @escaping () -> Void
     ) {
-        if heartedItems.contains(item.link) {
-            heartedItems.remove(item.link)
+        // Use normalized link for consistent comparison
+        let normalizedLink = normalizeLink(item.link)
+        
+        // Check if the item is already hearted by normalized link
+        let isHearted = heartedItems.contains { normalizeLink($0) == normalizedLink }
+        
+        if isHearted {
+            // Remove all versions of this link (both normalized and non-normalized)
+            heartedItems = heartedItems.filter { normalizeLink($0) != normalizedLink }
         } else {
-            heartedItems.insert(item.link)
+            // Add the normalized version of the link
+            heartedItems.insert(normalizedLink)
         }
 
         StorageManager.shared.save(Array(heartedItems), forKey: "heartedItems")
@@ -1296,10 +1984,18 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
     private func toggleBookmark(
         for item: RSSItem, completion: @escaping () -> Void
     ) {
-        if bookmarkedItems.contains(item.link) {
-            bookmarkedItems.remove(item.link)
+        // Use normalized link for consistent comparison
+        let normalizedLink = normalizeLink(item.link)
+        
+        // Check if the item is already bookmarked by normalized link
+        let isBookmarked = bookmarkedItems.contains { normalizeLink($0) == normalizedLink }
+        
+        if isBookmarked {
+            // Remove all versions of this link (both normalized and non-normalized)
+            bookmarkedItems = bookmarkedItems.filter { normalizeLink($0) != normalizedLink }
         } else {
-            bookmarkedItems.insert(item.link)
+            // Add the normalized version of the link
+            bookmarkedItems.insert(normalizedLink)
         }
 
         StorageManager.shared.save(
