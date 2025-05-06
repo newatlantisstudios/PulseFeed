@@ -146,16 +146,26 @@ extension HomeFeedViewController {
                         parser.delegate = rssParser
                         
                         if parser.parse() {
-                            // Filter out already-read links
-                            let filtered = rssParser.items.filter {
-                                let normLink = self.normalizeLink($0.link)
-                                return !readLinks.contains(normLink)
+                            // If no items were found, it might be an unsupported format
+                            if rssParser.items.isEmpty {
+                                DispatchQueue.main.async {
+                                    self.loadingLabel.text = "No items found in \(feed.title)"
+                                }
+                            } else {
+                                // Filter out already-read links
+                                let filtered = rssParser.items.filter {
+                                    let normLink = self.normalizeLink($0.link)
+                                    return !readLinks.contains(normLink)
+                                }
+                                liveItems.append(contentsOf: filtered)
+                                
+                                // Print some debug info about the feed type (RSS or Atom)
+                                print("DEBUG: Successfully parsed \(feed.title) - Found \(rssParser.items.count) items")
                             }
-                            liveItems.append(contentsOf: filtered)
                         } else {
                             // XML parsing failed - mark as failed feed
                             DispatchQueue.main.async {
-                                self.loadingLabel.text = "Failed to parse \(feed.title): invalid RSS format"
+                                self.loadingLabel.text = "Failed to parse \(feed.title): invalid feed format"
                             }
                             FeedLoadTimeManager.shared.recordFailedFeed(for: feed.title)
                         }
@@ -209,7 +219,7 @@ extension HomeFeedViewController {
         }
         
         // Update the currently displayed items if RSS feed is active
-        if self.currentFeedType == .rss {
+        if case .rss = self.currentFeedType {
             self.items = self._allItems
         }
         
@@ -273,6 +283,38 @@ extension HomeFeedViewController {
         tableView.isHidden = true
         loadingIndicator.startAnimating()
         startRefreshAnimation() // Start animation
-        loadRSSFeeds()
+        
+        // Based on the current feed type, refresh the appropriate content
+        switch currentFeedType {
+        case .rss:
+            // For main RSS feed, load all feeds
+            loadRSSFeeds()
+            
+        case .folder(let folderId):
+            // For folder view, only refresh the current folder
+            if let folder = currentFolder, folder.id == folderId {
+                loadFolderFeeds(folder: folder)
+            } else {
+                // Folder not loaded yet, load it first
+                StorageManager.shared.getFolders { [weak self] result in
+                    guard let self = self else { return }
+                    
+                    DispatchQueue.main.async {
+                        if case .success(let folders) = result,
+                           let folder = folders.first(where: { $0.id == folderId }) {
+                            self.currentFolder = folder
+                            self.loadFolderFeeds(folder: folder)
+                        } else {
+                            // Folder not found, fall back to all feeds
+                            self.loadRSSFeeds()
+                        }
+                    }
+                }
+            }
+            
+        default:
+            // For other feed types (bookmarks, heart), go back to standard behavior
+            loadRSSFeeds()
+        }
     }
 }

@@ -52,7 +52,14 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         
         // If there are no unread articles but there are articles, 
         // add an extra row for "All Articles Read" message
-        if count > 0 && !items.contains(where: { !$0.isRead }) && currentFeedType == .rss {
+        let isRssFeed: Bool
+        if case .rss = currentFeedType {
+            isRssFeed = true
+        } else {
+            isRssFeed = false
+        }
+        
+        if count > 0 && !items.contains(where: { !$0.isRead }) && isRssFeed {
             return count + 1 // Add an extra row for "All Articles Read" message
         }
         
@@ -64,7 +71,14 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
         // Check if this is our special "All Articles Read" footer cell
-        let allArticlesRead = !items.isEmpty && !items.contains(where: { !$0.isRead }) && currentFeedType == .rss
+        let isRssFeed: Bool
+        if case .rss = currentFeedType {
+            isRssFeed = true
+        } else {
+            isRssFeed = false
+        }
+        
+        let allArticlesRead = !items.isEmpty && !items.contains(where: { !$0.isRead }) && isRssFeed
         if allArticlesRead && indexPath.row == items.count {
             // No swipe actions for our special footer cell
             return nil
@@ -107,7 +121,14 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         // Check if this is our special footer cell for "All Articles Read" message
-        let allArticlesRead = !items.isEmpty && !items.contains(where: { !$0.isRead }) && currentFeedType == .rss
+        let isRssFeed: Bool
+        if case .rss = currentFeedType {
+            isRssFeed = true
+        } else {
+            isRssFeed = false
+        }
+        
+        let allArticlesRead = !items.isEmpty && !items.contains(where: { !$0.isRead }) && isRssFeed
         
         if allArticlesRead && indexPath.row == items.count {
             // This is our special "All Articles Read" message cell
@@ -180,59 +201,115 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         tableView.deselectRow(at: indexPath, animated: true)
         
         // Check if this is our special "All Articles Read" footer cell
-        let allArticlesRead = !items.isEmpty && !items.contains(where: { !$0.isRead }) && currentFeedType == .rss
+        let isRssFeed: Bool
+        if case .rss = currentFeedType {
+            isRssFeed = true
+        } else {
+            isRssFeed = false
+        }
+        
+        let allArticlesRead = !items.isEmpty && !items.contains(where: { !$0.isRead }) && isRssFeed
         if allArticlesRead && indexPath.row == items.count {
             // Don't do anything for this special cell
             print("DEBUG: Special 'All Articles Read' cell tapped")
             return
         }
         
-        // Regular article cell handling
-        if let url = URL(string: items[indexPath.row].link) {
-            items[indexPath.row].isRead = true
-            if let cell = tableView.cellForRow(at: indexPath) {
-                configureCell(cell, with: items[indexPath.row])
-            }
-            scheduleSaveReadState()
-            
-            // Create and show a loading alert before opening Safari
-            let loadingAlert = UIAlertController(
-                title: nil,
-                message: "Opening link...",
+        // Mark item as read
+        let item = items[indexPath.row]
+        items[indexPath.row].isRead = true  // Properly update the item in the array
+        if let cell = tableView.cellForRow(at: indexPath) {
+            configureCell(cell, with: items[indexPath.row])
+        }
+        scheduleSaveReadState()
+        
+        // Check if we should use in-app reader or Safari
+        let useInAppReader = UserDefaults.standard.bool(forKey: "useInAppReader")
+        
+        if useInAppReader {
+            // Use our custom ArticleReaderViewController
+            openInArticleReader(item)
+        } else {
+            // Use Safari with Reader Mode
+            openInSafari(item)
+        }
+    }
+    
+    private func openInArticleReader(_ item: RSSItem) {
+        guard let _ = URL(string: item.link) else {
+            // Show error if URL is invalid
+            let alert = UIAlertController(
+                title: "Error",
+                message: "Invalid article URL",
                 preferredStyle: .alert
             )
-            
-            // Add an activity indicator to the alert
-            let loadingIndicator = UIActivityIndicatorView(style: .medium)
-            loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
-            loadingIndicator.startAnimating()
-            
-            // Add the indicator to the alert's view
-            loadingAlert.view.addSubview(loadingIndicator)
-            
-            // Set up constraints
-            NSLayoutConstraint.activate([
-                loadingIndicator.centerYAnchor.constraint(equalTo: loadingAlert.view.centerYAnchor, constant: -10),
-                loadingIndicator.centerXAnchor.constraint(equalTo: loadingAlert.view.centerXAnchor)
-            ])
-            
-            // Present the loading alert
-            present(loadingAlert, animated: true)
-            
-            // Configure and prepare Safari VC
-            let configuration = SFSafariViewController.Configuration()
-            configuration.entersReaderIfAvailable = true
-            let safariVC = SFSafariViewController(
-                url: url, configuration: configuration)
-            safariVC.dismissButtonStyle = .close
-            safariVC.preferredControlTintColor = AppColors.accent
-            safariVC.delegate = self
-            
-            // Dismiss the loading alert and show Safari after a short delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                loadingAlert.dismiss(animated: true) {
-                    self.present(safariVC, animated: true)
-                }
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
+            return
+        }
+        
+        // Create and configure the article reader
+        let articleReaderVC = ArticleReaderViewController()
+        articleReaderVC.item = item
+        
+        // Create a loading indicator view
+        let loadingView = UIActivityIndicatorView(style: .medium)
+        loadingView.startAnimating()
+        loadingView.center = view.center
+        view.addSubview(loadingView)
+        
+        // Navigate to the article reader view
+        navigationController?.pushViewController(articleReaderVC, animated: true)
+        
+        // Remove the loading view after navigation completes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            loadingView.removeFromSuperview()
+        }
+    }
+    
+    private func openInSafari(_ item: RSSItem) {
+        guard let url = URL(string: item.link) else { return }
+        
+        // Create and show a loading alert before opening Safari
+        let loadingAlert = UIAlertController(
+            title: nil,
+            message: "Opening link...",
+            preferredStyle: .alert
+        )
+        
+        // Add an activity indicator to the alert
+        let loadingIndicator = UIActivityIndicatorView(style: .medium)
+        loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
+        loadingIndicator.startAnimating()
+        
+        // Add the indicator to the alert's view
+        loadingAlert.view.addSubview(loadingIndicator)
+        
+        // Set up constraints
+        NSLayoutConstraint.activate([
+            loadingIndicator.centerYAnchor.constraint(equalTo: loadingAlert.view.centerYAnchor, constant: -10),
+            loadingIndicator.centerXAnchor.constraint(equalTo: loadingAlert.view.centerXAnchor)
+        ])
+        
+        // Present the loading alert
+        present(loadingAlert, animated: true)
+        
+        // Configure and prepare Safari VC
+        let configuration = SFSafariViewController.Configuration()
+        
+        // Check if reader mode should be auto-enabled
+        configuration.entersReaderIfAvailable = UserDefaults.standard.bool(forKey: "autoEnableReaderMode")
+        
+        let safariVC = SFSafariViewController(
+            url: url, configuration: configuration)
+        safariVC.dismissButtonStyle = .close
+        safariVC.preferredControlTintColor = AppColors.accent
+        safariVC.delegate = self
+        
+        // Dismiss the loading alert and show Safari after a short delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            loadingAlert.dismiss(animated: true) {
+                self.present(safariVC, animated: true)
             }
         }
     }

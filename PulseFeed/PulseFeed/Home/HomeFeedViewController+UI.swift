@@ -1,6 +1,7 @@
 import UIKit
 import SafariServices
 import Foundation
+import CloudKit
 
 // MARK: - UI Setup and Navigation Components
 extension HomeFeedViewController {
@@ -87,6 +88,12 @@ extension HomeFeedViewController {
             action: #selector(heartButtonTapped),
             tintColor: AppColors.dynamicIconColor
         )
+        folderButton = createBarButton(
+            imageName: "folder", // Using system image for folder
+            action: #selector(folderButtonTapped),
+            tintColor: AppColors.dynamicIconColor,
+            isSystemImage: true
+        )
 
         // We've moved the sort functionality to Settings, so no longer need a button here
 
@@ -102,7 +109,8 @@ extension HomeFeedViewController {
             rssButton,
             refreshButton,
             bookmarkButton,
-            heartButton
+            heartButton,
+            folderButton
         ].compactMap { $0 } // Use properties and compactMap to handle potential nils
 
         // Assign the right-side buttons - only settings button remains
@@ -116,13 +124,23 @@ extension HomeFeedViewController {
         imageName: String,
         action: Selector,
         tintColor: UIColor = .white,
-        renderOriginal: Bool = false
+        renderOriginal: Bool = false,
+        isSystemImage: Bool = false
     ) -> UIBarButtonItem {
         let renderingMode: UIImage.RenderingMode = renderOriginal ? .alwaysOriginal : .alwaysTemplate
-        let buttonImage = resizeImage(
-            UIImage(named: imageName),
-            targetSize: CGSize(width: 24, height: 24)
-        )?.withRenderingMode(renderingMode)
+        
+        let buttonImage: UIImage?
+        if isSystemImage {
+            buttonImage = resizeImage(
+                UIImage(systemName: imageName),
+                targetSize: CGSize(width: 24, height: 24)
+            )?.withRenderingMode(renderingMode)
+        } else {
+            buttonImage = resizeImage(
+                UIImage(named: imageName),
+                targetSize: CGSize(width: 24, height: 24)
+            )?.withRenderingMode(renderingMode)
+        }
 
         let button = UIBarButtonItem(
             image: buttonImage,
@@ -135,36 +153,72 @@ extension HomeFeedViewController {
     }
     
     func updateNavigationButtons() {
-        guard let leftButtons = navigationItem.leftBarButtonItems, leftButtons.count >= 4 else {
+        guard let leftButtons = navigationItem.leftBarButtonItems, leftButtons.count >= 5 else {
             return
         }
         
-        // leftButtons order: [rss, refresh, bookmark, heart]
+        // leftButtons order: [rss, refresh, bookmark, heart, folder]
         // Update the RSS button image:
-        let rssImageName = (currentFeedType == .rss) ? "rssFilled" : "rss"
-        rssButton?.image = resizeImage(
-            UIImage(named: rssImageName),
-            targetSize: CGSize(width: 24, height: 24)
-        )?.withRenderingMode(.alwaysTemplate)
+        if case .folder = currentFeedType {
+            // If we're in a folder, show normal RSS icon
+            rssButton?.image = resizeImage(
+                UIImage(named: "rss"),
+                targetSize: CGSize(width: 24, height: 24)
+            )?.withRenderingMode(.alwaysTemplate)
+        } else {
+            let rssImageName = { if case .rss = currentFeedType { return "rssFilled" } else { return "rss" } }()
+            rssButton?.image = resizeImage(
+                UIImage(named: rssImageName),
+                targetSize: CGSize(width: 24, height: 24)
+            )?.withRenderingMode(.alwaysTemplate)
+        }
         
         // Do not change the refresh button (index 1)
         
-        // Update the read status indicator when in RSS mode
-        updateReadStatusIndicator()
+        // Update the read status indicator when in RSS mode or folder mode
+        let isRssFeed: Bool
+        if case .rss = currentFeedType {
+            isRssFeed = true
+        } else {
+            isRssFeed = false
+        }
+        
+        let isFolderFeed: Bool
+        if case .folder(_) = currentFeedType {
+            isFolderFeed = true
+        } else {
+            isFolderFeed = false
+        }
+        
+        if isRssFeed || isFolderFeed {
+            updateReadStatusIndicator()
+        }
         
         // Update the Bookmark button image:
-        let bookmarkImageName = (currentFeedType == .bookmarks) ? "bookmarkFilled" : "bookmark"
+        let bookmarkImageName = { if case .bookmarks = currentFeedType { return "bookmarkFilled" } else { return "bookmark" } }()
         bookmarkButton?.image = resizeImage(
             UIImage(named: bookmarkImageName),
             targetSize: CGSize(width: 24, height: 24)
         )?.withRenderingMode(.alwaysTemplate)
         
         // Update the Heart button image:
-        let heartImageName = (currentFeedType == .heart) ? "heartFilled" : "heart"
+        let heartImageName = { if case .heart = currentFeedType { return "heartFilled" } else { return "heart" } }()
         heartButton?.image = resizeImage(
             UIImage(named: heartImageName),
             targetSize: CGSize(width: 24, height: 24)
         )?.withRenderingMode(.alwaysTemplate)
+        
+        // Update the Folder button image:
+        let folderImageName = isFolderFeed ? "folder.fill" : "folder"
+        
+        // Since folder icon is using a system image, use UIImage(systemName:) instead
+        folderButton?.image = resizeImage(
+            UIImage(systemName: folderImageName),
+            targetSize: CGSize(width: 24, height: 24)
+        )?.withRenderingMode(.alwaysTemplate)
+        
+        // Update the title based on feed type
+        updateTitle()
     }
     
     func setupTableView() {
@@ -301,8 +355,22 @@ extension HomeFeedViewController {
     }
     
     func updateFooterVisibility() {
-        // Only show the footer for RSS feed type
-        if currentFeedType == .rss {
+        // Show the footer for RSS feed type and folder feed type
+        let isRssFeed: Bool
+        if case .rss = currentFeedType {
+            isRssFeed = true
+        } else {
+            isRssFeed = false
+        }
+        
+        let isFolderFeed: Bool
+        if case .folder(_) = currentFeedType {
+            isFolderFeed = true
+        } else {
+            isFolderFeed = false
+        }
+        
+        if isRssFeed || isFolderFeed {
             // Add a new method to ensure footer is correctly sized and positioned
             addFooterToTableView()
         } else {
@@ -312,7 +380,21 @@ extension HomeFeedViewController {
     }
     
     func refreshFooterView() {
-        if currentFeedType == .rss {
+        let isRssFeed: Bool
+        if case .rss = currentFeedType {
+            isRssFeed = true
+        } else {
+            isRssFeed = false
+        }
+        
+        let isFolderFeed: Bool
+        if case .folder(_) = currentFeedType {
+            isFolderFeed = true
+        } else {
+            isFolderFeed = false
+        }
+        
+        if isRssFeed || isFolderFeed {
             // Recreate the footer with updated width
             setupTableViewFooter()
             
@@ -329,43 +411,25 @@ extension HomeFeedViewController {
         let hasArticles = !items.isEmpty
         let allRead = hasArticles && !items.contains { !$0.isRead }
         
-        // Only modify the table footer when in RSS mode
-        if currentFeedType == .rss {
-            // Create a footer view to show the read status
-            let footerView = UIView(frame: CGRect(x: 0, y: 0, width: tableView.bounds.width, height: 60))
-            footerView.backgroundColor = AppColors.background
-            
-            // Create a label to display the status
-            let statusLabel = UILabel()
-            statusLabel.translatesAutoresizingMaskIntoConstraints = false
-            statusLabel.textAlignment = .center
-            statusLabel.font = UIFont.systemFont(ofSize: 16, weight: .medium)
-            
-            // Set different text and color based on read status
-            if allRead && hasArticles {
-                statusLabel.text = "✓ All Articles Read"
-                statusLabel.textColor = .systemGreen
-            } else if hasArticles {
-                statusLabel.text = "You have unread articles"
-                statusLabel.textColor = AppColors.primary
-            } else {
-                statusLabel.text = "No articles available"
-                statusLabel.textColor = .systemGray
-            }
-            
-            // Add the label to the footer
-            footerView.addSubview(statusLabel)
-            
-            // Set up constraints
-            NSLayoutConstraint.activate([
-                statusLabel.centerXAnchor.constraint(equalTo: footerView.centerXAnchor),
-                statusLabel.centerYAnchor.constraint(equalTo: footerView.centerYAnchor),
-                statusLabel.leadingAnchor.constraint(equalTo: footerView.leadingAnchor, constant: 20),
-                statusLabel.trailingAnchor.constraint(equalTo: footerView.trailingAnchor, constant: -20)
-            ])
-            
-            // Set as table footer
-            tableView.tableFooterView = footerView
+        // Only modify the table footer when in RSS mode or folder mode
+        let isRssFeed: Bool
+        if case .rss = currentFeedType {
+            isRssFeed = true
+        } else {
+            isRssFeed = false
+        }
+        
+        let isFolderFeed: Bool
+        if case .folder(_) = currentFeedType {
+            isFolderFeed = true
+        } else {
+            isFolderFeed = false
+        }
+        
+        if isRssFeed || isFolderFeed {
+            // Always call addFooterToTableView to show the "Mark All as Read" button
+            // instead of just showing a status label
+            addFooterToTableView()
         }
     }
     
@@ -375,9 +439,6 @@ extension HomeFeedViewController {
             let normLink = normalizeLink(items[i].link)
             items[i].isRead = readLinks.contains(normLink)
         }
-        
-        // Update the read status indicator first, which creates a consistent footer
-        updateReadStatusIndicator()
         
         // Create a container with correct width
         let footerHeight: CGFloat = 100
@@ -494,9 +555,24 @@ extension HomeFeedViewController {
                 self.items[i].isRead = true
             }
             
-            // Step 3: Also update the full allItems collection
-            for i in 0..<self._allItems.count {
-                self._allItems[i].isRead = true
+            // Step 3: Also update the full allItems collection, but only for the current folder items
+            if case .folder(let folderId) = self.currentFeedType {
+                // When in folder view, only mark those specific articles as read in the full collection
+                let currentItemLinks = Set(self.items.map { self.normalizeLink($0.link) })
+                
+                for i in 0..<self._allItems.count {
+                    let normLink = self.normalizeLink(self._allItems[i].link)
+                    if currentItemLinks.contains(normLink) {
+                        self._allItems[i].isRead = true
+                    }
+                }
+                
+                print("DEBUG: Marked as read only the \(currentItemLinks.count) articles in the current folder")
+            } else {
+                // In other views, mark all as read
+                for i in 0..<self._allItems.count {
+                    self._allItems[i].isRead = true
+                }
             }
             
             // Step 4: Save the new read state locally
@@ -523,7 +599,12 @@ extension HomeFeedViewController {
                               })
             
             // Step 6: Update storage in UserDefaults and iCloud
-            StorageManager.shared.markAllAsRead { success, error in
+            if case .folder(_) = self.currentFeedType {
+                // For folder view, only save what we've already updated in readLinks
+                self.saveReadState()
+            } else {
+                // For all feeds view, use the global markAllAsRead for efficiency
+                StorageManager.shared.markAllAsRead { success, error in
                 DispatchQueue.main.async {
                     if let error = error {
                         print("Error marking all as read: \(error.localizedDescription)")
@@ -542,6 +623,7 @@ extension HomeFeedViewController {
                     self.tableView.reloadData()
                 }
             }
+            }
         }))
         
         self.present(alert, animated: true, completion: nil)
@@ -558,7 +640,14 @@ extension HomeFeedViewController {
         let hasArticles = !items.isEmpty
         let allRead = hasArticles && !items.contains { !$0.isRead }
         
-        if allRead && currentFeedType == .rss {
+        let isRssFeed: Bool
+        if case .rss = currentFeedType {
+            isRssFeed = true
+        } else {
+            isRssFeed = false
+        }
+        
+        if allRead && isRssFeed {
             DispatchQueue.main.async {
                 // Create an alert to show the message
                 let alert = UIAlertController(
@@ -584,7 +673,22 @@ extension HomeFeedViewController {
     // MARK: - Button Actions
     
     @objc func rssButtonTapped() {
-        currentFeedType = .rss
+        if case .folder = currentFeedType {
+            // If we're already in a folder, go back to all feeds
+            currentFeedType = .rss
+        } else if case .rss = currentFeedType {
+            // If we're in all feeds, we'll now use the folder button instead
+            // of showing folder selection here
+            currentFeedType = .rss
+        } else {
+            // Otherwise just go to all feeds
+            currentFeedType = .rss
+        }
+    }
+    
+    @objc func folderButtonTapped() {
+        // Show folder selection dialog
+        showFolderSelection()
     }
 
     @objc func bookmarkButtonTapped() {
@@ -594,24 +698,627 @@ extension HomeFeedViewController {
     @objc func heartButtonTapped() {
         currentFeedType = .heart
     }
-
-    @objc func openSettings() {
-        let settingsVC = SettingsViewController()
-        navigationController?.pushViewController(settingsVC, animated: true)
+    
+    func updateTitle() {
+        switch currentFeedType {
+        case .rss:
+            title = "All Feeds"
+        case .bookmarks:
+            title = "Bookmarks"
+        case .heart:
+            title = "Favorites"
+        case .folder:
+            // Get folder name if we have it
+            if let folder = currentFolder {
+                title = folder.name
+            } else if case .folder(let id) = currentFeedType {
+                // Load folder name if needed
+                StorageManager.shared.getFolders { [weak self] result in
+                    if case .success(let folders) = result, 
+                       let folder = folders.first(where: { $0.id == id }) {
+                        self?.currentFolder = folder
+                        DispatchQueue.main.async {
+                            self?.title = folder.name
+                        }
+                    }
+                }
+                title = "Folder"
+            } else {
+                title = "Folder"
+            }
+        }
     }
     
+    func showFolderSelection() {
+        // First load all folders
+        StorageManager.shared.getFolders { [weak self] result in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let folders):
+                    if folders.isEmpty {
+                        // Show alert that there are no folders
+                        let alert = UIAlertController(
+                            title: "No Folders",
+                            message: "You don't have any folders yet. Create folders in Settings > Folder Organization.",
+                            preferredStyle: .alert
+                        )
+                        alert.addAction(UIAlertAction(title: "OK", style: .default))
+                        self.present(alert, animated: true)
+                    } else {
+                        // Show folder selection
+                        let folderAlert = UIAlertController(
+                            title: "Select Folder",
+                            message: "Choose a folder to view:",
+                            preferredStyle: .actionSheet
+                        )
+                        
+                        // Add actions for each folder
+                        for folder in folders {
+                            let action = UIAlertAction(title: folder.name, style: .default) { [weak self] _ in
+                                self?.showFolderFeed(folder: folder)
+                            }
+                            folderAlert.addAction(action)
+                        }
+                        
+                        // Add cancel action
+                        folderAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+                        
+                        // For iPad
+                        if let popoverController = folderAlert.popoverPresentationController {
+                            popoverController.barButtonItem = self.folderButton
+                        }
+                        
+                        self.present(folderAlert, animated: true)
+                    }
+                case .failure(let error):
+                    print("Error loading folders: \(error.localizedDescription)")
+                    // Show error alert
+                    let errorAlert = UIAlertController(
+                        title: "Error",
+                        message: "Failed to load folders. Please try again.",
+                        preferredStyle: .alert
+                    )
+                    errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(errorAlert, animated: true)
+                }
+            }
+        }
+    }
+    
+    func showFolderFeed(folder: FeedFolder) {
+        // Store the current folder
+        currentFolder = folder
+        
+        // Set the feed type to folder
+        switch currentFeedType {
+        case .folder(let id) where id == folder.id:
+            // Already showing this folder - do nothing
+            break
+        default:
+            currentFeedType = .folder(id: folder.id)
+            
+            // Load feeds in this folder
+            loadFolderFeeds(folder: folder)
+        }
+    }
+    
+    func loadFolderFeeds(folder: FeedFolder) {
+        // Start loading animation
+        tableView.isHidden = true
+        loadingIndicator.startAnimating()
+        startRefreshAnimation() 
+        
+        // Load all feeds in the folder
+        StorageManager.shared.getFeedsInFolder(folderId: folder.id) { [weak self] result in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let folderFeeds):
+                    if folderFeeds.isEmpty {
+                        // No feeds in folder
+                        self.items = []
+                        self.tableView.reloadData()
+                        
+                        // Clean up UI
+                        self.tableView.isHidden = false
+                        self.loadingIndicator.stopAnimating()
+                        self.stopRefreshAnimation()
+                        self.refreshControl.endRefreshing()
+                        self.updateFooterVisibility()
+                        
+                        // Cancel the refresh timeout timer since we're done
+                        self.refreshTimeoutTimer?.invalidate()
+                        self.refreshTimeoutTimer = nil
+                    } else {
+                        // We have feeds, load their items
+                        self.loadArticlesForFeeds(folderFeeds)
+                    }
+                case .failure(let error):
+                    print("Error loading folder feeds: \(error.localizedDescription)")
+                    // Show error and return to all feeds
+                    self.items = []
+                    self.tableView.reloadData()
+                    
+                    // Clean up UI
+                    self.tableView.isHidden = false
+                    self.loadingIndicator.stopAnimating()
+                    self.stopRefreshAnimation()
+                    self.refreshControl.endRefreshing()
+                    self.updateFooterVisibility()
+                    
+                    // Cancel the refresh timeout timer since we're done
+                    self.refreshTimeoutTimer?.invalidate()
+                    self.refreshTimeoutTimer = nil
+                    
+                    // Show error alert
+                    let errorAlert = UIAlertController(
+                        title: "Error",
+                        message: "Failed to load feeds in folder. Please try again.",
+                        preferredStyle: .alert
+                    )
+                    errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(errorAlert, animated: true)
+                }
+            }
+        }
+    }
+    
+    private func loadArticlesForFeeds(_ feeds: [RSSFeed]) {
+        var folderItems: [RSSItem] = []
+        let group = DispatchGroup()
+        
+        // Set a timeout to ensure UI is always restored, even if network calls hang
+        let timeoutTimer = DispatchSource.makeTimerSource(queue: .main)
+        timeoutTimer.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            // Only proceed if loading is still happening
+            if self.tableView.isHidden {
+                print("DEBUG: Folder feed loading timed out")
+                
+                // Ensure we make the table visible
+                self.items = folderItems
+                self.tableView.reloadData()
+                self.tableView.isHidden = false
+                self.loadingIndicator.stopAnimating()
+                self.loadingLabel.isHidden = true
+                self.stopRefreshAnimation()
+                self.updateFooterVisibility()
+                
+                // Show timeout message
+                self.loadingLabel.text = "Some feeds timed out. Pull to refresh to try again."
+                self.loadingLabel.isHidden = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    self.loadingLabel.isHidden = true
+                }
+            }
+        }
+        // Set timeout for 15 seconds
+        timeoutTimer.schedule(deadline: .now() + 15)
+        timeoutTimer.resume()
+        
+        // Update loading display
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.loadingLabel.text = "Loading folder with \(feeds.count) feeds..."
+            self.loadingLabel.isHidden = false
+        }
+        
+        // For each feed, load its articles
+        for feed in feeds {
+            group.enter()
+            
+            // Use a helper method to load the articles
+            loadArticlesForFeed(feed) { [weak self] items in
+                guard let self = self else {
+                    group.leave()
+                    return
+                }
+                
+                // Add to folder items
+                folderItems.append(contentsOf: items)
+                group.leave()
+            }
+        }
+        
+        // When all articles are loaded
+        group.notify(queue: .main) { [weak self] in
+            guard let self = self else { return }
+            
+            // Cancel the timeout timer since we completed normally
+            timeoutTimer.cancel()
+            
+            // Log result
+            print("DEBUG: Loaded \(folderItems.count) items across all feeds in folder")
+            
+            // Update read status and filter out read items
+            var unreadItems: [RSSItem] = []
+            
+            for i in 0..<folderItems.count {
+                let normLink = self.normalizeLink(folderItems[i].link)
+                let isRead = self.readLinks.contains(normLink)
+                
+                // Only include unread items
+                if !isRead {
+                    folderItems[i].isRead = false
+                    unreadItems.append(folderItems[i])
+                } else {
+                    folderItems[i].isRead = true
+                }
+            }
+            
+            print("DEBUG: Filtered \(folderItems.count) total items to \(unreadItems.count) unread items")
+            
+            // Sort the filtered unread items
+            var sortedItems = unreadItems
+            self.sortFilteredItems(&sortedItems)
+            
+            // Update the items and reload table
+            self.items = sortedItems
+            self.tableView.reloadData()
+            
+            // Show the table
+            self.tableView.isHidden = false
+            self.loadingIndicator.stopAnimating()
+            self.loadingLabel.isHidden = true
+            self.stopRefreshAnimation()
+            self.refreshControl.endRefreshing()
+            self.updateFooterVisibility()
+            
+            // Cancel the refresh timeout timer since we're done
+            self.refreshTimeoutTimer?.invalidate()
+            self.refreshTimeoutTimer = nil
+            
+            // Final debug info
+            if sortedItems.isEmpty {
+                // Determine if it's because there are no articles at all
+                // or if all articles have been read
+                if folderItems.isEmpty {
+                    print("DEBUG: No articles found for folder feeds")
+                    
+                    // Show empty state message
+                    self.loadingLabel.text = "No articles found in this folder"
+                    self.loadingLabel.isHidden = false
+                } else {
+                    print("DEBUG: All articles in this folder have been read")
+                    
+                    // Show "all read" message
+                    self.loadingLabel.text = "All articles in this folder have been read"
+                    self.loadingLabel.isHidden = false
+                }
+            }
+        }
+    }
+    
+    /// Helper method to parse RSS data
+    private func parseRSSData(_ data: Data, source: String) -> [RSSItem] {
+        // We'll implement our own simplified RSS parser here to avoid dependencies
+        let parser = XMLParser(data: data)
+        let delegate = SimpleRSSParser(source: source)
+        parser.delegate = delegate
+        
+        if parser.parse() {
+            return delegate.items
+        } else {
+            print("DEBUG: XML parsing failed for \(source)")
+            return []
+        }
+    }
+    
+    /// A simple RSS parser delegate implementation
+    private class SimpleRSSParser: NSObject, XMLParserDelegate {
+        private(set) var items: [RSSItem] = []
+        private var currentElement = ""
+        private var currentTitle = ""
+        private var currentLink = ""
+        private var currentPubDate = ""
+        private var currentDescription = ""
+        private var parsingItem = false
+        private var feedSource: String
+        
+        init(source: String) {
+            self.feedSource = source
+            super.init()
+        }
+        
+        func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+            currentElement = elementName
+            
+            if elementName == "item" || elementName == "entry" {
+                parsingItem = true
+                currentTitle = ""
+                currentLink = ""
+                currentPubDate = ""
+                currentDescription = ""
+            }
+            
+            // Handle Atom links which use href attribute
+            if elementName == "link", let href = attributeDict["href"] {
+                currentLink = href
+            }
+        }
+        
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            if !parsingItem { return }
+            
+            switch currentElement {
+            case "title":
+                currentTitle += string
+            case "link":
+                if currentLink.isEmpty { // Only append if not already set by attribute
+                    currentLink += string
+                }
+            case "pubDate", "published", "updated":
+                currentPubDate += string
+            case "description", "summary", "content":
+                currentDescription += string
+            default:
+                break
+            }
+        }
+        
+        func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+            if (elementName == "item" || elementName == "entry") && parsingItem {
+                // Only add items with at least a title and link
+                if !currentTitle.isEmpty && !currentLink.isEmpty {
+                    let item = RSSItem(
+                        title: currentTitle.trimmingCharacters(in: .whitespacesAndNewlines),
+                        link: currentLink.trimmingCharacters(in: .whitespacesAndNewlines),
+                        pubDate: currentPubDate.trimmingCharacters(in: .whitespacesAndNewlines),
+                        source: feedSource,
+                        description: currentDescription.isEmpty ? nil : currentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                    )
+                    
+                    items.append(item)
+                }
+                
+                parsingItem = false
+            }
+        }
+    }
+    
+    /// Helper method to load articles for a specific feed
+    private func loadArticlesForFeed(_ feed: RSSFeed, completion: @escaping ([RSSItem]) -> Void) {
+        print("DEBUG: Loading articles for feed: \(feed.title) - URL: \(feed.url)")
+        
+        // Set a timeout to ensure we always complete
+        let timeoutTimer = DispatchWorkItem {
+            print("DEBUG: Feed loading timed out for \(feed.title)")
+            DispatchQueue.main.async {
+                completion([])
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeoutTimer)
+        
+        // First try loading from memory cache or network
+        if let url = URL(string: feed.url) {
+            // Process the RSS feed directly
+            let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+                // Cancel the timeout since we got a response
+                timeoutTimer.cancel()
+                
+                guard let self = self else {
+                    DispatchQueue.main.async {
+                        completion([])
+                    }
+                    return
+                }
+                
+                if let data = data, error == nil {
+                    // Create a parser for the RSS feed
+                    print("DEBUG: Attempting to parse RSS data for \(feed.title)")
+                    
+                    // This approach will directly use the XMLParser to parse the RSS feed data
+                    // without requiring the RSSParser class
+                    var items = self.parseRSSData(data, source: feed.title)
+                    
+                    if !items.isEmpty {
+                        print("DEBUG: Successfully parsed feed \(feed.title) - Found \(items.count) items")
+                        
+                        // Filter out read items
+                        let unreadItems = items.filter { item in
+                            let normalizedLink = self.normalizeLink(item.link)
+                            return !self.readLinks.contains(normalizedLink)
+                        }
+                        
+                        print("DEBUG: \(feed.title): \(items.count) total, \(unreadItems.count) unread")
+                        
+                        // Return items immediately
+                        DispatchQueue.main.async {
+                            completion(unreadItems)
+                        }
+                        return
+                    } else {
+                        print("DEBUG: No items found in feed \(feed.title)")
+                    }
+                }
+                
+                // If live feed fails, try the CloudKit backup
+                print("DEBUG: Live feed failed, trying CloudKit backup for \(feed.title)")
+                self.loadArticlesFromCloudKit(feed) { items in
+                    DispatchQueue.main.async {
+                        completion(items)
+                    }
+                }
+            }
+            task.resume()
+        } else {
+            // Invalid URL, try CloudKit backup
+            // Cancel the timeout timer
+            timeoutTimer.cancel()
+            
+            loadArticlesFromCloudKit(feed) { items in
+                DispatchQueue.main.async {
+                    completion(items)
+                }
+            }
+        }
+    }
+    
+    /// Helper to load articles from CloudKit backup
+    private func loadArticlesFromCloudKit(_ feed: RSSFeed, completion: @escaping ([RSSItem]) -> Void) {
+        // Use the container and database directly
+        let database = CKContainer.default().privateCloudDatabase
+        let recordID = CKRecord.ID(recordName: "feedArticlesRecord-\(feed.url)")
+        
+        // Set a timeout to ensure we always complete
+        let timeoutTimer = DispatchWorkItem {
+            print("DEBUG: CloudKit fetch timed out for \(feed.title)")
+            DispatchQueue.main.async {
+                completion([])
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeoutTimer)
+        
+        database.fetch(withRecordID: recordID) { [weak self] record, error in
+            // Cancel the timeout since we got a response
+            timeoutTimer.cancel()
+            
+            guard let self = self else {
+                DispatchQueue.main.async {
+                    completion([])
+                }
+                return
+            }
+            
+            DispatchQueue.main.async {
+                // Handle error cases
+                if let ckError = error as? CKError {
+                    print("DEBUG: CloudKit error for \(feed.title): \(ckError.localizedDescription)")
+                    completion([])
+                    return
+                }
+                
+                if record == nil {
+                    print("DEBUG: No CloudKit backup found for \(feed.title)")
+                    completion([])
+                    return
+                }
+                
+                // Process the record data if available
+                if let data = record?["articles"] as? Data {
+                    do {
+                        let articles = try JSONDecoder().decode([ArticleSummary].self, from: data)
+                        print("DEBUG: Found \(articles.count) articles in CloudKit for \(feed.title)")
+                        
+                        // Convert to RSSItems and filter out read items
+                        let items = articles.compactMap { article -> RSSItem? in
+                            let normalizedLink = self.normalizeLink(article.link)
+                            
+                            // Skip read items
+                            if self.readLinks.contains(normalizedLink) {
+                                return nil
+                            }
+                            
+                            return RSSItem(
+                                title: article.title,
+                                link: article.link,
+                                pubDate: article.pubDate,
+                                source: feed.title
+                            )
+                        }
+                        
+                        completion(items)
+                    } catch {
+                        print("Error decoding articles for feed \(feed.title): \(error.localizedDescription)")
+                        completion([])
+                    }
+                } else {
+                    print("DEBUG: No articles data found in CloudKit record for \(feed.title)")
+                    completion([])
+                }
+            }
+        }
+    }
+
+    // This will be handled in the main class file
+    
     @objc func refreshButtonTapped() {
+        // Cancel any existing timeout timer
+        refreshTimeoutTimer?.invalidate()
+        
         // 1) Hide tableView and show loading indicator
         tableView.isHidden = true
         loadingIndicator.startAnimating()
         
-        // 2) Manually begin showing the refresh spinner (it will be hidden with the tableView)
+        // 2) Start showing the refresh spinner
         if !refreshControl.isRefreshing {
             refreshControl.beginRefreshing()
         }
         
-        // 3) Now do your actual refresh logic
-        refreshFeeds()
+        // 3) Start refresh button animation
+        startRefreshAnimation()
+        
+        // Create a hard timeout to ensure UI is restored no matter what
+        refreshTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 12.0, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            
+            // Only take action if table is still hidden
+            if self.tableView.isHidden {
+                print("DEBUG: Hard timeout triggered for refresh operation")
+                
+                // Force UI to be restored
+                DispatchQueue.main.async {
+                    self.tableView.isHidden = false
+                    self.loadingIndicator.stopAnimating()
+                    self.loadingLabel.isHidden = true
+                    self.stopRefreshAnimation()
+                    self.refreshControl.endRefreshing()
+                    self.updateFooterVisibility()
+                    
+                    // Show an error message
+                    self.loadingLabel.text = "Refresh timed out. Please try again."
+                    self.loadingLabel.isHidden = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        self.loadingLabel.isHidden = true
+                    }
+                }
+            }
+        }
+        
+        // 4) Based on the current feed type, refresh the appropriate content
+        switch currentFeedType {
+        case .rss:
+            // For main RSS feed, load all feeds
+            loadRSSFeeds()
+            
+        case .folder(let folderId):
+            // For folder view, only refresh the current folder
+            if let folder = currentFolder, folder.id == folderId {
+                loadFolderFeeds(folder: folder)
+            } else {
+                // Folder not loaded yet, load it first
+                StorageManager.shared.getFolders { [weak self] result in
+                    guard let self = self else { return }
+                    
+                    DispatchQueue.main.async {
+                        if case .success(let folders) = result,
+                           let folder = folders.first(where: { $0.id == folderId }) {
+                            self.currentFolder = folder
+                            self.loadFolderFeeds(folder: folder)
+                        } else {
+                            // Folder not found, fall back to all feeds
+                            self.loadRSSFeeds()
+                        }
+                    }
+                }
+            }
+            
+        case .bookmarks:
+            // Refresh bookmarked feeds
+            loadBookmarkedFeeds()
+            
+        case .heart:
+            // Refresh hearted feeds
+            loadHeartedFeeds()
+        }
+    }
+    
+    @objc func openSettings() {
+        let settingsVC = SettingsViewController()
+        navigationController?.pushViewController(settingsVC, animated: true)
     }
     
     @objc func handleStyleChanged() {
@@ -704,7 +1411,7 @@ extension HomeFeedViewController {
         }
         
         // Also sort the allItems array if we're viewing the RSS feed
-        if currentFeedType == .rss {
+        if case .rss = currentFeedType {
             _allItems.sort {
                 let date1 = DateUtils.parseDate($0.pubDate)
                 let date2 = DateUtils.parseDate($1.pubDate)
@@ -797,6 +1504,38 @@ extension HomeFeedViewController {
                 self.loadingLabel.isHidden = true
                 self.stopRefreshAnimation() // Stop refresh button animation
                 self.updateFooterVisibility() // Ensure footer is visible with correct state
+            }
+        case .folder(let folderId):
+            // For folder feeds, briefly hide the tableView while loading
+            tableView.isHidden = true
+            loadingIndicator.startAnimating()
+            startRefreshAnimation() // Start refresh button animation
+            
+            // Check if we already have the folder
+            if let folder = currentFolder, folder.id == folderId {
+                loadFolderFeeds(folder: folder)
+            } else {
+                // Load the folder first
+                StorageManager.shared.getFolders { [weak self] result in
+                    guard let self = self else { return }
+                    
+                    DispatchQueue.main.async {
+                        switch result {
+                        case .success(let folders):
+                            if let folder = folders.first(where: { $0.id == folderId }) {
+                                self.currentFolder = folder
+                                self.loadFolderFeeds(folder: folder)
+                            } else {
+                                // Folder not found, return to all feeds
+                                self.currentFeedType = .rss
+                            }
+                        case .failure(let error):
+                            print("Error loading folder: \(error.localizedDescription)")
+                            // Return to all feeds on error
+                            self.currentFeedType = .rss
+                        }
+                    }
+                }
             }
         }
         updateFooterVisibility()

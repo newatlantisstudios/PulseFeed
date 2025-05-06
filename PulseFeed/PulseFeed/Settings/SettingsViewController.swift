@@ -31,6 +31,7 @@ class OPMLParserDelegate: NSObject, XMLParserDelegate {
 
 enum SettingSectionType {
     case general
+    case reader
     case feeds
     case dataManagement
     case advanced
@@ -39,6 +40,7 @@ enum SettingSectionType {
     var title: String {
         switch self {
         case .general: return "General"
+        case .reader: return "Reader"
         case .feeds: return "RSS Feeds"
         case .dataManagement: return "Data Management"
         case .advanced: return "Advanced"
@@ -359,7 +361,7 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     private func configureSettings() {
         // General Section
         let generalSection = SettingSection(type: .general, items: [
-            .slider(title: "Font Size", 
+            .slider(title: "Feed Font Size", 
                    value: UserDefaults.standard.float(forKey: "fontSize") != 0 ? UserDefaults.standard.float(forKey: "fontSize") : 16,
                    range: 12...32,
                    action: { [weak self] value in
@@ -371,11 +373,60 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                         UserDefaults.standard.set(isOn, forKey: "enhancedArticleStyle")
                         NotificationCenter.default.post(name: Notification.Name("articleStyleChanged"), object: nil)
                    }),
+            .toggle(title: "Compact View", 
+                   isOn: UserDefaults.standard.bool(forKey: "compactArticleView"),
+                   action: { isOn in
+                        UserDefaults.standard.set(isOn, forKey: "compactArticleView")
+                        NotificationCenter.default.post(name: Notification.Name("articleViewModeChanged"), object: nil)
+                   }),
+            .toggle(title: "Show Article Images", 
+                   isOn: UserDefaults.standard.bool(forKey: "showArticleImages"),
+                   action: { isOn in
+                        UserDefaults.standard.set(isOn, forKey: "showArticleImages")
+                        NotificationCenter.default.post(name: Notification.Name("articleViewModeChanged"), object: nil)
+                   }),
+            .navigation(title: "Preview Text Length", 
+                   action: { [weak self] in
+                       self?.showPreviewLengthOptions()
+                   },
+                   icon: UIImage(systemName: "text.alignleft")),
             .navigation(title: "Article Sort Order", 
                    action: { [weak self] in
                        self?.showSortOptions()
                    },
                    icon: UIImage(systemName: "arrow.up.arrow.down"))
+        ])
+        
+        // Reader Settings Section
+        let readerSection = SettingSection(type: .reader, items: [
+            .toggle(title: "Use In-App Reader", 
+                   isOn: UserDefaults.standard.bool(forKey: "useInAppReader"),
+                   action: { isOn in
+                        UserDefaults.standard.set(isOn, forKey: "useInAppReader")
+                   }),
+            .slider(title: "Reader Font Size", 
+                   value: UserDefaults.standard.float(forKey: "readerFontSize") != 0 ? UserDefaults.standard.float(forKey: "readerFontSize") : 18,
+                   range: 12...32,
+                   action: { [weak self] value in
+                        self?.readerFontSizeChanged(value)
+                   }),
+            .slider(title: "Line Spacing", 
+                   value: UserDefaults.standard.float(forKey: "readerLineHeight") != 0 ? UserDefaults.standard.float(forKey: "readerLineHeight") * 10 : 15,
+                   range: 10...30,
+                   action: { [weak self] value in
+                        self?.lineHeightChanged(value)
+                   }),
+            .toggle(title: "Sepia Mode", 
+                   isOn: UserDefaults.standard.bool(forKey: "readerSepiaMode"),
+                   action: { isOn in
+                        UserDefaults.standard.set(isOn, forKey: "readerSepiaMode")
+                        NotificationCenter.default.post(name: Notification.Name("readerAppearanceChanged"), object: nil)
+                   }),
+            .toggle(title: "Auto-Enable Reader Mode in Safari", 
+                   isOn: UserDefaults.standard.bool(forKey: "autoEnableReaderMode"),
+                   action: { isOn in
+                        UserDefaults.standard.set(isOn, forKey: "autoEnableReaderMode")
+                   })
         ])
         
         // Feed Section
@@ -385,6 +436,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                            self?.openRSSSettings()
                        },
                        icon: UIImage(systemName: "list.bullet")),
+            .navigation(title: "Folder Organization", 
+                       action: { [weak self] in
+                           self?.openFolderManagement()
+                       },
+                       icon: UIImage(systemName: "folder")),
             .navigation(title: "RSS Feed Loading Speeds", 
                        action: { [weak self] in
                            self?.openRSSLoadingSpeeds()
@@ -410,7 +466,7 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         ])
         
         // Data Management Section
-        let dataSection = SettingSection(type: .dataManagement, items: [
+        var dataItems: [SettingItemType] = [
             .toggle(title: "iCloud Syncing", 
                    isOn: UserDefaults.standard.bool(forKey: "useICloud"),
                    action: { [weak self] isOn in
@@ -426,7 +482,20 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                        self?.resetReadItems()
                    },
                    style: createButtonConfiguration(title: "Reset Read Items", color: .systemRed, symbolName: "trash"))
-        ])
+        ]
+        
+        #if DEBUG
+        // Add a test button for folder cloud syncing in debug builds
+        dataItems.append(
+            .button(title: "Test Folder Sync", 
+                   action: { [weak self] in
+                       self?.testFolderCloudSync()
+                   },
+                   style: createButtonConfiguration(title: "Test Folder Sync", color: .systemPurple, symbolName: "folder.badge.gearshape"))
+        )
+        #endif
+        
+        let dataSection = SettingSection(type: .dataManagement, items: dataItems)
         
         // Support Section
         let supportSection = SettingSection(type: .support, items: [
@@ -437,7 +506,7 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                        icon: UIImage(systemName: "heart.fill"))
         ])
         
-        settingSections = [generalSection, feedSection, dataSection, supportSection]
+        settingSections = [generalSection, readerSection, feedSection, dataSection, supportSection]
         tableView.reloadData()
     }
     
@@ -539,6 +608,21 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
             name: Notification.Name("fontSizeChanged"), object: nil)
     }
     
+    private func readerFontSizeChanged(_ value: Float) {
+        let fontSize = value
+        UserDefaults.standard.set(fontSize, forKey: "readerFontSize")
+        NotificationCenter.default.post(
+            name: Notification.Name("readerFontSizeChanged"), object: nil)
+    }
+    
+    private func lineHeightChanged(_ value: Float) {
+        // We store line height as a decimal (1.0 - 3.0) but display it as 10-30
+        let lineHeight = value / 10.0
+        UserDefaults.standard.set(lineHeight, forKey: "readerLineHeight")
+        NotificationCenter.default.post(
+            name: Notification.Name("readerLineHeightChanged"), object: nil)
+    }
+    
     private func handleStorageToggle(_ isOn: Bool) {
         if isOn {
             showEnableICloudAlert()
@@ -628,6 +712,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     @objc private func openRSSSettings() {
         let rssSettingsVC = RSSSettingsViewController()
         navigationController?.pushViewController(rssSettingsVC, animated: true)
+    }
+    
+    @objc private func openFolderManagement() {
+        let folderManagementVC = FolderManagementViewController()
+        navigationController?.pushViewController(folderManagementVC, animated: true)
     }
     
     @objc private func openRSSLoadingSpeeds() {
@@ -1210,6 +1299,49 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         present(alert, animated: true)
     }
     
+    @objc private func showPreviewLengthOptions() {
+        let alert = UIAlertController(
+            title: "Preview Text Length",
+            message: "Choose the length of preview text to display",
+            preferredStyle: .actionSheet)
+        
+        let currentPreviewLength = UserDefaults.standard.string(forKey: "previewTextLength") ?? "none"
+        
+        let previewOptions = [
+            ("None", "none"),
+            ("Short", "short"),
+            ("Medium", "medium"),
+            ("Full", "full")
+        ]
+        
+        for (title, value) in previewOptions {
+            let action = UIAlertAction(title: title, style: .default) { _ in
+                UserDefaults.standard.set(value, forKey: "previewTextLength")
+                // Notify other parts of the app about the change
+                NotificationCenter.default.post(name: Notification.Name("articleViewModeChanged"), object: nil)
+            }
+            
+            // Add a checkmark if this is the current option
+            if currentPreviewLength == value {
+                action.setValue(true, forKey: "checked")
+            }
+            
+            alert.addAction(action)
+        }
+        
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        alert.addAction(cancelAction)
+        
+        // For iPad compatibility
+        if let popoverController = alert.popoverPresentationController {
+            popoverController.sourceView = view
+            popoverController.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            popoverController.permittedArrowDirections = []
+        }
+        
+        present(alert, animated: true)
+    }
+    
     private func updateSlowFeedThreshold(_ value: Float) {
         // Save the threshold in seconds
         let threshold = Double(value)
@@ -1234,6 +1366,35 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
             }
         }
     }
+    
+    #if DEBUG
+    private func testFolderCloudSync() {
+        // Show a message that we're testing folder syncing
+        let loadingAlert = UIAlertController(
+            title: "Testing Folder Sync",
+            message: "Testing folder syncing with CloudKit...",
+            preferredStyle: .alert
+        )
+        present(loadingAlert, animated: true)
+        
+        // Run the test
+        StorageManager.shared.testFolderSyncingFromCloudKit { success in
+            DispatchQueue.main.async {
+                // Dismiss the loading alert
+                loadingAlert.dismiss(animated: true) {
+                    // Show the result
+                    let resultAlert = UIAlertController(
+                        title: success ? "Folder Sync Test Succeeded" : "Folder Sync Test Failed",
+                        message: success ? "The test folder was successfully synced from CloudKit to local storage." : "The folder sync test failed. Check the debug logs for details.",
+                        preferredStyle: .alert
+                    )
+                    resultAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(resultAlert, animated: true)
+                }
+            }
+        }
+    }
+    #endif
 }
 
 // MARK: - UITableView Protocol Extensions

@@ -39,7 +39,11 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     var refreshButton: UIBarButtonItem?
     var bookmarkButton: UIBarButtonItem?
     var heartButton: UIBarButtonItem?
+    var folderButton: UIBarButtonItem?
     var settingsButton: UIBarButtonItem?
+    
+    // Timer for refresh operations
+    internal var refreshTimeoutTimer: Timer?
     
     // Configuration
     internal var useEnhancedStyle: Bool {
@@ -48,7 +52,16 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     
     // Feed types
     enum FeedType {
-        case rss, bookmarks, heart
+        case rss, bookmarks, heart, folder(id: String)
+        
+        var displayName: String {
+            switch self {
+            case .rss: return "All Feeds"
+            case .bookmarks: return "Bookmarks"
+            case .heart: return "Favorites"
+            case .folder: return "Folder"
+            }
+        }
     }
     
     internal var currentFeedType: FeedType = .rss {
@@ -57,6 +70,9 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             updateNavigationButtons()
         }
     }
+    
+    // Current folder if any
+    var currentFolder: FeedFolder?
     
     // Property to access allItems
     var allItems: [RSSItem] {
@@ -129,7 +145,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             refreshFeeds()
         } else {
             // Ensure the footer is visible after feeds have loaded
-            if currentFeedType == .rss {
+            if case .rss = currentFeedType {
                 // Always recreate the footer to ensure it's properly configured
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     self.addFooterToTableView()
@@ -143,17 +159,17 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         super.viewDidLayoutSubviews()
         
         // Ensure the footer view is properly laid out after view appears
-        if currentFeedType == .rss {
+        if case .rss = currentFeedType {
             if tableView.tableFooterView == nil {
-                tableView.tableFooterView = footerView
+                // Always create a footer with the button
+                addFooterToTableView()
             }
             
-            // Check if all articles are read and ensure proper UI elements are visible
+            // Check if all articles are read, but we'll always show the Mark All as Read button
             let allArticlesRead = !items.isEmpty && !items.contains { !$0.isRead }
             if allArticlesRead && !tableView.isHidden {
                 DispatchQueue.main.async {
-                    // Update the footer and show "All Articles Read" message if needed
-                    self.addFooterToTableView()
+                    // We still want to show the congratulatory message
                     self.checkAndShowAllReadMessage()
                 }
             }
@@ -203,7 +219,8 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             (.init("readItemsUpdated"), #selector(handleReadItemsUpdated)),
             (.init("bookmarkedItemsUpdated"), #selector(handleBookmarkedItemsUpdated)),
             (.init("heartedItemsUpdated"), #selector(handleHeartedItemsUpdated)),
-            (.init("articleSortOrderChanged"), #selector(handleSortOrderChanged))
+            (.init("articleSortOrderChanged"), #selector(handleSortOrderChanged)),
+            (.init("feedFoldersUpdated"), #selector(handleFeedFoldersUpdated))
         ]
         
         notifications.forEach { notification in
@@ -325,7 +342,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
                     self.bookmarkedItems = Set(bookmarkedItems)
                     
                     // If currently viewing bookmarked feed, refresh it
-                    if self.currentFeedType == .bookmarks {
+                    if case .bookmarks = self.currentFeedType {
                         self.loadBookmarkedFeeds()
                     } else {
                         // Otherwise just reload the table to update swipe actions
@@ -349,7 +366,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
                     self.heartedItems = Set(heartedItems)
                     
                     // If currently viewing hearted feed, refresh it
-                    if self.currentFeedType == .heart {
+                    if case .heart = self.currentFeedType {
                         self.loadHeartedFeeds()
                     } else {
                         // Otherwise just reload the table to update swipe actions
@@ -374,6 +391,31 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         sortItems(ascending: isSortedAscending)
     }
     
+    @objc private func handleFeedFoldersUpdated(_ notification: Notification) {
+        // If we're currently viewing a folder feed, refresh it
+        // since the folder contents might have changed
+        if case .folder(let folderId) = currentFeedType {
+            // Get the folder from storage
+            StorageManager.shared.getFolders { [weak self] result in
+                guard let self = self else { return }
+                
+                DispatchQueue.main.async {
+                    if case .success(let folders) = result,
+                       let folder = folders.first(where: { $0.id == folderId }) {
+                        // Update currentFolder
+                        self.currentFolder = folder
+                        
+                        // Only reload if the folder feedURLs have changed
+                        if self.currentFolder?.feedURLs != folder.feedURLs {
+                            // Reload folder feeds
+                            self.loadFolderFeeds(folder: folder)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     // MARK: - Trait Changes
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
         super.traitCollectionDidChange(previousTraitCollection)
@@ -388,7 +430,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
         if keyPath == "contentSize", let tableView = object as? UITableView {
             // When content size changes, check if we need to refresh the footer
-            if currentFeedType == .rss && tableView.tableFooterView == nil {
+            if case .rss = currentFeedType, tableView.tableFooterView == nil {
                 refreshFooterView()
             }
         } else {

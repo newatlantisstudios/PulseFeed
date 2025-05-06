@@ -261,6 +261,7 @@ struct CloudKitStorage: ArticleStorage {
         }
     }
 
+    @available(*, deprecated, message: "Use instance method version loadArticles")
     func loadArticles(forFeed feedId: String, completion: @escaping (Result<[ArticleSummary], Error>) -> Void) {
         let recordID = CKRecord.ID(recordName: "feedArticlesRecord-\(feedId)")
         
@@ -306,6 +307,7 @@ class StorageManager {
         case readItems
         case bookmarkedItems
         case heartedItems
+        case feedFolders
     }
 
     var method: StorageMethod = .userDefaults {
@@ -402,7 +404,7 @@ class StorageManager {
         var syncSuccess = true
         
         // Sync all item types
-        for itemType in [SyncItemType.readItems, .bookmarkedItems, .heartedItems] {
+        for itemType in [SyncItemType.readItems, .bookmarkedItems, .heartedItems, .feedFolders] {
             syncGroup.enter()
             syncItemsFromCloud(type: itemType) { success in
                 if !success {
@@ -419,9 +421,76 @@ class StorageManager {
         }
     }
     
+    // For testing purposes - simulates clearing local cache and syncing from CloudKit
+    #if DEBUG
+    func testFolderSyncingFromCloudKit(completion: @escaping (Bool) -> Void) {
+        print("DEBUG: Starting folder syncing test")
+        
+        // 1. Create a test folder
+        let testFolder = FeedFolder(name: "Test Folder \(Int.random(in: 1000...9999))")
+        var folders: [FeedFolder] = []
+        
+        // 2. First get existing folders
+        getFolders { [weak self] result in
+            guard let self = self else {
+                completion(false)
+                return
+            }
+            
+            if case .success(let existingFolders) = result {
+                folders = existingFolders
+            }
+            
+            // 3. Add the test folder
+            folders.append(testFolder)
+            
+            // 4. Save to CloudKit
+            print("DEBUG: Saving test folder to CloudKit")
+            self.saveToCloudKit(folders, forKey: "feedFolders", retryCount: 3) { error in
+                if let error = error {
+                    print("DEBUG: Failed to save test folder: \(error.localizedDescription)")
+                    completion(false)
+                    return
+                }
+                
+                // 5. Clear local cache
+                print("DEBUG: Clearing local folder cache")
+                UserDefaults.standard.removeObject(forKey: "feedFolders")
+                
+                // 6. Sync from CloudKit to verify folders are restored
+                print("DEBUG: Syncing from CloudKit")
+                self.syncFoldersFromCloud { success in
+                    if success {
+                        // 7. Verify the test folder was synced
+                        self.getFolders { result in
+                            if case .success(let syncedFolders) = result {
+                                let found = syncedFolders.contains { $0.id == testFolder.id }
+                                print("DEBUG: Test folder found after sync: \(found)")
+                                completion(found)
+                            } else {
+                                print("DEBUG: Failed to get folders after sync")
+                                completion(false)
+                            }
+                        }
+                    } else {
+                        print("DEBUG: Sync from CloudKit failed")
+                        completion(false)
+                    }
+                }
+            }
+        }
+    }
+    #endif
+    
     // Generic method to sync different item types
     private func syncItemsFromCloud(type: SyncItemType, completion: @escaping (Bool) -> Void) {
         let key = type.rawValue
+        
+        // Special handling for folders which are complex objects rather than simple string arrays
+        if type == .feedFolders {
+            syncFoldersFromCloud(completion: completion)
+            return
+        }
         
         CloudKitStorage().load(forKey: key) { (result: Result<[String], Error>) in
             
@@ -465,6 +534,87 @@ class StorageManager {
                 }
                 
             case .failure:
+                completion(false)
+            }
+        }
+    }
+    
+    // Special method to sync folders from CloudKit
+    private func syncFoldersFromCloud(completion: @escaping (Bool) -> Void) {
+        let key = SyncItemType.feedFolders.rawValue
+        
+        // Fetch folders from CloudKit
+        CloudKitStorage().load(forKey: key) { (result: Result<[FeedFolder], Error>) in
+            switch result {
+            case .success(let cloudFolders):
+                // Get local folders
+                var localFolders: [FeedFolder] = []
+                if let data = UserDefaults.standard.data(forKey: key) {
+                    do {
+                        localFolders = try JSONDecoder().decode([FeedFolder].self, from: data)
+                    } catch {
+                        print("ERROR: Failed to decode local folders: \(error.localizedDescription)")
+                    }
+                }
+                
+                // Merge folders by ID
+                var mergedFolders: [FeedFolder] = []
+                var folderDict: [String: FeedFolder] = [:]
+                
+                // Add all local folders to dictionary
+                for folder in localFolders {
+                    folderDict[folder.id] = folder
+                }
+                
+                // Merge with cloud folders
+                for cloudFolder in cloudFolders {
+                    if let existingFolder = folderDict[cloudFolder.id] {
+                        // If folder exists locally, merge feed URLs
+                        var updatedFolder = existingFolder
+                        
+                        // Normalize all feed URLs
+                        let normalizedLocalURLs = existingFolder.feedURLs.map { self.normalizeLink($0) }
+                        let normalizedCloudURLs = cloudFolder.feedURLs.map { self.normalizeLink($0) }
+                        
+                        // Merge the URLs
+                        let mergedURLs = Array(Set(normalizedLocalURLs).union(Set(normalizedCloudURLs)))
+                        updatedFolder.feedURLs = mergedURLs
+                        
+                        // Use the most recent name (prefer cloud for simplicity)
+                        updatedFolder.name = cloudFolder.name
+                        
+                        // Update dictionary
+                        folderDict[cloudFolder.id] = updatedFolder
+                    } else {
+                        // If folder doesn't exist locally, add it
+                        folderDict[cloudFolder.id] = cloudFolder
+                    }
+                }
+                
+                // Convert dictionary back to array
+                mergedFolders = Array(folderDict.values)
+                
+                // Save merged folders locally
+                if let encodedData = try? JSONEncoder().encode(mergedFolders) {
+                    UserDefaults.standard.set(encodedData, forKey: key)
+                    
+                    // Notify that folders were updated
+                    NotificationCenter.default.post(name: Notification.Name("feedFoldersUpdated"), object: nil)
+                    
+                    // If there were changes (more local folders or merged feed URLs), update CloudKit
+                    if localFolders.count > cloudFolders.count || mergedFolders != cloudFolders {
+                        self.saveToCloudKit(mergedFolders, forKey: key, retryCount: 3) { error in
+                            completion(error == nil)
+                        }
+                    } else {
+                        completion(true)
+                    }
+                } else {
+                    completion(false)
+                }
+                
+            case .failure(let error):
+                print("ERROR: Failed to load folders from CloudKit: \(error.localizedDescription)")
                 completion(false)
             }
         }
@@ -690,5 +840,293 @@ class StorageManager {
         }
         
         return urlString
+    }
+    
+    // MARK: - Feed Folder Management
+    
+    /// Get all feed folders from storage
+    func getFolders(completion: @escaping (Result<[FeedFolder], Error>) -> Void) {
+        load(forKey: "feedFolders") { (result: Result<[FeedFolder], Error>) in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let folders):
+                    completion(.success(folders))
+                case .failure(let error):
+                    if case StorageError.notFound = error {
+                        // If no folders are found, return an empty array
+                        completion(.success([]))
+                    } else {
+                        completion(.failure(error))
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Create a new folder
+    func createFolder(name: String, completion: @escaping (Result<FeedFolder, Error>) -> Void) {
+        getFolders { result in
+            switch result {
+            case .success(var folders):
+                // Create new folder
+                let newFolder = FeedFolder(name: name)
+                folders.append(newFolder)
+                
+                // Save updated folders list with CloudKit sync and retry
+                self.saveToCloudKit(folders, forKey: "feedFolders", retryCount: 3) { error in
+                    DispatchQueue.main.async {
+                        if let error = error {
+                            completion(.failure(error))
+                        } else {
+                            // Also update in UserDefaults for immediate local access
+                            if let encodedData = try? JSONEncoder().encode(folders) {
+                                UserDefaults.standard.set(encodedData, forKey: "feedFolders")
+                            }
+                            
+                            completion(.success(newFolder))
+                            
+                            // Post notification that folders have been updated
+                            NotificationCenter.default.post(name: Notification.Name("feedFoldersUpdated"), object: nil)
+                        }
+                    }
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+    
+    /// Update an existing folder
+    func updateFolder(_ folder: FeedFolder, completion: @escaping (Result<Bool, Error>) -> Void) {
+        getFolders { result in
+            switch result {
+            case .success(var folders):
+                // Find and update the folder
+                if let index = folders.firstIndex(where: { $0.id == folder.id }) {
+                    // Normalize feed URLs in the updated folder
+                    var normalizedFolder = folder
+                    normalizedFolder.feedURLs = folder.feedURLs.map { self.normalizeLink($0) }
+                    
+                    folders[index] = normalizedFolder
+                    
+                    // Save updated folders list with CloudKit sync and retry
+                    self.saveToCloudKit(folders, forKey: "feedFolders", retryCount: 3) { error in
+                        DispatchQueue.main.async {
+                            if let error = error {
+                                completion(.failure(error))
+                            } else {
+                                // Also update in UserDefaults for immediate local access
+                                if let encodedData = try? JSONEncoder().encode(folders) {
+                                    UserDefaults.standard.set(encodedData, forKey: "feedFolders")
+                                }
+                                
+                                completion(.success(true))
+                                
+                                // Post notification that folders have been updated
+                                NotificationCenter.default.post(name: Notification.Name("feedFoldersUpdated"), object: nil)
+                            }
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1, 
+                                        userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                    }
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+    
+    /// Delete a folder
+    func deleteFolder(id: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+        getFolders { result in
+            switch result {
+            case .success(var folders):
+                // Remove the folder
+                folders.removeAll { $0.id == id }
+                
+                // Save updated folders list with CloudKit sync and retry
+                self.saveToCloudKit(folders, forKey: "feedFolders", retryCount: 3) { error in
+                    DispatchQueue.main.async {
+                        if let error = error {
+                            completion(.failure(error))
+                        } else {
+                            // Also update in UserDefaults for immediate local access
+                            if let encodedData = try? JSONEncoder().encode(folders) {
+                                UserDefaults.standard.set(encodedData, forKey: "feedFolders")
+                            }
+                            
+                            completion(.success(true))
+                            
+                            // Post notification that folders have been updated
+                            NotificationCenter.default.post(name: Notification.Name("feedFoldersUpdated"), object: nil)
+                        }
+                    }
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+    
+    /// Add a feed to a folder
+    func addFeedToFolder(feedURL: String, folderId: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+        getFolders { result in
+            switch result {
+            case .success(var folders):
+                // Find the folder
+                if let index = folders.firstIndex(where: { $0.id == folderId }) {
+                    // Add feed to folder if it's not already there
+                    let normalizedURL = self.normalizeLink(feedURL)
+                    
+                    // Check if the feed is already in the folder (using normalized URLs)
+                    let normalizedFolderURLs = folders[index].feedURLs.map { self.normalizeLink($0) }
+                    if !normalizedFolderURLs.contains(normalizedURL) {
+                        folders[index].feedURLs.append(normalizedURL)
+                        
+                        // Save updated folders list with CloudKit sync and retry
+                        self.saveToCloudKit(folders, forKey: "feedFolders", retryCount: 3) { error in
+                            DispatchQueue.main.async {
+                                if let error = error {
+                                    completion(.failure(error))
+                                } else {
+                                    // Also update in UserDefaults for immediate local access
+                                    if let encodedData = try? JSONEncoder().encode(folders) {
+                                        UserDefaults.standard.set(encodedData, forKey: "feedFolders")
+                                    }
+                                    
+                                    completion(.success(true))
+                                    
+                                    // Post notification that folders have been updated
+                                    NotificationCenter.default.post(name: Notification.Name("feedFoldersUpdated"), object: nil)
+                                }
+                            }
+                        }
+                    } else {
+                        // Feed already in folder
+                        DispatchQueue.main.async {
+                            completion(.success(true))
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1, 
+                                        userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                    }
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+    
+    /// Remove a feed from a folder
+    func removeFeedFromFolder(feedURL: String, folderId: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+        getFolders { result in
+            switch result {
+            case .success(var folders):
+                // Find the folder
+                if let index = folders.firstIndex(where: { $0.id == folderId }) {
+                    // Remove feed from folder using normalized URLs for comparison
+                    let normalizedURL = self.normalizeLink(feedURL)
+                    folders[index].feedURLs.removeAll { self.normalizeLink($0) == normalizedURL }
+                    
+                    // Save updated folders list with CloudKit sync and retry
+                    self.saveToCloudKit(folders, forKey: "feedFolders", retryCount: 3) { error in
+                        DispatchQueue.main.async {
+                            if let error = error {
+                                completion(.failure(error))
+                            } else {
+                                // Also update in UserDefaults for immediate local access
+                                if let encodedData = try? JSONEncoder().encode(folders) {
+                                    UserDefaults.standard.set(encodedData, forKey: "feedFolders")
+                                }
+                                
+                                completion(.success(true))
+                                
+                                // Post notification that folders have been updated
+                                NotificationCenter.default.post(name: Notification.Name("feedFoldersUpdated"), object: nil)
+                            }
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1, 
+                                        userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                    }
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+    
+    /// Get all feeds in a specific folder
+    func getFeedsInFolder(folderId: String, completion: @escaping (Result<[RSSFeed], Error>) -> Void) {
+        // First get the folder to get the feed URLs
+        getFolders { result in
+            switch result {
+            case .success(let folders):
+                // Find the folder
+                if let folder = folders.first(where: { $0.id == folderId }) {
+                    // Load all feeds
+                    self.load(forKey: "rssFeeds") { (result: Result<[RSSFeed], Error>) in
+                        DispatchQueue.main.async {
+                            switch result {
+                            case .success(let allFeeds):
+                                // Filter feeds that are in the folder
+                                let folderFeeds = allFeeds.filter { feed in
+                                    folder.feedURLs.contains(where: { self.normalizeLink($0) == self.normalizeLink(feed.url) })
+                                }
+                                completion(.success(folderFeeds))
+                            case .failure(let error):
+                                completion(.failure(error))
+                            }
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1, 
+                                        userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                    }
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+    
+    /// Get the folder that contains a specific feed
+    func getFolderForFeed(feedURL: String, completion: @escaping (Result<FeedFolder?, Error>) -> Void) {
+        getFolders { result in
+            switch result {
+            case .success(let folders):
+                let normalizedURL = self.normalizeLink(feedURL)
+                let containingFolder = folders.first { folder in
+                    folder.feedURLs.contains { self.normalizeLink($0) == normalizedURL }
+                }
+                DispatchQueue.main.async {
+                    completion(.success(containingFolder))
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
     }
 }
