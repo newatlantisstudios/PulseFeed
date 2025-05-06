@@ -280,8 +280,8 @@ extension HomeFeedViewController {
         // Enhanced appearance with gradient background
         let gradientLayer = CAGradientLayer()
         gradientLayer.colors = [
-            UIColor(hex: "121212").cgColor,
-            UIColor(hex: "2A2A2A").cgColor
+            AppColors.primary.cgColor,
+            UIColor(red: 0.16, green: 0.16, blue: 0.16, alpha: 1.0).cgColor
         ]
         gradientLayer.startPoint = CGPoint(x: 0.0, y: 0.0)
         gradientLayer.endPoint = CGPoint(x: 1.0, y: 1.0)
@@ -1132,7 +1132,7 @@ extension HomeFeedViewController {
                     var items = self.parseRSSData(data, source: feed.title)
                     
                     if !items.isEmpty {
-                        print("DEBUG: Successfully parsed feed \(feed.title) - Found \(items.count) items")
+                        //print("DEBUG: Successfully parsed feed \(feed.title) - Found \(items.count) items")
                         
                         // Filter out read items
                         let unreadItems = items.filter { item in

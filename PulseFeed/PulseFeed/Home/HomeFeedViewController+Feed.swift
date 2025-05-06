@@ -187,7 +187,7 @@ extension HomeFeedViewController {
                                 liveItems.append(contentsOf: filtered)
                                 
                                 // Print some debug info about the feed type (RSS or Atom)
-                                print("DEBUG: Successfully parsed \(feed.title) - Found \(rssParser.items.count) items")
+                                //print("DEBUG: Successfully parsed \(feed.title) - Found \(rssParser.items.count) items")
                             }
                         } else {
                             // XML parsing failed - mark as failed feed

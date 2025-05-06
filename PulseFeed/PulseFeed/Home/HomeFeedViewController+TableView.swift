@@ -310,24 +310,18 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             return
         }
         
-        // Create and configure the article reader
-        let articleReaderVC = ArticleReaderViewController()
-        articleReaderVC.item = item
+        // Create a loading indicator view BEFORE creating the ArticleReaderViewController
+        let loadingView = UIActivityIndicatorView(style: .medium)
+        loadingView.startAnimating()
+        loadingView.center = view.center
+        view.addSubview(loadingView)
         
-        // If offline and article is cached, load cached content
+        // Check if article is cached before opening to avoid locks
         if isOfflineMode {
             let normalizedLink = normalizeLink(item.link)
-            if cachedArticleLinks.contains(normalizedLink) {
-                // Load cached content
-                StorageManager.shared.getCachedArticleContent(link: item.link) { result in
-                    if case .success(let cachedArticle) = result {
-                        DispatchQueue.main.async {
-                            articleReaderVC.htmlContent = cachedArticle.content
-                        }
-                    }
-                }
-            } else {
-                // Show alert that article is not available offline
+            if !cachedArticleLinks.contains(normalizedLink) {
+                // Not cached and offline - show alert and return
+                loadingView.removeFromSuperview()
                 let alert = UIAlertController(
                     title: "Article Not Cached",
                     message: "This article is not available offline. Connect to the internet to read it.",
@@ -339,13 +333,46 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             }
         }
         
-        // Create a loading indicator view
-        let loadingView = UIActivityIndicatorView(style: .medium)
-        loadingView.startAnimating()
-        loadingView.center = view.center
-        view.addSubview(loadingView)
+        // Create ArticleReaderViewController after confirming we can read the article
+        let articleReaderVC = ArticleReaderViewController()
+        articleReaderVC.item = item
         
-        // Navigate to the article reader view
+        // Load cached content if offline
+        if isOfflineMode {
+            let normalizedLink = normalizeLink(item.link)
+            if cachedArticleLinks.contains(normalizedLink) {
+                // Pre-load cached content in background before showing controller
+                StorageManager.shared.getCachedArticleContent(link: item.link) { result in
+                    if case .success(let cachedArticle) = result {
+                        DispatchQueue.main.async {
+                            articleReaderVC.htmlContent = cachedArticle.content
+                            // Now that content is loaded, navigate to the article reader
+                            self.navigationController?.pushViewController(articleReaderVC, animated: true)
+                            
+                            // Remove the loading view after navigation
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                loadingView.removeFromSuperview()
+                            }
+                        }
+                    } else {
+                        // Error loading cached content
+                        DispatchQueue.main.async {
+                            loadingView.removeFromSuperview()
+                            let alert = UIAlertController(
+                                title: "Error",
+                                message: "Failed to load cached article",
+                                preferredStyle: .alert
+                            )
+                            alert.addAction(UIAlertAction(title: "OK", style: .default))
+                            self.present(alert, animated: true)
+                        }
+                    }
+                }
+                return // Return early since we'll push the VC after content loads
+            }
+        }
+        
+        // For online mode, push the view controller and let it load content
         navigationController?.pushViewController(articleReaderVC, animated: true)
         
         // Remove the loading view after navigation completes

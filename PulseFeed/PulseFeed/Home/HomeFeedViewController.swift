@@ -106,15 +106,29 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         setupNotificationObserver()
         setupLongPressGesture()
         
-        // Hide tableView initially until articles are loaded
-        tableView.isHidden = true
-        loadingIndicator.startAnimating()
-        
-        // Start the animation immediately
-        startRefreshAnimation()
-        
-        // Load feeds
-        loadRSSFeeds()
+        // Only do initial loading if we haven't loaded feeds yet
+        if !hasLoadedRSSFeeds {
+            // Hide tableView initially until articles are loaded
+            tableView.isHidden = true
+            loadingIndicator.startAnimating()
+            
+            // Start the animation immediately
+            startRefreshAnimation()
+            
+            // Load feeds (only on first appearance)
+            loadRSSFeeds()
+        } else {
+            // If we're returning from another view, just ensure UI is updated
+            // without reloading all feeds
+            updateNavigationButtons()
+            
+            // Make sure the table is visible
+            tableView.isHidden = false
+            loadingIndicator.stopAnimating()
+            
+            // Ensure refresh animation is stopped when returning from article
+            stopRefreshAnimation()
+        }
 
         // Load cached data
         loadCachedData()
@@ -127,6 +141,25 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         
         // Load filter settings
         loadFilterSettings()
+        
+        // If we're returning from an article, update read status safely
+        // But don't call updateReadState() directly to avoid lockups
+        if hasLoadedRSSFeeds {
+            // First make sure we have read links loaded
+            StorageManager.shared.load(forKey: "readItems") { [weak self] (result: Result<[String], Error>) in
+                guard let self = self else { return }
+                
+                DispatchQueue.main.async {
+                    if case .success(let readItems) = result {
+                        // Update cached read links safely
+                        self.readLinks = Set(readItems.map { StorageManager.shared.normalizeLink($0) })
+                        
+                        // Only reload the table - don't try to update all items yet
+                        self.tableView.reloadData()
+                    }
+                }
+            }
+        }
     }
     
     override func viewDidAppear(_ animated: Bool) {
@@ -137,23 +170,10 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             startRefreshAnimation()
         }
 
-        // If we haven't loaded feeds yet, automatically show pull-to-refresh:
-        if !hasLoadedRSSFeeds {
-            // Keep tableView hidden while refreshing
-            tableView.isHidden = true
-            loadingIndicator.startAnimating()
-            
-            // Ensure refresh icon is spinning
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.startRefreshAnimation()
-            }
-            
-            // Start the refresh spinner but keep it invisible until tableView is shown
-            refreshControl.beginRefreshing()
-
-            // Call the refresh method
-            refreshFeeds()
-        } else {
+        // No need to call refreshFeeds() here since we're handling initial loading in viewWillAppear
+        // Just ensure the UI is properly updated when returning from another view
+        
+        if hasLoadedRSSFeeds {
             // Ensure the footer is visible after feeds have loaded
             if case .rss = currentFeedType {
                 // Always recreate the footer to ensure it's properly configured
