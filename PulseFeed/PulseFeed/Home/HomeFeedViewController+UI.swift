@@ -933,26 +933,43 @@ extension HomeFeedViewController {
             // Log result
             print("DEBUG: Loaded \(folderItems.count) items across all feeds in folder")
             
-            // Update read status and filter out read items
-            var unreadItems: [RSSItem] = []
+            // Get the "Show Read Articles" setting
+            let showReadArticles = UserDefaults.standard.bool(forKey: "showReadArticles")
+            
+            // Update read status and filter based on read setting
+            var readFilteredItems: [RSSItem] = []
             
             for i in 0..<folderItems.count {
                 let normLink = self.normalizeLink(folderItems[i].link)
                 let isRead = self.readLinks.contains(normLink)
                 
-                // Only include unread items
-                if !isRead {
-                    folderItems[i].isRead = false
-                    unreadItems.append(folderItems[i])
-                } else {
-                    folderItems[i].isRead = true
+                folderItems[i].isRead = isRead
+                
+                // Only include unread items if not showing read articles, otherwise include all
+                if !isRead || showReadArticles {
+                    readFilteredItems.append(folderItems[i])
                 }
             }
             
-            print("DEBUG: Filtered \(folderItems.count) total items to \(unreadItems.count) unread items")
+            // Then filter by keywords if content filtering is enabled
+            var filteredItems: [RSSItem] = []
+            if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
+                // Filter out articles that match any of the filter keywords
+                filteredItems = readFilteredItems.filter { !self.shouldFilterArticle($0) }
+                print("DEBUG: Keyword filtered \(readFilteredItems.count) items to \(filteredItems.count) items")
+            } else {
+                // No keyword filtering, use all read-filtered items
+                filteredItems = readFilteredItems
+            }
             
-            // Sort the filtered unread items
-            var sortedItems = unreadItems
+            if showReadArticles {
+                print("DEBUG: Showing all \(folderItems.count) items including read articles")
+            } else {
+                print("DEBUG: Filtered \(folderItems.count) total items to \(readFilteredItems.count) unread items")
+            }
+            
+            // Sort the filtered items
+            var sortedItems = filteredItems
             self.sortFilteredItems(&sortedItems)
             
             // Update the items and reload table
@@ -1455,7 +1472,15 @@ extension HomeFeedViewController {
                 loadingIndicator.startAnimating()
                 startRefreshAnimation() // Start refresh button animation
                 
-                items = allItems
+                // Apply content filtering if enabled
+                if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
+                    // Filter out articles that match any of the filter keywords
+                    items = allItems.filter { !self.shouldFilterArticle($0) }
+                    print("DEBUG: Keyword filtered \(allItems.count) items to \(items.count) items")
+                } else {
+                    // No keyword filtering
+                    items = allItems
+                }
                 tableView.reloadData()
                 
                 // Show tableView after a short delay to ensure smooth transition
@@ -1542,11 +1567,23 @@ extension HomeFeedViewController {
     }
     
     func loadBookmarkedFeeds() {
-        // Filter the complete list based on bookmarked links using normalized links
-        var filteredItems = self._allItems.filter { item in
+        // First filter the complete list based on bookmarked links using normalized links
+        var bookmarkedFilteredItems = self._allItems.filter { item in
             let normalizedLink = self.normalizeLink(item.link)
             return self.bookmarkedItems.contains { self.normalizeLink($0) == normalizedLink }
         }
+        
+        // Then apply keyword filtering if enabled
+        var filteredItems: [RSSItem]
+        if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
+            // Filter out articles that match any of the filter keywords
+            filteredItems = bookmarkedFilteredItems.filter { !self.shouldFilterArticle($0) }
+            print("DEBUG: Keyword filtered \(bookmarkedFilteredItems.count) bookmarked items to \(filteredItems.count) items")
+        } else {
+            // No keyword filtering, use all bookmarked items
+            filteredItems = bookmarkedFilteredItems
+        }
+        
         // Sort the filtered items based on the current sort order
         sortFilteredItems(&filteredItems)
         self.items = filteredItems
@@ -1555,11 +1592,23 @@ extension HomeFeedViewController {
     }
 
     func loadHeartedFeeds() {
-        // Filter the complete list based on hearted links using normalized links
-        var filteredItems = self._allItems.filter { item in
+        // First filter the complete list based on hearted links using normalized links
+        var heartedFilteredItems = self._allItems.filter { item in
             let normalizedLink = self.normalizeLink(item.link)
             return self.heartedItems.contains { self.normalizeLink($0) == normalizedLink }
         }
+        
+        // Then apply keyword filtering if enabled
+        var filteredItems: [RSSItem]
+        if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
+            // Filter out articles that match any of the filter keywords
+            filteredItems = heartedFilteredItems.filter { !self.shouldFilterArticle($0) }
+            print("DEBUG: Keyword filtered \(heartedFilteredItems.count) hearted items to \(filteredItems.count) items")
+        } else {
+            // No keyword filtering, use all hearted items
+            filteredItems = heartedFilteredItems
+        }
+        
         // Sort the filtered items based on the current sort order
         sortFilteredItems(&filteredItems)
         self.items = filteredItems

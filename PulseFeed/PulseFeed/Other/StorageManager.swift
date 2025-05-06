@@ -2,6 +2,11 @@ import CloudKit
 import Foundation
 import UIKit
 
+// Extension to define custom notification names
+extension NSNotification.Name {
+    static let NetworkStatusChanged = NSNotification.Name("NetworkStatusChanged")
+}
+
 enum StorageMethod {
     case userDefaults, cloudKit
 }
@@ -11,6 +16,8 @@ enum StorageError: Error {
     case decodingFailed(Error)
     case encodingFailed(Error)
     case cloudKitError(Error)
+    case networkError(Error)
+    case connectionOffline
     case unknown(Error)
     
     var localizedDescription: String {
@@ -23,6 +30,10 @@ enum StorageError: Error {
             return "Failed to encode data: \(error.localizedDescription)"
         case .cloudKitError(let error):
             return "CloudKit error: \(error.localizedDescription)"
+        case .networkError(let error):
+            return "Network error: \(error.localizedDescription)"
+        case .connectionOffline:
+            return "Network connection is offline"
         case .unknown(let error):
             return "Unknown error: \(error.localizedDescription)"
         }
@@ -292,6 +303,23 @@ struct CloudKitStorage: ArticleStorage {
     }
 }
 
+/// Structure for storing full article content for offline reading
+struct CachedArticleContent: Codable {
+    let link: String
+    let content: String
+    let cachedDate: Date
+    let title: String
+    let source: String
+    
+    init(link: String, content: String, title: String, source: String) {
+        self.link = link
+        self.content = content
+        self.cachedDate = Date()
+        self.title = title
+        self.source = source
+    }
+}
+
 /// Singleton that provides a unified interface for storage.
 class StorageManager {
     // MARK: - Properties
@@ -302,13 +330,20 @@ class StorageManager {
     private var hasSyncedOnLaunch = false
     private var hasSetupSubscriptions = false
     
+    // Network connectivity state
+    private var isOffline = false
+    
     // Sync items types
     private enum SyncItemType: String {
         case readItems
         case bookmarkedItems
         case heartedItems
         case feedFolders
+        case cachedArticles
     }
+    
+    /// Dictionary to track which articles are currently being cached to prevent duplicate requests
+    private var articlesBeingCached = [String: Bool]()
 
     var method: StorageMethod = .userDefaults {
         didSet {
@@ -342,10 +377,61 @@ class StorageManager {
             name: Notification.Name("CKRemoteChangeNotification"),
             object: nil
         )
+        
+        // Observe network status changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleNetworkStatusChanged(_:)),
+            name: NSNotification.Name.NetworkStatusChanged,
+            object: nil
+        )
+        
+        // Initialize network status
+        checkNetworkConnectivity()
     }
     
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+    
+    // MARK: - Network Connectivity
+    
+    /// Check current network connectivity
+    private func checkNetworkConnectivity() {
+        // For now, we'll rely on the notification system
+        // In a real app, this would be implemented with network reachability checking
+        // like NWPathMonitor or SCNetworkReachability
+        isOffline = false
+    }
+    
+    @objc private func handleNetworkStatusChanged(_ notification: Notification) {
+        if let isConnected = notification.userInfo?["isConnected"] as? Bool {
+            isOffline = !isConnected
+            
+            // Notify the app about offline status change
+            NotificationCenter.default.post(
+                name: Notification.Name("OfflineStatusChanged"),
+                object: nil,
+                userInfo: ["isOffline": isOffline]
+            )
+        }
+    }
+    
+    /// Check if the device is currently offline
+    var isDeviceOffline: Bool {
+        return isOffline
+    }
+    
+    /// Manually set offline state (for testing or when network status detection fails)
+    func setOfflineState(_ offline: Bool) {
+        isOffline = offline
+        
+        // Notify the app about offline status change
+        NotificationCenter.default.post(
+            name: Notification.Name("OfflineStatusChanged"),
+            object: nil,
+            userInfo: ["isOffline": isOffline]
+        )
     }
     
     // MARK: - CloudKit Setup
@@ -618,6 +704,189 @@ class StorageManager {
                 completion(false)
             }
         }
+    }
+    
+    // MARK: - Article Caching
+    
+    /// Cache article content for offline reading
+    /// - Parameters:
+    ///   - link: The article URL
+    ///   - content: The HTML content of the article
+    ///   - title: The article title
+    ///   - source: The source/publisher of the article
+    ///   - completion: Called with success or error
+    func cacheArticleContent(link: String, content: String, title: String, source: String, completion: @escaping (Bool, Error?) -> Void) {
+        // Normalize the link
+        let normalizedLink = normalizeLink(link)
+        
+        // Prevent duplicate caching requests for the same article
+        if articlesBeingCached[normalizedLink] == true {
+            completion(false, nil)
+            return
+        }
+        
+        // Mark article as being cached
+        articlesBeingCached[normalizedLink] = true
+        
+        // Create new cached article
+        let cachedArticle = CachedArticleContent(
+            link: normalizedLink,
+            content: content,
+            title: title,
+            source: source
+        )
+        
+        // Load existing cached articles
+        load(forKey: "cachedArticles") { [weak self] (result: Result<[CachedArticleContent], Error>) in
+            guard let self = self else {
+                completion(false, NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Storage manager no longer exists"]))
+                return
+            }
+            
+            var cachedArticles: [CachedArticleContent] = []
+            
+            if case .success(let existingArticles) = result {
+                cachedArticles = existingArticles
+            }
+            
+            // Remove any existing version of this article
+            cachedArticles.removeAll { self.normalizeLink($0.link) == normalizedLink }
+            
+            // Add the new article
+            cachedArticles.append(cachedArticle)
+            
+            // Limit to most recent 50 articles to prevent excessive storage use
+            if cachedArticles.count > 50 {
+                cachedArticles.sort { $0.cachedDate > $1.cachedDate }
+                cachedArticles = Array(cachedArticles.prefix(50))
+            }
+            
+            // Save the updated list
+            self.save(cachedArticles, forKey: "cachedArticles") { error in
+                // Remove from being cached list
+                self.articlesBeingCached[normalizedLink] = nil
+                
+                if let error = error {
+                    completion(false, error)
+                } else {
+                    // Post notification that article was cached
+                    NotificationCenter.default.post(
+                        name: Notification.Name("ArticleCached"),
+                        object: nil,
+                        userInfo: ["link": normalizedLink]
+                    )
+                    completion(true, nil)
+                }
+            }
+        }
+    }
+    
+    /// Get cached content for an article
+    /// - Parameters:
+    ///   - link: The article URL
+    ///   - completion: Called with the cached content or an error
+    func getCachedArticleContent(link: String, completion: @escaping (Result<CachedArticleContent, Error>) -> Void) {
+        let normalizedLink = normalizeLink(link)
+        
+        load(forKey: "cachedArticles") { (result: Result<[CachedArticleContent], Error>) in
+            switch result {
+            case .success(let cachedArticles):
+                if let article = cachedArticles.first(where: { self.normalizeLink($0.link) == normalizedLink }) {
+                    completion(.success(article))
+                } else {
+                    completion(.failure(StorageError.notFound))
+                }
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+    
+    /// Check if article has cached content
+    /// - Parameters:
+    ///   - link: The article URL
+    ///   - completion: Called with bool indicating whether content is cached
+    func isArticleCached(link: String, completion: @escaping (Bool) -> Void) {
+        let normalizedLink = normalizeLink(link)
+        
+        load(forKey: "cachedArticles") { (result: Result<[CachedArticleContent], Error>) in
+            switch result {
+            case .success(let cachedArticles):
+                let isCached = cachedArticles.contains { self.normalizeLink($0.link) == normalizedLink }
+                completion(isCached)
+            case .failure:
+                completion(false)
+            }
+        }
+    }
+    
+    /// Remove a specific article from cache
+    /// - Parameters:
+    ///   - link: The article URL
+    ///   - completion: Called with success or error
+    func removeCachedArticle(link: String, completion: @escaping (Bool, Error?) -> Void) {
+        let normalizedLink = normalizeLink(link)
+        
+        // Load existing cached articles
+        load(forKey: "cachedArticles") { [weak self] (result: Result<[CachedArticleContent], Error>) in
+            guard let self = self else {
+                completion(false, NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Storage manager no longer exists"]))
+                return
+            }
+            
+            switch result {
+            case .success(var cachedArticles):
+                // Check if article exists in cache
+                if !cachedArticles.contains(where: { self.normalizeLink($0.link) == normalizedLink }) {
+                    completion(true, nil) // Already not in cache
+                    return
+                }
+                
+                // Remove the article
+                cachedArticles.removeAll { self.normalizeLink($0.link) == normalizedLink }
+                
+                // Save the updated list
+                self.save(cachedArticles, forKey: "cachedArticles") { error in
+                    if let error = error {
+                        completion(false, error)
+                    } else {
+                        // Post notification that article was removed from cache
+                        NotificationCenter.default.post(
+                            name: Notification.Name("ArticleRemovedFromCache"),
+                            object: nil,
+                            userInfo: ["link": normalizedLink]
+                        )
+                        completion(true, nil)
+                    }
+                }
+            case .failure(let error):
+                completion(false, error)
+            }
+        }
+    }
+    
+    /// Remove all cached articles
+    /// - Parameter completion: Called with success or error
+    func clearArticleCache(completion: @escaping (Bool, Error?) -> Void) {
+        // Save an empty array to clear the cache
+        save([CachedArticleContent](), forKey: "cachedArticles") { error in
+            if let error = error {
+                completion(false, error)
+            } else {
+                // Post notification that cache was cleared
+                NotificationCenter.default.post(
+                    name: Notification.Name("ArticleCacheCleared"),
+                    object: nil
+                )
+                completion(true, nil)
+            }
+        }
+    }
+    
+    /// Get all cached articles
+    /// - Parameter completion: Called with the list of cached articles or an error
+    func getAllCachedArticles(completion: @escaping (Result<[CachedArticleContent], Error>) -> Void) {
+        load(forKey: "cachedArticles", completion: completion)
     }
     
     // MARK: - Public API

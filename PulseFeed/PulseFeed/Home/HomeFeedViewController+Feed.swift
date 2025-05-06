@@ -152,11 +152,38 @@ extension HomeFeedViewController {
                                     self.loadingLabel.text = "No items found in \(feed.title)"
                                 }
                             } else {
-                                // Filter out already-read links
-                                let filtered = rssParser.items.filter {
-                                    let normLink = self.normalizeLink($0.link)
-                                    return !readLinks.contains(normLink)
+                                // Filter based on the "Show Read Articles" setting
+                                let showReadArticles = UserDefaults.standard.bool(forKey: "showReadArticles")
+                                
+                                // First filter by read status
+                                let readFiltered: [RSSItem]
+                                if showReadArticles {
+                                    // When showReadArticles is enabled, include all items
+                                    // but mark them as read appropriately
+                                    readFiltered = rssParser.items.map { item in
+                                        let normLink = self.normalizeLink(item.link)
+                                        var modifiedItem = item
+                                        modifiedItem.isRead = readLinks.contains(normLink)
+                                        return modifiedItem
+                                    }
+                                } else {
+                                    // When showReadArticles is disabled, only include unread items
+                                    readFiltered = rssParser.items.filter {
+                                        let normLink = self.normalizeLink($0.link)
+                                        return !readLinks.contains(normLink)
+                                    }
                                 }
+                                
+                                // Then filter by keywords if content filtering is enabled
+                                let filtered: [RSSItem]
+                                if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
+                                    // Filter out articles that match any of the filter keywords
+                                    filtered = readFiltered.filter { !self.shouldFilterArticle($0) }
+                                } else {
+                                    // No keyword filtering, use all read-filtered items
+                                    filtered = readFiltered
+                                }
+                                
                                 liveItems.append(contentsOf: filtered)
                                 
                                 // Print some debug info about the feed type (RSS or Atom)
@@ -220,7 +247,15 @@ extension HomeFeedViewController {
         
         // Update the currently displayed items if RSS feed is active
         if case .rss = self.currentFeedType {
-            self.items = self._allItems
+            // Apply content filtering if enabled
+            if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
+                // Filter out articles that match any of the filter keywords
+                self.items = self._allItems.filter { !self.shouldFilterArticle($0) }
+                print("DEBUG: Keyword filtered \(self._allItems.count) items to \(self.items.count) items")
+            } else {
+                // No keyword filtering
+                self.items = self._allItems
+            }
         }
         
         // First, reload the table while it's still hidden

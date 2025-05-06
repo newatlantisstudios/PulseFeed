@@ -44,6 +44,14 @@ enum AppColors {
             }
         }
     }
+    
+    static var warning: UIColor {
+        return UIColor(hex: "F44336") // Red color for warning banners
+    }
+    
+    static var cacheIndicator: UIColor {
+        return UIColor(hex: "4CAF50") // Green color for cached article indicators
+    }
 }
 
 extension UIColor {

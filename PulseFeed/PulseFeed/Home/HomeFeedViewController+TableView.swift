@@ -159,6 +159,9 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         let normLink = normalizeLink(item.link)
         let isItemRead = item.isRead || readLinks.contains(normLink)
         
+        // Check if the article is cached
+        let isArticleCached = cachedArticleLinks.contains(normLink)
+        
         // Get the font size from UserDefaults (defaulting to 16 if not set)
         let storedFontSize = CGFloat(UserDefaults.standard.float(forKey: "fontSize") != 0 ? UserDefaults.standard.float(forKey: "fontSize") : 16)
         
@@ -170,6 +173,13 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             // Configure with item data
             cell.configure(with: item, fontSize: storedFontSize, isRead: isItemRead)
             
+            // Add cache indicator if article is cached
+            if isArticleCached {
+                addCacheIndicator(to: cell)
+            } else {
+                removeCacheIndicator(from: cell)
+            }
+            
             return cell
         } else {
             // Use the default plain text cell
@@ -178,7 +188,14 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             // Configure cell with read state
             var config = cell.defaultContentConfiguration()
             config.text = item.title
-            config.secondaryText = "\(item.source) • \(DateUtils.getTimeAgo(from: item.pubDate))"
+            
+            // Add "Cached" indicator to secondary text if article is cached
+            var secondaryText = "\(item.source) • \(DateUtils.getTimeAgo(from: item.pubDate))"
+            if isArticleCached {
+                secondaryText += " • 📥 Cached"
+            }
+            config.secondaryText = secondaryText
+            
             cell.backgroundColor = AppColors.background
             
             // Apply text color based on read state - MORE CONTRAST between read/unread
@@ -192,6 +209,51 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             cell.contentConfiguration = config
             
             return cell
+        }
+    }
+    
+    // Helper method to add a cache indicator to a cell
+    private func addCacheIndicator(to cell: UITableViewCell) {
+        // Remove any existing indicator first
+        removeCacheIndicator(from: cell)
+        
+        // Create a small badge icon to indicate cached status
+        let indicator = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 12))
+        indicator.backgroundColor = AppColors.cacheIndicator
+        indicator.layer.cornerRadius = 6
+        indicator.tag = 999 // Tag for identification
+        
+        // Add to cell
+        if let contentView = cell as? EnhancedRSSCell {
+            // For enhanced cells, place it in the card corner
+            contentView.addSubview(indicator)
+            
+            // Position in top right corner with margins
+            indicator.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                indicator.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
+                indicator.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
+                indicator.widthAnchor.constraint(equalToConstant: 12),
+                indicator.heightAnchor.constraint(equalToConstant: 12)
+            ])
+        } else {
+            // For standard cells, add to the right side
+            cell.accessoryView = indicator
+        }
+    }
+    
+    // Helper method to remove a cache indicator from a cell
+    private func removeCacheIndicator(from cell: UITableViewCell) {
+        // Remove from enhanced cell
+        if let contentView = cell as? EnhancedRSSCell {
+            if let indicator = contentView.viewWithTag(999) {
+                indicator.removeFromSuperview()
+            }
+        } 
+        // Remove from standard cell
+        else if cell.accessoryView?.tag == 999 {
+            cell.accessoryView = nil
+            cell.accessoryType = .disclosureIndicator
         }
     }
 
@@ -252,6 +314,31 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         let articleReaderVC = ArticleReaderViewController()
         articleReaderVC.item = item
         
+        // If offline and article is cached, load cached content
+        if isOfflineMode {
+            let normalizedLink = normalizeLink(item.link)
+            if cachedArticleLinks.contains(normalizedLink) {
+                // Load cached content
+                StorageManager.shared.getCachedArticleContent(link: item.link) { result in
+                    if case .success(let cachedArticle) = result {
+                        DispatchQueue.main.async {
+                            articleReaderVC.htmlContent = cachedArticle.content
+                        }
+                    }
+                }
+            } else {
+                // Show alert that article is not available offline
+                let alert = UIAlertController(
+                    title: "Article Not Cached",
+                    message: "This article is not available offline. Connect to the internet to read it.",
+                    preferredStyle: .alert
+                )
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                present(alert, animated: true)
+                return
+            }
+        }
+        
         // Create a loading indicator view
         let loadingView = UIActivityIndicatorView(style: .medium)
         loadingView.startAnimating()
@@ -269,6 +356,39 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
     
     private func openInSafari(_ item: RSSItem) {
         guard let url = URL(string: item.link) else { return }
+        
+        // Check if offline and offer cached version if available
+        if isOfflineMode {
+            let normalizedLink = normalizeLink(item.link)
+            
+            if cachedArticleLinks.contains(normalizedLink) {
+                // Article is cached, offer to open in article reader
+                let alert = UIAlertController(
+                    title: "Offline Mode",
+                    message: "Safari requires an internet connection. Would you like to open this article in the built-in reader using the cached version?",
+                    preferredStyle: .alert
+                )
+                
+                alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+                alert.addAction(UIAlertAction(title: "Open Cached Version", style: .default) { [weak self] _ in
+                    self?.openInArticleReader(item)
+                })
+                
+                present(alert, animated: true)
+            } else {
+                // Article is not cached
+                let alert = UIAlertController(
+                    title: "No Internet Connection",
+                    message: "Safari requires an internet connection, and this article is not available offline.",
+                    preferredStyle: .alert
+                )
+                
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                present(alert, animated: true)
+            }
+            
+            return
+        }
         
         // Create and show a loading alert before opening Safari
         let loadingAlert = UIAlertController(

@@ -153,33 +153,113 @@ class ArticleReaderViewController: UIViewController {
             // If HTML content is already provided, use it
             displayContent(content)
         } else {
-            // Otherwise fetch the content
+            // First check if we have a cached version of this article
             loadingIndicator.startAnimating()
             
-            // Create a URLSession task to fetch the article content
-            let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+            StorageManager.shared.getCachedArticleContent(link: item.link) { [weak self] result in
                 guard let self = self else { return }
                 
-                DispatchQueue.main.async {
-                    self.loadingIndicator.stopAnimating()
+                switch result {
+                case .success(let cachedArticle):
+                    // We have a cached version, use it
+                    DispatchQueue.main.async {
+                        self.loadingIndicator.stopAnimating()
+                        
+                        // Show cache indicator
+                        self.showCachedIndicator(date: cachedArticle.cachedDate)
+                        
+                        // Display the cached content
+                        self.displayContent(cachedArticle.content)
+                        self.htmlContent = cachedArticle.content
+                        
+                        print("DEBUG: Loaded article from cache: \(item.title)")
+                    }
                     
-                    if let error = error {
-                        self.showError("Failed to load article: \(error.localizedDescription)")
+                case .failure:
+                    // No cached version, check if we're offline
+                    if StorageManager.shared.isDeviceOffline {
+                        DispatchQueue.main.async {
+                            self.loadingIndicator.stopAnimating()
+                            self.showError("No internet connection and no cached version available")
+                        }
                         return
                     }
                     
-                    guard let data = data, let html = String(data: data, encoding: .utf8) else {
-                        self.showError("Failed to decode article content")
-                        return
+                    // We're online, fetch from network
+                    let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+                        guard let self = self else { return }
+                        
+                        DispatchQueue.main.async {
+                            self.loadingIndicator.stopAnimating()
+                            
+                            if let error = error {
+                                self.showError("Failed to load article: \(error.localizedDescription)")
+                                return
+                            }
+                            
+                            guard let data = data, let html = String(data: data, encoding: .utf8) else {
+                                self.showError("Failed to decode article content")
+                                return
+                            }
+                            
+                            // Extract and clean the content
+                            let cleanedContent = self.extractReadableContent(from: html)
+                            self.displayContent(cleanedContent)
+                            self.htmlContent = cleanedContent
+                            
+                            // Cache the article for offline reading
+                            StorageManager.shared.cacheArticleContent(
+                                link: item.link,
+                                content: cleanedContent,
+                                title: item.title,
+                                source: item.source
+                            ) { success, error in
+                                if let error = error {
+                                    print("DEBUG: Failed to cache article: \(error.localizedDescription)")
+                                } else if success {
+                                    print("DEBUG: Successfully cached article: \(item.title)")
+                                }
+                            }
+                        }
                     }
-                    
-                    // Extract and clean the content
-                    let cleanedContent = self.extractReadableContent(from: html)
-                    self.displayContent(cleanedContent)
-                    self.htmlContent = cleanedContent
+                    task.resume()
                 }
             }
-            task.resume()
+        }
+    }
+    
+    private func showCachedIndicator(date: Date) {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        let dateString = formatter.string(from: date)
+        
+        let cachedLabel = UILabel()
+        cachedLabel.text = "Offline Mode (Cached \(dateString))"
+        cachedLabel.font = UIFont.systemFont(ofSize: 12)
+        cachedLabel.textColor = .white
+        cachedLabel.backgroundColor = AppColors.primary.withAlphaComponent(0.8)
+        cachedLabel.textAlignment = .center
+        cachedLabel.layer.cornerRadius = 4
+        cachedLabel.clipsToBounds = true
+        cachedLabel.translatesAutoresizingMaskIntoConstraints = false
+        
+        view.addSubview(cachedLabel)
+        
+        NSLayoutConstraint.activate([
+            cachedLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            cachedLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            cachedLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            cachedLabel.heightAnchor.constraint(equalToConstant: 28)
+        ])
+        
+        // Adjust the top constraint of the titleLabel to accommodate the cached indicator
+        if let firstConstraint = titleLabel.constraints.first(where: { $0.firstAttribute == .top }) {
+            titleLabel.removeConstraint(firstConstraint)
+            
+            NSLayoutConstraint.activate([
+                titleLabel.topAnchor.constraint(equalTo: cachedLabel.bottomAnchor, constant: 16)
+            ])
         }
     }
     

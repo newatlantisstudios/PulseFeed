@@ -21,8 +21,12 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     var readLinks: Set<String> = [] // Store normalized read links
     internal var heartedItems: Set<String> = []
     internal var bookmarkedItems: Set<String> = []
+    internal var cachedArticleLinks: Set<String> = [] // Track which articles are cached for offline reading
     internal var hasLoadedRSSFeeds = false
     internal var isSortedAscending: Bool = false // State for sorting order
+    internal var isOfflineMode = false // Track if we're in offline mode
+    internal var filterKeywords: [String] = [] // Keywords used to filter articles
+    internal var isContentFilteringEnabled: Bool = false // Whether content filtering is enabled
     
     // UI Components
     let tableView = UITableView()
@@ -117,6 +121,12 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         
         // Restore sort order
         restoreSortOrder()
+        
+        // Update offline status
+        updateOfflineStatus()
+        
+        // Load filter settings
+        loadFilterSettings()
     }
     
     override func viewDidAppear(_ animated: Bool) {
@@ -198,6 +208,295 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
                 }
             }
         }
+        
+        // Load cached article links
+        StorageManager.shared.getAllCachedArticles { [weak self] result in
+            guard let self = self else { return }
+            
+            if case .success(let cachedArticles) = result {
+                DispatchQueue.main.async {
+                    // Store the cached article links for UI indicators
+                    self.cachedArticleLinks = Set(cachedArticles.map { self.normalizeLink($0.link) })
+                    
+                    // If table is visible, reload to update cache indicators
+                    if !self.tableView.isHidden {
+                        self.tableView.reloadData()
+                    }
+                    
+                    print("DEBUG: Loaded \(self.cachedArticleLinks.count) cached article links")
+                }
+            }
+        }
+    }
+    
+    // MARK: - Offline Mode
+    
+    private func updateOfflineStatus() {
+        // Get current offline status
+        isOfflineMode = StorageManager.shared.isDeviceOffline
+        
+        // Setup observers for changes to offline status
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleOfflineStatusChanged(_:)),
+            name: Notification.Name("OfflineStatusChanged"),
+            object: nil
+        )
+        
+        // Setup observers for article cache changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleArticleCached(_:)),
+            name: Notification.Name("ArticleCached"),
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleArticleRemovedFromCache(_:)),
+            name: Notification.Name("ArticleRemovedFromCache"),
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleArticleCacheCleared),
+            name: Notification.Name("ArticleCacheCleared"),
+            object: nil
+        )
+        
+        // Update UI based on offline status
+        updateOfflineModeUI()
+    }
+    
+    private func updateOfflineModeUI() {
+        // If we're in offline mode, update the navigation bar title
+        if isOfflineMode {
+            // Add "Offline" to title
+            if let oldTitle = title, !oldTitle.contains("(Offline)") {
+                title = "\(oldTitle) (Offline)"
+            }
+            
+            // Show a banner to indicate offline mode if not already showing
+            showOfflineBanner()
+            
+            // Disable refresh button
+            refreshButton?.isEnabled = false
+            refreshButton?.tintColor = AppColors.secondary
+        } else {
+            // Remove "Offline" from title
+            if let oldTitle = title, oldTitle.contains("(Offline)") {
+                title = oldTitle.replacingOccurrences(of: " (Offline)", with: "")
+            }
+            
+            // Hide offline banner if showing
+            hideOfflineBanner()
+            
+            // Enable refresh button
+            refreshButton?.isEnabled = true
+            refreshButton?.tintColor = AppColors.dynamicIconColor
+        }
+    }
+    
+    @objc private func handleOfflineStatusChanged(_ notification: Notification) {
+        if let isOffline = notification.userInfo?["isOffline"] as? Bool {
+            DispatchQueue.main.async {
+                self.isOfflineMode = isOffline
+                self.updateOfflineModeUI()
+                
+                // If going from online to offline, try to load cached articles
+                if isOffline {
+                    self.loadCachedArticlesForOfflineMode()
+                }
+            }
+        }
+    }
+    
+    @objc private func handleArticleCached(_ notification: Notification) {
+        if let link = notification.userInfo?["link"] as? String {
+            let normalizedLink = normalizeLink(link)
+            
+            DispatchQueue.main.async {
+                // Add to cached articles set
+                self.cachedArticleLinks.insert(normalizedLink)
+                
+                // Reload table to update cache indicators
+                self.tableView.reloadData()
+            }
+        }
+    }
+    
+    @objc private func handleArticleRemovedFromCache(_ notification: Notification) {
+        if let link = notification.userInfo?["link"] as? String {
+            let normalizedLink = normalizeLink(link)
+            
+            DispatchQueue.main.async {
+                // Remove from cached articles set
+                self.cachedArticleLinks.remove(normalizedLink)
+                
+                // Reload table to update cache indicators
+                self.tableView.reloadData()
+            }
+        }
+    }
+    
+    @objc private func handleArticleCacheCleared() {
+        DispatchQueue.main.async {
+            // Clear cached articles set
+            self.cachedArticleLinks.removeAll()
+            
+            // Reload table to update cache indicators
+            self.tableView.reloadData()
+        }
+    }
+    
+    private func loadCachedArticlesForOfflineMode() {
+        // Load all cached articles
+        StorageManager.shared.getAllCachedArticles { [weak self] result in
+            guard let self = self else { return }
+            
+            switch result {
+            case .success(let cachedArticles):
+                DispatchQueue.main.async {
+                    // If no cached articles, show message
+                    if cachedArticles.isEmpty {
+                        self.showEmptyCacheMessage()
+                        return
+                    }
+                    
+                    // Create RSSItems from cached articles
+                    var cachedItems: [RSSItem] = []
+                    
+                    for article in cachedArticles {
+                        // Create RSSItem from cached article
+                        let rssItem = RSSItem(
+                            title: article.title,
+                            link: article.link,
+                            pubDate: DateFormatter.localizedString(from: article.cachedDate, dateStyle: .medium, timeStyle: .short),
+                            source: article.source
+                        )
+                        
+                        // Add to array
+                        cachedItems.append(rssItem)
+                    }
+                    
+                    // Sort by cached date (most recent first)
+                    cachedItems.sort { 
+                        let date1 = DateUtils.parseDate($0.pubDate) ?? Date.distantPast
+                        let date2 = DateUtils.parseDate($1.pubDate) ?? Date.distantPast
+                        return date1 > date2
+                    }
+                    
+                    // Update UI
+                    self.items = cachedItems
+                    self.tableView.reloadData()
+                    self.tableView.isHidden = false
+                    self.loadingIndicator.stopAnimating()
+                    self.stopRefreshAnimation()
+                    self.refreshControl.endRefreshing()
+                }
+                
+            case .failure(let error):
+                print("DEBUG: Error loading cached articles: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    self.showEmptyCacheMessage()
+                }
+            }
+        }
+    }
+    
+    private func showEmptyCacheMessage() {
+        // Show message when no cached articles are available in offline mode
+        let alert = UIAlertController(
+            title: "No Cached Articles",
+            message: "You're in offline mode, but no articles have been cached for offline reading. Connect to the internet to read new articles.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+        
+        // Hide loading indicators
+        loadingIndicator.stopAnimating()
+        stopRefreshAnimation()
+        refreshControl.endRefreshing()
+        
+        // Empty the items array and show empty table
+        items = []
+        tableView.reloadData()
+        tableView.isHidden = false
+    }
+    
+    // MARK: - Offline Banner
+    
+    private var offlineBannerView: UIView?
+    
+    private func showOfflineBanner() {
+        // Don't show banner if it's already visible
+        if offlineBannerView != nil {
+            return
+        }
+        
+        // Create banner
+        let banner = UIView()
+        banner.backgroundColor = AppColors.warning
+        banner.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Create label
+        let label = UILabel()
+        label.text = "Offline Mode - Showing Cached Articles"
+        label.textColor = .white
+        label.font = UIFont.systemFont(ofSize: 14, weight: .medium)
+        label.textAlignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Add to view
+        banner.addSubview(label)
+        view.addSubview(banner)
+        
+        // Add constraints
+        NSLayoutConstraint.activate([
+            banner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            banner.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            banner.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            banner.heightAnchor.constraint(equalToConstant: 30),
+            
+            label.centerXAnchor.constraint(equalTo: banner.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: banner.centerYAnchor)
+        ])
+        
+        // Adjust table view top constraint
+        for constraint in tableView.constraints where constraint.firstAttribute == .top {
+            constraint.constant = 30
+        }
+        
+        // Store reference
+        offlineBannerView = banner
+        
+        // Animate in
+        banner.alpha = 0
+        UIView.animate(withDuration: 0.3) {
+            banner.alpha = 1
+        }
+    }
+    
+    private func hideOfflineBanner() {
+        // Only hide if banner is visible
+        guard let banner = offlineBannerView else {
+            return
+        }
+        
+        // Animate out and remove
+        UIView.animate(withDuration: 0.3, animations: {
+            banner.alpha = 0
+        }) { _ in
+            banner.removeFromSuperview()
+            self.offlineBannerView = nil
+            
+            // Reset table view top constraint
+            for constraint in self.tableView.constraints where constraint.firstAttribute == .top {
+                constraint.constant = 0
+            }
+        }
     }
     
     private func restoreSortOrder() {
@@ -212,6 +511,93 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         }
     }
     
+    // MARK: - Content Filtering
+    
+    private func loadFilterSettings() {
+        // Load filter enabled state
+        isContentFilteringEnabled = UserDefaults.standard.bool(forKey: "enableContentFiltering")
+        
+        // Load filter keywords
+        StorageManager.shared.load(forKey: "filterKeywords") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let keywords):
+                    self.filterKeywords = keywords
+                case .failure:
+                    self.filterKeywords = []
+                }
+                
+                // Apply filtering to current items
+                if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
+                    self.updateTableViewContent()
+                }
+            }
+        }
+    }
+    
+    internal func shouldFilterArticle(_ item: RSSItem) -> Bool {
+        // Skip filtering if not enabled or no keywords are set
+        if !isContentFilteringEnabled || filterKeywords.isEmpty {
+            return false
+        }
+        
+        // Check if article contains any filter keywords in title or description
+        for keyword in filterKeywords {
+            let lowercaseKeyword = keyword.lowercased()
+            
+            // Check title
+            if item.title.lowercased().contains(lowercaseKeyword) {
+                return true
+            }
+            
+            // Check description if available
+            if let description = item.description, description.lowercased().contains(lowercaseKeyword) {
+                return true
+            }
+            
+            // Check content if available
+            if let content = item.content, content.lowercased().contains(lowercaseKeyword) {
+                return true
+            }
+            
+            // Check source
+            if item.source.lowercased().contains(lowercaseKeyword) {
+                return true
+            }
+            
+            // Check author if available
+            if let author = item.author, author.lowercased().contains(lowercaseKeyword) {
+                return true
+            }
+        }
+        
+        return false
+    }
+    
+    @objc private func handleContentFilteringChanged() {
+        // Update filter enabled state
+        isContentFilteringEnabled = UserDefaults.standard.bool(forKey: "enableContentFiltering")
+        
+        // Reload filter keywords
+        StorageManager.shared.load(forKey: "filterKeywords") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let keywords):
+                    self.filterKeywords = keywords
+                case .failure:
+                    self.filterKeywords = []
+                }
+                
+                // Update table content with the new filters
+                self.updateTableViewContent()
+            }
+        }
+    }
+    
     private func setupNotificationObserver() {
         // Add observers for various notification events
         let notifications: [(name: Notification.Name, selector: Selector)] = [
@@ -220,7 +606,9 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             (.init("bookmarkedItemsUpdated"), #selector(handleBookmarkedItemsUpdated)),
             (.init("heartedItemsUpdated"), #selector(handleHeartedItemsUpdated)),
             (.init("articleSortOrderChanged"), #selector(handleSortOrderChanged)),
-            (.init("feedFoldersUpdated"), #selector(handleFeedFoldersUpdated))
+            (.init("feedFoldersUpdated"), #selector(handleFeedFoldersUpdated)),
+            (.init("showReadArticlesChanged"), #selector(handleShowReadArticlesChanged)),
+            (.init("contentFilteringChanged"), #selector(handleContentFilteringChanged))
         ]
         
         notifications.forEach { notification in
@@ -413,6 +801,24 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
                     }
                 }
             }
+        }
+    }
+    
+    @objc private func handleShowReadArticlesChanged(_ notification: Notification) {
+        // Reload feeds based on the current view
+        switch currentFeedType {
+        case .rss:
+            // For RSS feeds, we need to refresh the current items shown based on the setting
+            updateTableViewContent()
+        case .folder(let folderId):
+            // For folder views, also refresh
+            if let folder = currentFolder, folder.id == folderId {
+                loadFolderFeeds(folder: folder)
+            }
+        default:
+            // For other views (bookmarks, heart), we don't filter by read status
+            // so no need to refresh
+            break
         }
     }
     

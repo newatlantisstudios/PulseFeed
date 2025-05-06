@@ -33,6 +33,7 @@ enum SettingSectionType {
     case general
     case reader
     case feeds
+    case filters
     case dataManagement
     case advanced
     case support
@@ -42,6 +43,7 @@ enum SettingSectionType {
         case .general: return "General"
         case .reader: return "Reader"
         case .feeds: return "RSS Feeds"
+        case .filters: return "Content Filters"
         case .dataManagement: return "Data Management"
         case .advanced: return "Advanced"
         case .support: return "Support"
@@ -320,6 +322,8 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     
     private var tableView: UITableView!
     private var settingSections: [SettingSection] = []
+    private var isSimulatingOfflineMode = false
+    private var filterKeywords: [String] = []
     
     // MARK: - View Lifecycle
 
@@ -384,6 +388,12 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                    action: { isOn in
                         UserDefaults.standard.set(isOn, forKey: "showArticleImages")
                         NotificationCenter.default.post(name: Notification.Name("articleViewModeChanged"), object: nil)
+                   }),
+            .toggle(title: "Show Read Articles", 
+                   isOn: UserDefaults.standard.bool(forKey: "showReadArticles"),
+                   action: { isOn in
+                        UserDefaults.standard.set(isOn, forKey: "showReadArticles")
+                        NotificationCenter.default.post(name: Notification.Name("showReadArticlesChanged"), object: nil)
                    }),
             .navigation(title: "Preview Text Length", 
                    action: { [weak self] in
@@ -465,6 +475,22 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                    style: createButtonConfiguration(title: "Export OPML", color: .systemBlue, symbolName: "square.and.arrow.up"))
         ])
         
+        // Content Filters Section
+        let filtersSection = SettingSection(type: .filters, items: [
+            .toggle(title: "Enable Content Filtering", 
+                   isOn: UserDefaults.standard.bool(forKey: "enableContentFiltering"),
+                   action: { isOn in
+                        UserDefaults.standard.set(isOn, forKey: "enableContentFiltering")
+                        NotificationCenter.default.post(name: Notification.Name("contentFilteringChanged"), object: nil)
+                   }),
+            .navigation(title: "Manage Filter Keywords", 
+                   action: { [weak self] in
+                       self?.manageFilterKeywords()
+                   },
+                   icon: UIImage(systemName: "line.horizontal.3.decrease.circle")),
+            .info(title: "About Filters", detail: "Articles containing any filter keyword will be automatically hidden")
+        ])
+        
         // Data Management Section
         var dataItems: [SettingItemType] = [
             .toggle(title: "iCloud Syncing", 
@@ -497,6 +523,20 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         
         let dataSection = SettingSection(type: .dataManagement, items: dataItems)
         
+        // Advanced Section
+        let advancedSection = SettingSection(type: .advanced, items: [
+            .toggle(title: "Simulate Offline Mode", 
+                   isOn: isSimulatingOfflineMode,
+                   action: { [weak self] isOn in
+                        self?.toggleOfflineMode(isOn)
+                   }),
+            .button(title: "Clear Article Cache", 
+                   action: { [weak self] in
+                       self?.clearArticleCache()
+                   },
+                   style: createButtonConfiguration(title: "Clear Article Cache", color: .systemRed, symbolName: "trash"))
+        ])
+        
         // Support Section
         let supportSection = SettingSection(type: .support, items: [
             .navigation(title: "Tip Jar", 
@@ -506,7 +546,7 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                        icon: UIImage(systemName: "heart.fill"))
         ])
         
-        settingSections = [generalSection, readerSection, feedSection, dataSection, supportSection]
+        settingSections = [generalSection, readerSection, feedSection, filtersSection, dataSection, advancedSection, supportSection]
         tableView.reloadData()
     }
     
@@ -1395,6 +1435,299 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         }
     }
     #endif
+    
+    // MARK: - Content Filters
+    
+    private func manageFilterKeywords() {
+        // Load existing filter keywords
+        StorageManager.shared.load(forKey: "filterKeywords") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let keywords):
+                    self.filterKeywords = keywords
+                case .failure:
+                    self.filterKeywords = []
+                }
+                
+                self.showFilterKeywordsManagement()
+            }
+        }
+    }
+    
+    private func showFilterKeywordsManagement() {
+        let alertController = UIAlertController(
+            title: "Filter Keywords",
+            message: "Articles containing any of these keywords will be hidden",
+            preferredStyle: .actionSheet
+        )
+        
+        // Display current keywords
+        let keywordsMessage = filterKeywords.isEmpty ? 
+            "No filter keywords set" : 
+            "Current keywords:\n" + filterKeywords.joined(separator: "\n")
+        
+        let keywordsAlert = UIAlertController(
+            title: "Current Filter Keywords",
+            message: keywordsMessage,
+            preferredStyle: .alert
+        )
+        keywordsAlert.addAction(UIAlertAction(title: "OK", style: .default))
+        
+        let viewKeywordsAction = UIAlertAction(title: "View Keywords", style: .default) { [weak self] _ in
+            self?.present(keywordsAlert, animated: true)
+        }
+        
+        // Add keyword action
+        let addKeywordAction = UIAlertAction(title: "Add Keyword", style: .default) { [weak self] _ in
+            self?.showAddKeywordAlert()
+        }
+        
+        // Remove keyword action
+        let removeKeywordAction = UIAlertAction(title: "Remove Keyword", style: .destructive) { [weak self] _ in
+            self?.showRemoveKeywordAlert()
+        }
+        
+        // Clear all keywords action
+        let clearAllAction = UIAlertAction(title: "Clear All Keywords", style: .destructive) { [weak self] _ in
+            self?.showClearAllKeywordsAlert()
+        }
+        
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        
+        alertController.addAction(viewKeywordsAction)
+        alertController.addAction(addKeywordAction)
+        if !filterKeywords.isEmpty {
+            alertController.addAction(removeKeywordAction)
+            alertController.addAction(clearAllAction)
+        }
+        alertController.addAction(cancelAction)
+        
+        // For iPad compatibility
+        if let popoverController = alertController.popoverPresentationController {
+            popoverController.sourceView = view
+            popoverController.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            popoverController.permittedArrowDirections = []
+        }
+        
+        present(alertController, animated: true)
+    }
+    
+    private func showAddKeywordAlert() {
+        let alertController = UIAlertController(
+            title: "Add Filter Keyword",
+            message: "Enter a keyword to filter. Articles containing this keyword will be hidden.",
+            preferredStyle: .alert
+        )
+        
+        alertController.addTextField { textField in
+            textField.placeholder = "Enter keyword"
+            textField.autocapitalizationType = .none
+            textField.autocorrectionType = .no
+        }
+        
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        
+        let addAction = UIAlertAction(title: "Add", style: .default) { [weak self, weak alertController] _ in
+            guard let keyword = alertController?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !keyword.isEmpty,
+                  let self = self else { return }
+            
+            // Add keyword if it doesn't already exist
+            if !self.filterKeywords.contains(keyword) {
+                self.filterKeywords.append(keyword)
+                
+                // Save updated keywords
+                StorageManager.shared.save(self.filterKeywords, forKey: "filterKeywords") { error in
+                    DispatchQueue.main.async {
+                        if let error = error {
+                            self.showError("Failed to save filter keyword: \(error.localizedDescription)")
+                        } else {
+                            // Notify that content filtering has changed
+                            NotificationCenter.default.post(name: Notification.Name("contentFilteringChanged"), object: nil)
+                            
+                            // Show success message
+                            self.showAddKeywordSuccessAlert(keyword: keyword)
+                        }
+                    }
+                }
+            } else {
+                // Show error for duplicate keyword
+                self.showError("This keyword is already in the filter list")
+            }
+        }
+        
+        alertController.addAction(cancelAction)
+        alertController.addAction(addAction)
+        
+        present(alertController, animated: true)
+    }
+    
+    private func showAddKeywordSuccessAlert(keyword: String) {
+        let alert = UIAlertController(
+            title: "Keyword Added",
+            message: "The keyword '\(keyword)' has been added to your filter list. Articles containing this keyword will now be hidden.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+    
+    private func showRemoveKeywordAlert() {
+        guard !filterKeywords.isEmpty else { return }
+        
+        let alertController = UIAlertController(
+            title: "Remove Filter Keyword",
+            message: "Select a keyword to remove from your filter list:",
+            preferredStyle: .actionSheet
+        )
+        
+        // Add an action for each keyword
+        for keyword in filterKeywords {
+            let action = UIAlertAction(title: keyword, style: .destructive) { [weak self] _ in
+                self?.removeKeyword(keyword)
+            }
+            alertController.addAction(action)
+        }
+        
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        alertController.addAction(cancelAction)
+        
+        // For iPad compatibility
+        if let popoverController = alertController.popoverPresentationController {
+            popoverController.sourceView = view
+            popoverController.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            popoverController.permittedArrowDirections = []
+        }
+        
+        present(alertController, animated: true)
+    }
+    
+    private func removeKeyword(_ keyword: String) {
+        // Remove the keyword from the array
+        filterKeywords.removeAll { $0 == keyword }
+        
+        // Save updated keywords
+        StorageManager.shared.save(filterKeywords, forKey: "filterKeywords") { [weak self] error in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                if let error = error {
+                    self.showError("Failed to remove filter keyword: \(error.localizedDescription)")
+                } else {
+                    // Notify that content filtering has changed
+                    NotificationCenter.default.post(name: Notification.Name("contentFilteringChanged"), object: nil)
+                    
+                    // Show success message
+                    let alert = UIAlertController(
+                        title: "Keyword Removed",
+                        message: "The keyword '\(keyword)' has been removed from your filter list.",
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(alert, animated: true)
+                }
+            }
+        }
+    }
+    
+    private func showClearAllKeywordsAlert() {
+        let alert = UIAlertController(
+            title: "Clear All Keywords",
+            message: "Are you sure you want to remove all filter keywords? This action cannot be undone.",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Clear All", style: .destructive) { [weak self] _ in
+            guard let self = self else { return }
+            
+            // Clear the keywords array
+            self.filterKeywords.removeAll()
+            
+            // Save empty array
+            StorageManager.shared.save(self.filterKeywords, forKey: "filterKeywords") { error in
+                DispatchQueue.main.async {
+                    if let error = error {
+                        self.showError("Failed to clear filter keywords: \(error.localizedDescription)")
+                    } else {
+                        // Notify that content filtering has changed
+                        NotificationCenter.default.post(name: Notification.Name("contentFilteringChanged"), object: nil)
+                        
+                        // Show success message
+                        let successAlert = UIAlertController(
+                            title: "Keywords Cleared",
+                            message: "All filter keywords have been removed.",
+                            preferredStyle: .alert
+                        )
+                        successAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                        self.present(successAlert, animated: true)
+                    }
+                }
+            }
+        })
+        
+        present(alert, animated: true)
+    }
+    
+    // MARK: - Offline Mode & Article Cache
+    
+    private func toggleOfflineMode(_ isOn: Bool) {
+        isSimulatingOfflineMode = isOn
+        
+        // Update the StorageManager's offline state
+        StorageManager.shared.setOfflineState(isOn)
+        
+        // Show message
+        let message = isOn ? 
+            "Offline mode is now ON. Only cached articles will be available." : 
+            "Offline mode is now OFF. Normal feed functionality restored."
+            
+        let alert = UIAlertController(
+            title: isOn ? "Offline Mode Enabled" : "Offline Mode Disabled",
+            message: message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+    
+    private func clearArticleCache() {
+        let alert = UIAlertController(
+            title: "Clear Article Cache",
+            message: "Are you sure you want to clear all cached articles? This cannot be undone.",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Clear Cache", style: .destructive) { [weak self] _ in
+            StorageManager.shared.clearArticleCache { success, error in
+                DispatchQueue.main.async {
+                    if success {
+                        let successAlert = UIAlertController(
+                            title: "Cache Cleared",
+                            message: "All cached articles have been removed.",
+                            preferredStyle: .alert
+                        )
+                        successAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                        self?.present(successAlert, animated: true)
+                    } else {
+                        let errorMessage = error?.localizedDescription ?? "An unknown error occurred"
+                        let errorAlert = UIAlertController(
+                            title: "Error",
+                            message: "Failed to clear article cache: \(errorMessage)",
+                            preferredStyle: .alert
+                        )
+                        errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                        self?.present(errorAlert, animated: true)
+                    }
+                }
+            }
+        })
+        
+        present(alert, animated: true)
+    }
 }
 
 // MARK: - UITableView Protocol Extensions
