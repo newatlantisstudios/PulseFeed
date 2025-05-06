@@ -364,16 +364,39 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                    range: 12...32,
                    action: { [weak self] value in
                         self?.fontSizeSliderChanged(value)
-                   })
+                   }),
+            .toggle(title: "Enhanced Article Style", 
+                   isOn: UserDefaults.standard.bool(forKey: "enhancedArticleStyle"),
+                   action: { isOn in
+                        UserDefaults.standard.set(isOn, forKey: "enhancedArticleStyle")
+                        NotificationCenter.default.post(name: Notification.Name("articleStyleChanged"), object: nil)
+                   }),
+            .navigation(title: "Article Sort Order", 
+                   action: { [weak self] in
+                       self?.showSortOptions()
+                   },
+                   icon: UIImage(systemName: "arrow.up.arrow.down"))
         ])
         
         // Feed Section
         let feedSection = SettingSection(type: .feeds, items: [
+            .navigation(title: "Manage RSS Feeds", 
+                       action: { [weak self] in
+                           self?.openRSSSettings()
+                       },
+                       icon: UIImage(systemName: "list.bullet")),
             .navigation(title: "RSS Feed Loading Speeds", 
                        action: { [weak self] in
                            self?.openRSSLoadingSpeeds()
                        },
                        icon: UIImage(systemName: "speedometer")),
+            .slider(title: "Slow Feed Threshold (seconds)", 
+                   value: UserDefaults.standard.float(forKey: "feedSlowThreshold") > 0 ? 
+                          UserDefaults.standard.float(forKey: "feedSlowThreshold") : 10.0,
+                   range: 3...30,
+                   action: { [weak self] value in
+                        self?.updateSlowFeedThreshold(value)
+                   }),
             .button(title: "Import OPML", 
                    action: { [weak self] in
                        self?.importOPML()
@@ -600,6 +623,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                 }
             }
         }
+    }
+    
+    @objc private func openRSSSettings() {
+        let rssSettingsVC = RSSSettingsViewController()
+        navigationController?.pushViewController(rssSettingsVC, animated: true)
     }
     
     @objc private func openRSSLoadingSpeeds() {
@@ -1137,7 +1165,78 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
     }
+    
+    @objc private func showSortOptions() {
+        let alert = UIAlertController(
+            title: "Sort Articles",
+            message: "Choose the default sort order for articles",
+            preferredStyle: .actionSheet)
+        
+        let isSortedAscending = UserDefaults.standard.bool(forKey: "articleSortAscending")
+        
+        let newestFirstAction = UIAlertAction(title: "Newest First", style: .default) { _ in
+            UserDefaults.standard.set(false, forKey: "articleSortAscending")
+            // Notify other parts of the app about the change
+            NotificationCenter.default.post(name: Notification.Name("articleSortOrderChanged"), object: nil)
+        }
+        // Add a checkmark if this is the current sort order
+        if !isSortedAscending {
+            newestFirstAction.setValue(true, forKey: "checked")
+        }
+        
+        let oldestFirstAction = UIAlertAction(title: "Oldest First", style: .default) { _ in
+            UserDefaults.standard.set(true, forKey: "articleSortAscending")
+            // Notify other parts of the app about the change
+            NotificationCenter.default.post(name: Notification.Name("articleSortOrderChanged"), object: nil)
+        }
+        // Add a checkmark if this is the current sort order
+        if isSortedAscending {
+            oldestFirstAction.setValue(true, forKey: "checked")
+        }
+        
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        
+        alert.addAction(newestFirstAction)
+        alert.addAction(oldestFirstAction)
+        alert.addAction(cancelAction)
+        
+        // For iPad compatibility
+        if let popoverController = alert.popoverPresentationController {
+            popoverController.sourceView = view
+            popoverController.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            popoverController.permittedArrowDirections = []
+        }
+        
+        present(alert, animated: true)
+    }
+    
+    private func updateSlowFeedThreshold(_ value: Float) {
+        // Save the threshold in seconds
+        let threshold = Double(value)
+        UserDefaults.standard.set(threshold, forKey: "feedSlowThreshold")
+        
+        // If the value has changed, post a notification that might trigger UI updates
+        // in the RSS Loading Speeds view
+        NotificationCenter.default.post(name: Notification.Name("feedSlowThresholdChanged"), object: nil)
+        
+        // Show a brief toast/alert for the user
+        let thresholdText = String(format: "%.1f", threshold)
+        let alert = UIAlertController(
+            title: "Threshold Updated",
+            message: "Feeds that take longer than \(thresholdText) seconds to load will be considered slow. Feeds that consistently fail or are slow will be skipped.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true) {
+            // Auto-dismiss after 2 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                alert.dismiss(animated: true)
+            }
+        }
+    }
 }
 
 // MARK: - UITableView Protocol Extensions
-extension SettingsViewController: UITableViewDelegate, UITableViewDataSource {}
+extension SettingsViewController: UITableViewDelegate, UITableViewDataSource {
+    // These methods are already implemented in the class itself
+}
