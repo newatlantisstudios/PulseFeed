@@ -16,15 +16,15 @@ extension StorageManager {
     
     /// Get all tags from storage - prioritizing UserDefaults for UI responsiveness
     func getTags(completion: @escaping (Result<[Tag], Error>) -> Void) {
-        print("DEBUG: StorageManager - Getting all tags")
+        //print("DEBUG: StorageManager - Getting all tags")
         
         // Check UserDefaults directly first for faster UI response
         if let data = UserDefaults.standard.data(forKey: "tags") {
             do {
                 let tags = try JSONDecoder().decode([Tag].self, from: data)
-                print("DEBUG: StorageManager - DIRECT loaded \(tags.count) tags from UserDefaults")
+                //print("DEBUG: StorageManager - DIRECT loaded \(tags.count) tags from UserDefaults")
                 for tag in tags {
-                    print("DEBUG: StorageManager - DIRECT Loaded tag: \(tag.name), ID: \(tag.id)")
+                    //print("DEBUG: StorageManager - DIRECT Loaded tag: \(tag.name), ID: \(tag.id)")
                 }
                 DispatchQueue.main.async {
                     completion(.success(tags))
@@ -346,12 +346,12 @@ extension StorageManager {
         
         // Check if we have a cached result
         if let cachedTags = StorageManager.tagCache[cacheKey] {
-            print("DEBUG: Using cached tags for item: \(itemId)")
+            //print("DEBUG: Using cached tags for item: \(itemId)")
             completion(.success(cachedTags))
             return
         }
         
-        print("DEBUG: Fetching tags from storage for item: \(itemId)")
+        //print("DEBUG: Fetching tags from storage for item: \(itemId)")
         
         // Get all tags and tagged items
         let group = DispatchGroup()
@@ -411,7 +411,7 @@ extension StorageManager {
             // Get tags for this item
             let itemTags = TagManager.getTags(for: itemId, itemType: itemType, from: tags, taggedItems: taggedItems)
             
-            print("DEBUG: Found \(itemTags.count) tags for item: \(itemId)")
+            //print("DEBUG: Found \(itemTags.count) tags for item: \(itemId)")
             
             // Cache the result
             StorageManager.tagCache[cacheKey] = itemTags
@@ -446,7 +446,7 @@ extension StorageManager {
         if let data = UserDefaults.standard.data(forKey: "tags") {
             do {
                 let tags = try JSONDecoder().decode([Tag].self, from: data)
-                print("DEBUG: StorageManager - DIRECT loaded \(tags.count) tags from UserDefaults for counts")
+                //print("DEBUG: StorageManager - DIRECT loaded \(tags.count) tags from UserDefaults for counts")
                 directTags = tags
             } catch {
                 print("DEBUG: StorageManager - Error decoding tags from UserDefaults for counts: \(error.localizedDescription)")

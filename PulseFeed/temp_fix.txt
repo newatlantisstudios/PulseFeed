@@ -1,0 +1,6 @@
+        case .smartFolder:
+            // For smart folder view, just reload all feeds
+            // The smart folder filtering will happen in updateTableViewContent
+            loadRSSFeeds()
+            
+EOF < /dev/null

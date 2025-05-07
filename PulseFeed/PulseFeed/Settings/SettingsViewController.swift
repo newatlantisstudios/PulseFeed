@@ -461,6 +461,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                            self?.openHierarchicalFolders()
                        },
                        icon: UIImage(systemName: "folder.fill")),
+            .navigation(title: "Smart Folders", 
+                       action: { [weak self] in
+                           self?.openSmartFolders()
+                       },
+                       icon: UIImage(systemName: "folder.badge.gearshape")),
             .navigation(title: "Tags Management", 
                        action: { [weak self] in
                            self?.openTagManagement()
@@ -471,6 +476,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                            self?.openRSSLoadingSpeeds()
                        },
                        icon: UIImage(systemName: "speedometer")),
+            .navigation(title: "Manage Non-Working Feeds", 
+                       action: { [weak self] in
+                           self?.openNonWorkingFeeds()
+                       },
+                       icon: UIImage(systemName: "exclamationmark.triangle")),
             .slider(title: "Slow Feed Threshold (seconds)", 
                    value: UserDefaults.standard.float(forKey: "feedSlowThreshold") > 0 ? 
                           UserDefaults.standard.float(forKey: "feedSlowThreshold") : 10.0,
@@ -789,6 +799,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         navigationController?.pushViewController(hierarchicalFoldersVC, animated: true)
     }
     
+    @objc private func openSmartFolders() {
+        let smartFoldersVC = SmartFolderViewController()
+        navigationController?.pushViewController(smartFoldersVC, animated: true)
+    }
+    
     @objc private func openTagManagement() {
         let tagManagementVC = TagManagementViewController()
         navigationController?.pushViewController(tagManagementVC, animated: true)
@@ -797,6 +812,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     @objc private func openRSSLoadingSpeeds() {
         let rssLoadingVC = RSSLoadingSpeedsViewController(style: .plain)
         navigationController?.pushViewController(rssLoadingVC, animated: true)
+    }
+    
+    @objc private func openNonWorkingFeeds() {
+        let nonWorkingFeedsVC = NonWorkingFeedsViewController(style: .plain)
+        navigationController?.pushViewController(nonWorkingFeedsVC, animated: true)
     }
 
     @objc private func openTipJar() {

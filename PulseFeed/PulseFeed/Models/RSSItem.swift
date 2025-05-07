@@ -30,18 +30,18 @@ struct RSSItem: Codable {
     
     /// Get all tags for this article
     func getTags(completion: @escaping (Result<[Tag], Error>) -> Void) {
-        print("DEBUG: RSSItem.getTags - Fetching tags for item with link: \(link)")
+        //print("DEBUG: RSSItem.getTags - Fetching tags for item with link: \(link)")
         
         StorageManager.shared.getTagsForItem(itemId: link, itemType: .article) { result in
             switch result {
             case .success(let tags):
-                print("DEBUG: RSSItem.getTags - Found \(tags.count) tags for item: \(self.title)")
+                //print("DEBUG: RSSItem.getTags - Found \(tags.count) tags for item: \(self.title)")
                 for tag in tags {
-                    print("DEBUG: RSSItem.getTags - Tag: \(tag.name), ID: \(tag.id)")
+                    //print("DEBUG: RSSItem.getTags - Tag: \(tag.name), ID: \(tag.id)")
                 }
                 completion(.success(tags))
             case .failure(let error):
-                print("DEBUG: RSSItem.getTags - Error fetching tags: \(error.localizedDescription)")
+                //print("DEBUG: RSSItem.getTags - Error fetching tags: \(error.localizedDescription)")
                 completion(.failure(error))
             }
         }

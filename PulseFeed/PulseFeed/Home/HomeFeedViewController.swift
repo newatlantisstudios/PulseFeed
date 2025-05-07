@@ -43,8 +43,36 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
                 }
             }
             
-        default:
-            // For other feed types (bookmarks, heart), go back to standard behavior
+        case .smartFolder(let folderId):
+            // For smart folder view, refresh the current smart folder
+            if let folder = currentSmartFolder, folder.id == folderId {
+                // Load the smart folder contents
+                loadSmartFolderContents(folder: folder)
+            } else {
+                // Smart folder not loaded yet, load it first
+                StorageManager.shared.getSmartFolders { [weak self] result in
+                    guard let self = self else { return }
+                    
+                    DispatchQueue.main.async {
+                        if case .success(let folders) = result,
+                           let folder = folders.first(where: { $0.id == folderId }) {
+                            self.currentSmartFolder = folder
+                            // Load the smart folder contents
+                            self.loadSmartFolderContents(folder: folder)
+                        } else {
+                            // Smart folder not found, fall back to all feeds
+                            self.loadRSSFeeds()
+                        }
+                    }
+                }
+            }
+            
+        case .bookmarks:
+            // For bookmarks feed type, go back to standard behavior
+            loadRSSFeeds()
+            
+        case .heart:
+            // For hearted feed type, go back to standard behavior  
             loadRSSFeeds()
         }
     }
@@ -198,7 +226,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     
     // Feed types
     enum FeedType {
-        case rss, bookmarks, heart, folder(id: String)
+        case rss, bookmarks, heart, folder(id: String), smartFolder(id: String)
         
         var displayName: String {
             switch self {
@@ -206,6 +234,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             case .bookmarks: return "Bookmarks"
             case .heart: return "Favorites"
             case .folder: return "Folder"
+            case .smartFolder: return "Smart Folder"
             }
         }
     }
@@ -219,6 +248,9 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     
     // Current folder if any
     var currentFolder: FeedFolder?
+    
+    // Current smart folder if any
+    var currentSmartFolder: SmartFolder?
     
     // Property to access allItems
     var allItems: [RSSItem] {
@@ -642,6 +674,242 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         }
     }
     
+    /// Shows the smart folder feed with the given SmartFolder
+    func showSmartFolderFeed(folder: SmartFolder) {
+        // Store the current smart folder
+        currentSmartFolder = folder
+        
+        // Set the feed type to smart folder
+        if case .smartFolder(let id) = currentFeedType, id == folder.id {
+            // Already showing this smart folder - do nothing
+        } else {
+            currentFeedType = .smartFolder(id: folder.id)
+            
+            // Load contents in this smart folder
+            loadSmartFolderContents(folder: folder)
+        }
+    }
+    
+    /// Loads and displays the contents of a smart folder based on its rules
+    func loadSmartFolderContents(folder: SmartFolder) {
+        // Start loading animation
+        tableView.isHidden = true
+        loadingIndicator.startAnimating()
+        loadingLabel.text = "Loading smart folder..."
+        loadingLabel.isHidden = false
+        startRefreshAnimation()
+        
+        // Reset the scroll position tracker
+        previousMinVisibleRow = 0
+        
+        // Create a dispatch group for concurrent operations
+        let group = DispatchGroup()
+        
+        // First, make sure we have a full list of articles from all feeds
+        if !_allItems.isEmpty {
+            // If we already have items loaded, use them
+            print("DEBUG: Using \(_allItems.count) previously loaded articles")
+        } else {
+            // If we don't have any articles loaded yet, we need to load all feeds first
+            group.enter()
+            StorageManager.shared.load(forKey: "rssFeeds") { [weak self] (result: Result<[RSSFeed], Error>) in
+                guard let self = self else {
+                    group.leave()
+                    return
+                }
+                
+                switch result {
+                case .success(let feeds):
+                    // Start a nested group for fetching all feeds
+                    let feedsGroup = DispatchGroup()
+                    var allFeedItems: [RSSItem] = []
+                    
+                    for feed in feeds {
+                        feedsGroup.enter()
+                        // Use loadArticlesForFeed from HomeFeedViewController+UI.swift
+                        self.loadArticlesForFeed(feed) { items in
+                            allFeedItems.append(contentsOf: items)
+                            feedsGroup.leave()
+                        }
+                    }
+                    
+                    feedsGroup.notify(queue: .main) {
+                        // Update _allItems with all the articles we loaded
+                        self._allItems = allFeedItems
+                        group.leave()
+                    }
+                    
+                case .failure(let error):
+                    print("ERROR: Failed to load feeds for smart folder: \(error.localizedDescription)")
+                    // Use an empty array as fallback
+                    self._allItems = []
+                    group.leave()
+                }
+            }
+        }
+        
+        // When all feeds are loaded, filter items based on smart folder rules
+        group.notify(queue: .main) { [weak self] in
+            guard let self = self else { return }
+            
+            // Update loading message
+            self.loadingLabel.text = "Filtering articles based on smart folder rules..."
+            
+            // Apply the smart folder rules to filter articles
+            self.filterArticlesForSmartFolder(folder) { filteredItems in
+                // Apply read status filtering if needed
+                let hideReadArticles = UserDefaults.standard.bool(forKey: "hideReadArticles")
+                var readFilteredItems = filteredItems
+                
+                if hideReadArticles {
+                    readFilteredItems = filteredItems.filter { !ReadStatusTracker.shared.isArticleRead(link: $0.link) }
+                    print("DEBUG: Read status filtered \(filteredItems.count) items to \(readFilteredItems.count) items")
+                }
+                
+                // Then apply keyword filtering if enabled
+                var keywordFilteredItems: [RSSItem]
+                if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
+                    // Filter out articles that match any of the filter keywords
+                    keywordFilteredItems = readFilteredItems.filter { !self.shouldFilterArticle($0) }
+                    print("DEBUG: Keyword filtered \(readFilteredItems.count) items to \(keywordFilteredItems.count) items")
+                } else {
+                    // No keyword filtering
+                    keywordFilteredItems = readFilteredItems
+                }
+                
+                // Sort the filtered items
+                self.sortFilteredItems(&keywordFilteredItems)
+                
+                // Update the UI
+                DispatchQueue.main.async {
+                    self.items = keywordFilteredItems
+                    self.tableView.reloadData()
+                    
+                    // Update UI elements
+                    self.tableView.isHidden = false
+                    self.loadingIndicator.stopAnimating()
+                    self.loadingLabel.isHidden = true
+                    self.stopRefreshAnimation()
+                    self.refreshControl.endRefreshing()
+                    self.updateFooterVisibility()
+                    
+                    // Scroll to top safely
+                    self.safeScrollToTop()
+                    
+                    // Log results
+                    print("DEBUG: Smart folder \(folder.name) loaded with \(keywordFilteredItems.count) articles")
+                    
+                    // Show message if no articles were found
+                    if keywordFilteredItems.isEmpty {
+                        self.loadingLabel.text = "No articles found matching this smart folder's rules"
+                        self.loadingLabel.isHidden = false
+                        
+                        // Hide the message after a few seconds
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            self.loadingLabel.isHidden = true
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Filters articles based on smart folder rules
+    private func filterArticlesForSmartFolder(_ folder: SmartFolder, completion: @escaping ([RSSItem]) -> Void) {
+        // Create a dispatch group to handle asynchronous rule evaluation
+        let group = DispatchGroup()
+        let itemsToEvaluate = self._allItems
+        var matchingItems: [RSSItem] = []
+        
+        // Add debug logging for smart folder rules
+        print("DEBUG: Starting article filtering for smart folder \(folder.name)")
+        print("DEBUG: Smart folder has \(folder.rules.count) rules")
+        print("DEBUG: Smart folder match mode: \(folder.matchMode)")
+        for (index, rule) in folder.rules.enumerated() {
+            print("DEBUG: Rule \(index): \(rule.field) \(rule.operation) '\(rule.value)'")
+        }
+        print("DEBUG: Total articles to evaluate: \(itemsToEvaluate.count)")
+        
+        // Check if any rules look for title contains "Andor"
+        let hasAndorRule = folder.rules.contains { rule in
+            return rule.field == .title && 
+                   rule.operation == .contains && 
+                   rule.value.lowercased().contains("andor")
+        }
+        
+        if hasAndorRule {
+            print("DEBUG: Found rule looking for 'Andor' in title - checking all article titles:")
+            for article in itemsToEvaluate {
+                if article.title.lowercased().contains("andor") {
+                    print("DEBUG: FOUND ARTICLE WITH ANDOR: \(article.title)")
+                }
+            }
+        }
+        
+        // Process each article to see if it matches the smart folder rules
+        for item in itemsToEvaluate {
+            group.enter()
+            folder.matchesArticle(item) { matches in
+                if matches {
+                    // If this article matched, log it for debugging
+                    print("DEBUG: Article matched: \"\(item.title)\"")
+                    matchingItems.append(item)
+                } else if hasAndorRule && item.title.lowercased().contains("andor") {
+                    // Special debugging for Andor case
+                    print("DEBUG: ANDOR ARTICLE DID NOT MATCH RULES: \(item.title)")
+                    
+                    // Manually evaluate each rule for this article to see which ones are failing
+                    let evaluationGroup = DispatchGroup()
+                    var ruleResults: [String] = []
+                    
+                    for (index, rule) in folder.rules.enumerated() {
+                        evaluationGroup.enter()
+                        if rule.field == .title {
+                            // Direct evaluation for title rules
+                            let normalizedValue = item.title.lowercased()
+                            let normalizedRuleValue = rule.value.lowercased()
+                            
+                            var result = false
+                            if rule.operation == .contains {
+                                result = normalizedValue.contains(normalizedRuleValue)
+                            } else if rule.operation == .notContains {
+                                result = !normalizedValue.contains(normalizedRuleValue)
+                            } else if rule.operation == .equals {
+                                result = normalizedValue == normalizedRuleValue
+                            } else if rule.operation == .notEquals {
+                                result = normalizedValue != normalizedRuleValue
+                            } else if rule.operation == .beginsWith {
+                                result = normalizedValue.hasPrefix(normalizedRuleValue)
+                            } else if rule.operation == .endsWith {
+                                result = normalizedValue.hasSuffix(normalizedRuleValue)
+                            }
+                            
+                            ruleResults.append("Rule \(index) (\(rule.field) \(rule.operation) '\(rule.value)'): \(result)")
+                            evaluationGroup.leave()
+                        } else {
+                            // For other rules, let the standard evaluation handle it
+                            evaluationGroup.leave()
+                        }
+                    }
+                    
+                    evaluationGroup.notify(queue: .main) {
+                        print("DEBUG: Rule evaluation results for '\(item.title)':")
+                        for result in ruleResults {
+                            print("DEBUG: \(result)")
+                        }
+                    }
+                }
+                group.leave()
+            }
+        }
+        
+        // When all evaluations are complete, return the matching items
+        group.notify(queue: .main) {
+            print("DEBUG: Smart folder evaluation complete, found \(matchingItems.count) matching articles")
+            completion(matchingItems)
+        }
+    }
+    
     private func showEmptyCacheMessage() {
         // Show message when no cached articles are available in offline mode
         let alert = UIAlertController(
@@ -864,6 +1132,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             (.init("heartedItemsUpdated"), #selector(handleHeartedItemsUpdated)),
             (.init("articleSortOrderChanged"), #selector(handleSortOrderChanged)),
             (.init("feedFoldersUpdated"), #selector(handleFeedFoldersUpdated)),
+            (.init("smartFoldersUpdated"), #selector(handleSmartFoldersUpdated)),
             (.init("hideReadArticlesChanged"), #selector(handleHideReadArticlesChanged)),
             (.init("contentFilteringChanged"), #selector(handleContentFilteringChanged)),
             (.init("fullTextExtractionChanged"), #selector(handleFullTextExtractionChanged)),
@@ -1000,9 +1269,24 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
                                 self.currentFolder = nextFolder
                                 self.loadFolderFeeds(folder: nextFolder)
                             } else {
-                                // Loop back to RSS feed
-                                self.currentFeedType = .rss
-                                self.updateTableViewContent()
+                                // Check if we have smart folders to navigate to
+                                StorageManager.shared.getSmartFolders { [weak self] result in
+                                    guard let self = self else { return }
+                                    
+                                    DispatchQueue.main.async {
+                                        if case .success(let smartFolders) = result, !smartFolders.isEmpty {
+                                            // Move to first smart folder
+                                            let firstSmartFolder = smartFolders[0]
+                                            self.currentFeedType = .smartFolder(id: firstSmartFolder.id)
+                                            self.currentSmartFolder = firstSmartFolder
+                                            self.loadSmartFolderContents(folder: firstSmartFolder)
+                                        } else {
+                                            // Loop back to RSS feed
+                                            self.currentFeedType = .rss
+                                            self.updateTableViewContent()
+                                        }
+                                    }
+                                }
                             }
                         } else {
                             // Current folder not found, go back to RSS
@@ -1011,6 +1295,39 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
                         }
                     } else {
                         // Error getting folders, go back to RSS
+                        self.currentFeedType = .rss
+                        self.updateTableViewContent()
+                    }
+                }
+            }
+            
+        case .smartFolder(let currentFolderId):
+            // From smart folder -> next smart folder or back to RSS
+            StorageManager.shared.getSmartFolders { [weak self] result in
+                guard let self = self else { return }
+                
+                DispatchQueue.main.async {
+                    if case .success(let folders) = result {
+                        // Find current folder index
+                        if let currentIndex = folders.firstIndex(where: { $0.id == currentFolderId }) {
+                            if currentIndex < folders.count - 1 {
+                                // Move to next smart folder
+                                let nextFolder = folders[currentIndex + 1]
+                                self.currentFeedType = .smartFolder(id: nextFolder.id)
+                                self.currentSmartFolder = nextFolder
+                                self.loadSmartFolderContents(folder: nextFolder)
+                            } else {
+                                // Loop back to RSS feed
+                                self.currentFeedType = .rss
+                                self.updateTableViewContent()
+                            }
+                        } else {
+                            // Current smart folder not found, go back to RSS
+                            self.currentFeedType = .rss
+                            self.updateTableViewContent()
+                        }
+                    } else {
+                        // Error getting smart folders, go back to RSS
                         self.currentFeedType = .rss
                         self.updateTableViewContent()
                     }
@@ -1028,28 +1345,44 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         // Move to the previous feed type
         switch currentFeedType {
         case .rss:
-            // From RSS, go to the last feed type (last folder or heart or bookmarks)
-            StorageManager.shared.getFolders { [weak self] result in
+            // From RSS, go to the last feed type (last smart folder, last folder, heart, or bookmarks)
+            // First check for smart folders
+            StorageManager.shared.getSmartFolders { [weak self] result in
                 guard let self = self else { return }
                 
                 DispatchQueue.main.async {
-                    if case .success(let folders) = result, !folders.isEmpty {
-                        // Go to last folder
-                        let lastFolder = folders.last!
-                        self.currentFeedType = .folder(id: lastFolder.id)
-                        self.currentFolder = lastFolder
-                        self.loadFolderFeeds(folder: lastFolder)
-                    } else if !self.heartedItems.isEmpty {
-                        // No folders, go to favorites
-                        self.currentFeedType = .heart
-                        self.loadHeartedFeeds()
-                    } else if !self.bookmarkedItems.isEmpty {
-                        // No favorites, go to bookmarks
-                        self.currentFeedType = .bookmarks
-                        self.loadBookmarkedFeeds()
+                    if case .success(let smartFolders) = result, !smartFolders.isEmpty {
+                        // Go to last smart folder
+                        let lastSmartFolder = smartFolders.last!
+                        self.currentFeedType = .smartFolder(id: lastSmartFolder.id)
+                        self.currentSmartFolder = lastSmartFolder
+                        self.loadSmartFolderContents(folder: lastSmartFolder)
                     } else {
-                        // No other feeds to go to - stay on RSS
-                        self.showToast(message: "No other feed types available")
+                        // No smart folders, check for regular folders
+                        StorageManager.shared.getFolders { [weak self] result in
+                            guard let self = self else { return }
+                            
+                            DispatchQueue.main.async {
+                                if case .success(let folders) = result, !folders.isEmpty {
+                                    // Go to last folder
+                                    let lastFolder = folders.last!
+                                    self.currentFeedType = .folder(id: lastFolder.id)
+                                    self.currentFolder = lastFolder
+                                    self.loadFolderFeeds(folder: lastFolder)
+                                } else if !self.heartedItems.isEmpty {
+                                    // No folders, go to favorites
+                                    self.currentFeedType = .heart
+                                    self.loadHeartedFeeds()
+                                } else if !self.bookmarkedItems.isEmpty {
+                                    // No favorites, go to bookmarks
+                                    self.currentFeedType = .bookmarks
+                                    self.loadBookmarkedFeeds()
+                                } else {
+                                    // No other feeds to go to - stay on RSS
+                                    self.showToast(message: "No other feed types available")
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1123,6 +1456,108 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
                         } else {
                             self.currentFeedType = .rss
                             self.updateTableViewContent()
+                        }
+                    }
+                }
+            }
+            
+        case .smartFolder(let currentFolderId):
+            // From smart folder -> previous smart folder or regular folder or heart or bookmarks or RSS
+            StorageManager.shared.getSmartFolders { [weak self] result in
+                guard let self = self else { return }
+                
+                DispatchQueue.main.async {
+                    if case .success(let folders) = result {
+                        // Find current folder index
+                        if let currentIndex = folders.firstIndex(where: { $0.id == currentFolderId }) {
+                            if currentIndex > 0 {
+                                // Move to previous smart folder
+                                let prevFolder = folders[currentIndex - 1]
+                                self.currentFeedType = .smartFolder(id: prevFolder.id)
+                                self.currentSmartFolder = prevFolder
+                                self.loadSmartFolderContents(folder: prevFolder)
+                            } else {
+                                // We're at the first smart folder, check for regular folders
+                                StorageManager.shared.getFolders { [weak self] result in
+                                    guard let self = self else { return }
+                                    
+                                    DispatchQueue.main.async {
+                                        if case .success(let regularFolders) = result, !regularFolders.isEmpty {
+                                            // Go to last regular folder
+                                            let lastFolder = regularFolders.last!
+                                            self.currentFeedType = .folder(id: lastFolder.id)
+                                            self.currentFolder = lastFolder
+                                            self.loadFolderFeeds(folder: lastFolder)
+                                        } else if !self.heartedItems.isEmpty {
+                                            // No regular folders, go to favorites
+                                            self.currentFeedType = .heart
+                                            self.loadHeartedFeeds()
+                                        } else if !self.bookmarkedItems.isEmpty {
+                                            // No favorites, go to bookmarks
+                                            self.currentFeedType = .bookmarks
+                                            self.loadBookmarkedFeeds()
+                                        } else {
+                                            // No other feeds, go to RSS
+                                            self.currentFeedType = .rss
+                                            self.updateTableViewContent()
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Current smart folder not found, check for regular folders
+                            StorageManager.shared.getFolders { [weak self] result in
+                                guard let self = self else { return }
+                                
+                                DispatchQueue.main.async {
+                                    if case .success(let regularFolders) = result, !regularFolders.isEmpty {
+                                        // Go to last regular folder
+                                        let lastFolder = regularFolders.last!
+                                        self.currentFeedType = .folder(id: lastFolder.id)
+                                        self.currentFolder = lastFolder
+                                        self.loadFolderFeeds(folder: lastFolder)
+                                    } else if !self.heartedItems.isEmpty {
+                                        // No regular folders, go to favorites
+                                        self.currentFeedType = .heart
+                                        self.loadHeartedFeeds()
+                                    } else if !self.bookmarkedItems.isEmpty {
+                                        // No favorites, go to bookmarks
+                                        self.currentFeedType = .bookmarks
+                                        self.loadBookmarkedFeeds()
+                                    } else {
+                                        // No other feeds, go to RSS
+                                        self.currentFeedType = .rss
+                                        self.updateTableViewContent()
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Error getting smart folders, try regular folders
+                        StorageManager.shared.getFolders { [weak self] result in
+                            guard let self = self else { return }
+                            
+                            DispatchQueue.main.async {
+                                if case .success(let regularFolders) = result, !regularFolders.isEmpty {
+                                    // Go to last regular folder
+                                    let lastFolder = regularFolders.last!
+                                    self.currentFeedType = .folder(id: lastFolder.id)
+                                    self.currentFolder = lastFolder
+                                    self.loadFolderFeeds(folder: lastFolder)
+                                } else if !self.heartedItems.isEmpty {
+                                    // No regular folders, go to favorites
+                                    self.currentFeedType = .heart
+                                    self.loadHeartedFeeds()
+                                } else if !self.bookmarkedItems.isEmpty {
+                                    // No favorites, go to bookmarks
+                                    self.currentFeedType = .bookmarks
+                                    self.loadBookmarkedFeeds()
+                                } else {
+                                    // No other feeds, go to RSS
+                                    self.currentFeedType = .rss
+                                    self.updateTableViewContent()
+                                }
+                            }
                         }
                     }
                 }
@@ -1359,6 +1794,30 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         }
     }
     
+    @objc private func handleSmartFoldersUpdated(_ notification: Notification) {
+        // If we're currently viewing a smart folder feed, refresh it
+        // since the folder rules might have changed
+        if case .smartFolder(let folderId) = currentFeedType {
+            // Get the smart folder from storage
+            StorageManager.shared.getSmartFolders { [weak self] result in
+                guard let self = self else { return }
+                
+                DispatchQueue.main.async {
+                    if case .success(let folders) = result,
+                       let folder = folders.first(where: { $0.id == folderId }) {
+                        // Update currentSmartFolder
+                        self.currentSmartFolder = folder
+                        
+                        // Reload smart folder contents
+                        self.loadSmartFolderContents(folder: folder)
+                        
+                        print("DEBUG: Refreshed smart folder \(folder.name) after update notification")
+                    }
+                }
+            }
+        }
+    }
+    
     @objc private func handleHideReadArticlesChanged(_ notification: Notification) {
         // Reload feeds based on the current view
         switch currentFeedType {
@@ -1370,8 +1829,13 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             if let folder = currentFolder, folder.id == folderId {
                 loadFolderFeeds(folder: folder)
             }
-        default:
-            // For other views (bookmarks, heart), we don't filter by read status
+        case .smartFolder(let folderId):
+            // For smart folder views, also refresh
+            if let folder = currentSmartFolder, folder.id == folderId {
+                loadSmartFolderContents(folder: folder)
+            }
+        case .bookmarks, .heart:
+            // For these views, we don't filter by read status
             // so no need to refresh
             break
         }

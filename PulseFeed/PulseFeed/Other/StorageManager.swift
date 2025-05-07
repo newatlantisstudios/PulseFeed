@@ -1149,7 +1149,7 @@ class StorageManager {
                 }
                 // Special handling for tags and taggedItems to return empty arrays instead of errors
                 if (key == "tags" || key == "taggedItems") && T.self == [Tag].self || T.self == [TaggedItem].self {
-                    print("DEBUG: StorageManager - Converting \(key) not found error to empty array")
+                    //print("DEBUG: StorageManager - Converting \(key) not found error to empty array")
                     completion(.success([] as! T))
                     return
                 }

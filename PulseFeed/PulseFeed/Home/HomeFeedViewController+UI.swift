@@ -159,8 +159,17 @@ extension HomeFeedViewController {
         
         // leftButtons order: [rss, refresh, bookmark, heart, folder]
         // Update the RSS button image:
+        let isFolderOrSmartFolder: Bool
         if case .folder = currentFeedType {
-            // If we're in a folder, show normal RSS icon
+            isFolderOrSmartFolder = true
+        } else if case .smartFolder = currentFeedType {
+            isFolderOrSmartFolder = true
+        } else {
+            isFolderOrSmartFolder = false
+        }
+        
+        if isFolderOrSmartFolder {
+            // If we're in a folder or smart folder, show normal RSS icon
             rssButton?.image = resizeImage(
                 UIImage(named: "rss"),
                 targetSize: CGSize(width: 24, height: 24)
@@ -175,22 +184,20 @@ extension HomeFeedViewController {
         
         // Do not change the refresh button (index 1)
         
-        // Update the read status indicator when in RSS mode or folder mode
-        let isRssFeed: Bool
-        if case .rss = currentFeedType {
-            isRssFeed = true
-        } else {
-            isRssFeed = false
-        }
+        // Update the read status indicator when in RSS mode, folder mode, or smart folder mode
+        let isRssFeed = if case .rss = currentFeedType { true } else { false }
         
-        let isFolderFeed: Bool
-        if case .folder(_) = currentFeedType {
+        var isFolderFeed = false
+        if case .folder = currentFeedType {
             isFolderFeed = true
-        } else {
-            isFolderFeed = false
         }
         
-        if isRssFeed || isFolderFeed {
+        var isSmartFolderFeed = false
+        if case .smartFolder = currentFeedType {
+            isSmartFolderFeed = true
+        }
+        
+        if isRssFeed || isFolderFeed || isSmartFolderFeed {
             updateReadStatusIndicator()
         }
         
@@ -209,6 +216,13 @@ extension HomeFeedViewController {
         )?.withRenderingMode(.alwaysTemplate)
         
         // Update the Folder button image:
+        // Apply different tint based on selection status
+        if isFolderFeed || isSmartFolderFeed {
+            folderButton?.tintColor = AppColors.primary
+        } else {
+            folderButton?.tintColor = AppColors.dynamicIconColor
+        }
+        
         let folderImageName = isFolderFeed ? "folder.fill" : "folder"
         
         // Since folder icon is using a system image, use UIImage(systemName:) instead
@@ -362,18 +376,11 @@ extension HomeFeedViewController {
     
     func updateFooterVisibility() {
         // Show the footer for RSS feed type and folder feed type
-        let isRssFeed: Bool
-        if case .rss = currentFeedType {
-            isRssFeed = true
-        } else {
-            isRssFeed = false
-        }
+        let isRssFeed = if case .rss = currentFeedType { true } else { false }
         
-        let isFolderFeed: Bool
-        if case .folder(_) = currentFeedType {
+        var isFolderFeed = false
+        if case .folder = currentFeedType {
             isFolderFeed = true
-        } else {
-            isFolderFeed = false
         }
         
         if isRssFeed || isFolderFeed {
@@ -386,18 +393,11 @@ extension HomeFeedViewController {
     }
     
     func refreshFooterView() {
-        let isRssFeed: Bool
-        if case .rss = currentFeedType {
-            isRssFeed = true
-        } else {
-            isRssFeed = false
-        }
+        let isRssFeed = if case .rss = currentFeedType { true } else { false }
         
-        let isFolderFeed: Bool
-        if case .folder(_) = currentFeedType {
+        var isFolderFeed = false
+        if case .folder = currentFeedType {
             isFolderFeed = true
-        } else {
-            isFolderFeed = false
         }
         
         if isRssFeed || isFolderFeed {
@@ -418,18 +418,11 @@ extension HomeFeedViewController {
         let allRead = hasArticles && !items.contains { !$0.isRead }
         
         // Only modify the table footer when in RSS mode or folder mode
-        let isRssFeed: Bool
-        if case .rss = currentFeedType {
-            isRssFeed = true
-        } else {
-            isRssFeed = false
-        }
+        let isRssFeed = if case .rss = currentFeedType { true } else { false }
         
-        let isFolderFeed: Bool
-        if case .folder(_) = currentFeedType {
+        var isFolderFeed = false
+        if case .folder = currentFeedType {
             isFolderFeed = true
-        } else {
-            isFolderFeed = false
         }
         
         if isRssFeed || isFolderFeed {
@@ -654,12 +647,7 @@ extension HomeFeedViewController {
         let hasArticles = !items.isEmpty
         let allRead = hasArticles && !items.contains { !$0.isRead }
         
-        let isRssFeed: Bool
-        if case .rss = currentFeedType {
-            isRssFeed = true
-        } else {
-            isRssFeed = false
-        }
+        let isRssFeed = if case .rss = currentFeedType { true } else { false }
         
         if allRead && isRssFeed {
             DispatchQueue.main.async {
@@ -740,63 +728,155 @@ extension HomeFeedViewController {
             } else {
                 title = "Folder"
             }
+        case .smartFolder:
+            // Get smart folder name if we have it
+            if let folder = currentSmartFolder {
+                title = folder.name
+            } else if case .smartFolder(let id) = currentFeedType {
+                // Load smart folder name if needed
+                StorageManager.shared.getSmartFolders { [weak self] result in
+                    if case .success(let folders) = result, 
+                       let folder = folders.first(where: { $0.id == id }) {
+                        self?.currentSmartFolder = folder
+                        DispatchQueue.main.async {
+                            self?.title = folder.name
+                        }
+                    }
+                }
+                title = "Smart Folder"
+            } else {
+                title = "Smart Folder"
+            }
         }
     }
     
     func showFolderSelection() {
-        // First load all folders
-        StorageManager.shared.getFolders { [weak self] result in
+        // Create a dispatch group to load both regular folders and smart folders
+        let group = DispatchGroup()
+        
+        // Variables to store results
+        var regularFolders: [FeedFolder] = []
+        var smartFolders: [SmartFolder] = []
+        var loadError: Error?
+        
+        // Load regular folders
+        group.enter()
+        StorageManager.shared.getFolders { result in
+            switch result {
+            case .success(let folders):
+                regularFolders = folders.sorted { $0.name.lowercased() < $1.name.lowercased() }
+            case .failure(let error):
+                loadError = error
+                print("Error loading regular folders: \(error.localizedDescription)")
+            }
+            group.leave()
+        }
+        
+        // Load smart folders
+        group.enter()
+        StorageManager.shared.getSmartFolders { result in
+            switch result {
+            case .success(let folders):
+                smartFolders = folders.sorted { $0.name.lowercased() < $1.name.lowercased() }
+            case .failure(let error):
+                print("Error loading smart folders: \(error.localizedDescription)")
+                // Don't set loadError if regular folders loaded successfully
+                if loadError == nil {
+                    loadError = error
+                }
+            }
+            group.leave()
+        }
+        
+        // When both types of folders are loaded
+        group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
             
-            DispatchQueue.main.async {
-                switch result {
-                case .success(let folders):
-                    if folders.isEmpty {
-                        // Show alert that there are no folders
-                        let alert = UIAlertController(
-                            title: "No Folders",
-                            message: "You don't have any folders yet. Create folders in Settings > Folder Organization.",
-                            preferredStyle: .alert
-                        )
-                        alert.addAction(UIAlertAction(title: "OK", style: .default))
-                        self.present(alert, animated: true)
-                    } else {
-                        // Show folder selection
-                        let folderAlert = UIAlertController(
-                            title: "Select Folder",
-                            message: "Choose a folder to view:",
-                            preferredStyle: .actionSheet
-                        )
-                        
-                        // Add actions for each folder
-                        for folder in folders {
-                            let action = UIAlertAction(title: folder.name, style: .default) { [weak self] _ in
-                                self?.showFolderFeed(folder: folder)
-                            }
-                            folderAlert.addAction(action)
-                        }
-                        
-                        // Add cancel action
-                        folderAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-                        
-                        // For iPad
-                        if let popoverController = folderAlert.popoverPresentationController {
-                            popoverController.barButtonItem = self.folderButton
-                        }
-                        
-                        self.present(folderAlert, animated: true)
+            if let error = loadError {
+                // Show error alert
+                let errorAlert = UIAlertController(
+                    title: "Error",
+                    message: "Failed to load folders. \(error.localizedDescription)",
+                    preferredStyle: .alert
+                )
+                errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(errorAlert, animated: true)
+                return
+            }
+            
+            // Check if there are any folders at all
+            if regularFolders.isEmpty && smartFolders.isEmpty {
+                // Show alert that there are no folders
+                let alert = UIAlertController(
+                    title: "No Folders",
+                    message: "You don't have any folders yet. Create folders in Settings > Folder Organization or Smart Folders.",
+                    preferredStyle: .alert
+                )
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(alert, animated: true)
+            } else {
+                // Show folder selection
+                let folderAlert = UIAlertController(
+                    title: "Select Folder",
+                    message: "Choose a folder to view:",
+                    preferredStyle: .actionSheet
+                )
+                
+                // Add regular folders section if there are any
+                if !regularFolders.isEmpty {
+                    // Add a header for regular folders if we have both types
+                    if !smartFolders.isEmpty {
+                        let regularHeader = UIAlertAction(title: "📁 Regular Folders", style: .default) { _ in }
+                        regularHeader.isEnabled = false
+                        folderAlert.addAction(regularHeader)
                     }
-                case .failure(let error):
-                    print("Error loading folders: \(error.localizedDescription)")
-                    // Show error alert
-                    let errorAlert = UIAlertController(
-                        title: "Error",
-                        message: "Failed to load folders. Please try again.",
-                        preferredStyle: .alert
-                    )
-                    errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
-                    self.present(errorAlert, animated: true)
+                    
+                    // Add actions for each regular folder
+                    for folder in regularFolders {
+                        let action = UIAlertAction(title: folder.name, style: .default) { [weak self] _ in
+                            self?.showFolderFeed(folder: folder)
+                        }
+                        folderAlert.addAction(action)
+                    }
                 }
+                
+                // Add smart folders section if there are any
+                if !smartFolders.isEmpty {
+                    // Add a separator if we have both types
+                    if !regularFolders.isEmpty {
+                        let separator = UIAlertAction(title: "─────────────────", style: .default) { _ in }
+                        separator.isEnabled = false
+                        folderAlert.addAction(separator)
+                        
+                        // Add a header for smart folders
+                        let smartHeader = UIAlertAction(title: "🔍 Smart Folders", style: .default) { _ in }
+                        smartHeader.isEnabled = false
+                        folderAlert.addAction(smartHeader)
+                    }
+                    
+                    // Add actions for each smart folder
+                    for folder in smartFolders {
+                        let action = UIAlertAction(title: folder.name, style: .default) { [weak self] _ in
+                            // Mark as using smart folder
+                            self?.currentSmartFolder = folder
+                            self?.currentFeedType = .smartFolder(id: folder.id)
+                            
+                            // Load all feeds and filter based on smart folder rules
+                            self?.loadRSSFeeds()
+                        }
+                        folderAlert.addAction(action)
+                    }
+                }
+                
+                // Add cancel action
+                folderAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+                
+                // For iPad
+                if let popoverController = folderAlert.popoverPresentationController {
+                    popoverController.barButtonItem = self.folderButton
+                }
+                
+                self.present(folderAlert, animated: true)
             }
         }
     }
@@ -1115,7 +1195,7 @@ extension HomeFeedViewController {
     }
     
     /// Helper method to load articles for a specific feed
-    private func loadArticlesForFeed(_ feed: RSSFeed, completion: @escaping ([RSSItem]) -> Void) {
+    internal func loadArticlesForFeed(_ feed: RSSFeed, completion: @escaping ([RSSItem]) -> Void) {
         print("DEBUG: Loading articles for feed: \(feed.title) - URL: \(feed.url)")
         
         // Set a timeout to ensure we always complete
@@ -1347,6 +1427,11 @@ extension HomeFeedViewController {
                 }
             }
             
+        case .smartFolder(let folderId):
+            // For smart folder view, just reload all feeds
+            // The smart folder filtering will happen in updateTableViewContent
+            loadRSSFeeds()
+            
         case .bookmarks:
             // Refresh bookmarked feeds
             loadBookmarkedFeeds()
@@ -1532,6 +1617,29 @@ extension HomeFeedViewController {
                     }
                 }
             }
+        case .smartFolder(let id):
+            // Handle smart folder case
+            if let folder = currentSmartFolder, folder.id == id {
+                loadSmartFolderContents(folder: folder)
+            } else {
+                // Smart folder not loaded yet, load it first
+                StorageManager.shared.getSmartFolders { [weak self] result in
+                    guard let self = self else { return }
+                    
+                    DispatchQueue.main.async {
+                        if case .success(let folders) = result,
+                           let folder = folders.first(where: { $0.id == id }) {
+                            self.currentSmartFolder = folder
+                            self.loadSmartFolderContents(folder: folder)
+                        } else {
+                            // Smart folder not found, fall back to all feeds
+                            self.currentFeedType = .rss
+                            self.updateTableViewContent()
+                        }
+                    }
+                }
+            }
+            
         case .bookmarks:
             // For bookmarks and heart feeds, briefly hide the tableView while loading
             tableView.isHidden = true
