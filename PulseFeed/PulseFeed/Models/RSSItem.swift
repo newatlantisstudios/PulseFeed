@@ -1,6 +1,6 @@
 import Foundation
 
-struct RSSItem: Codable {
+struct RSSItem: Codable, Equatable, Hashable {
     let title: String
     let link: String
     let pubDate: String
@@ -26,6 +26,18 @@ struct RSSItem: Codable {
         case title, link, pubDate, source, isRead, description, content, author, id
     }
     
+    // MARK: - Hashable Implementation
+    
+    func hash(into hasher: inout Hasher) {
+        // Use link as the primary hash since it should be unique
+        hasher.combine(link)
+    }
+    
+    static func == (lhs: RSSItem, rhs: RSSItem) -> Bool {
+        // Two items are equal if they have the same link
+        return lhs.link == rhs.link
+    }
+    
     // MARK: - Tag Operations
     
     /// Get all tags for this article
@@ -36,9 +48,7 @@ struct RSSItem: Codable {
             switch result {
             case .success(let tags):
                 //print("DEBUG: RSSItem.getTags - Found \(tags.count) tags for item: \(self.title)")
-                for tag in tags {
-                    //print("DEBUG: RSSItem.getTags - Tag: \(tag.name), ID: \(tag.id)")
-                }
+                // No need to loop through tags here
                 completion(.success(tags))
             case .failure(let error):
                 //print("DEBUG: RSSItem.getTags - Error fetching tags: \(error.localizedDescription)")
@@ -70,4 +80,5 @@ struct RSSItem: Codable {
             }
         }
     }
+    
 }

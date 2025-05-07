@@ -231,7 +231,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                 completion(true)
             }
         }
-        heartAction.image = UIImage(named: isHearted ? "heartFilled" : "heart")?
+        heartAction.image = UIImage(systemName: isHearted ? "heart.fill" : "heart")?
             .withRenderingMode(.alwaysTemplate)
         heartAction.backgroundColor = AppColors.primary
 
@@ -245,9 +245,22 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             }
         }
         bookmarkAction.image = UIImage(
-            named: isBookmarked ? "bookmarkFilled" : "bookmark")?
+            systemName: isBookmarked ? "bookmark.fill" : "bookmark")?
             .withRenderingMode(.alwaysTemplate)
         bookmarkAction.backgroundColor = AppColors.primary
+        
+        // Configure Archive Action
+        let isArchived = archivedItems.contains { normalizeLink($0) == normalizedLink }
+        let archiveAction = UIContextualAction(style: .normal, title: nil) {
+            (action, view, completion) in
+            self.toggleArchive(for: item) {
+                tableView.reloadRows(at: [indexPath], with: .none)
+                completion(true)
+            }
+        }
+        // Use system icons for archive status
+        archiveAction.image = UIImage(systemName: isArchived ? "archivebox.fill" : "archivebox")
+        archiveAction.backgroundColor = AppColors.primary
         
         // Configure Read/Unread Action
         let isItemRead = ReadStatusTracker.shared.isArticleRead(link: item.link)
@@ -263,7 +276,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         readAction.backgroundColor = isItemRead ? AppColors.secondary : AppColors.accent
 
         return UISwipeActionsConfiguration(actions: [
-            bookmarkAction, heartAction, readAction,
+            bookmarkAction, heartAction, archiveAction, readAction,
         ])
     }
 
@@ -309,6 +322,12 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         // Check if the article is cached
         let isArticleCached = cachedArticleLinks.contains(normalizeLink(item.link))
         
+        // Check if this article is part of a duplicate group
+        let isPartOfDuplicateGroup = isArticleDuplicate(item)
+        let duplicateGroup = isPartOfDuplicateGroup ? getDuplicateGroup(for: item) : nil
+        let isPrimaryDuplicate = duplicateGroup?.primary.link == item.link
+        let duplicateCount = duplicateGroup?.count ?? 0
+        
         // Get the font size from UserDefaults (defaulting to 16 if not set)
         let storedFontSize = CGFloat(UserDefaults.standard.float(forKey: "fontSize") != 0 ? UserDefaults.standard.float(forKey: "fontSize") : 16)
         
@@ -320,6 +339,27 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             // Configure with item data including cached state
             cell.configure(with: item, fontSize: storedFontSize, isRead: isItemRead, isCached: isArticleCached)
             
+            // Add duplicate information if applicable
+            if isPartOfDuplicateGroup && DuplicateManager.shared.handlingMode == .groupAndShow {
+                if isPrimaryDuplicate {
+                    // This is the primary article of a duplicate group
+                    if DuplicateManager.shared.showDuplicateCountBadge && duplicateCount > 0 {
+                        // Add a badge showing duplicate count
+                        cell.addDuplicateBadge(count: duplicateCount)
+                    }
+                } else {
+                    // This is a duplicate article
+                    cell.markAsDuplicate()
+                }
+            }
+            
+            // Configure for bulk edit mode if needed
+            if isBulkEditMode {
+                // Set accessory type based on selection state
+                cell.accessoryType = selectedItems.contains(indexPath.row) ? .checkmark : .none
+                cell.tintColor = AppColors.accent
+            }
+            
             return cell
         } else {
             // Use the default plain text cell
@@ -327,7 +367,25 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             
             // Configure cell with read state
             var config = cell.defaultContentConfiguration()
-            config.text = item.title
+            
+            // Add duplicate indicator if applicable
+            if isPartOfDuplicateGroup && DuplicateManager.shared.handlingMode == .groupAndShow {
+                // Visual indication of duplicates
+                if isPrimaryDuplicate && duplicateCount > 1 {
+                    // This is the primary article with duplicates
+                    config.text = "🔄 \(item.title) [+\(duplicateCount - 1)]"
+                    cell.backgroundColor = UIColor(hex: "1E90FF").withAlphaComponent(0.05)
+                } else if !isPrimaryDuplicate {
+                    // This is a duplicate article
+                    config.text = "⤷ \(item.title)"
+                    cell.backgroundColor = UIColor(hex: "1E90FF").withAlphaComponent(0.02)
+                } else {
+                    config.text = item.title
+                }
+            } else {
+                config.text = item.title
+                cell.backgroundColor = AppColors.background
+            }
             
             // Add "Cached" indicator to secondary text if article is cached
             var secondaryText = "\(item.source) • \(DateUtils.getTimeAgo(from: item.pubDate))"
@@ -338,6 +396,15 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             // Add read status indicator to secondary text
             if isItemRead {
                 secondaryText += " • 👁️ Read"
+            }
+            
+            // Add duplicate indicator to secondary text
+            if isPartOfDuplicateGroup && DuplicateManager.shared.handlingMode == .groupAndShow {
+                if isPrimaryDuplicate {
+                    secondaryText += " • 🔄 Primary"
+                } else {
+                    secondaryText += " • 🔄 Duplicate"
+                }
             }
             
             // Add tags to secondary text if any
@@ -382,7 +449,16 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             
             config.textProperties.font = .systemFont(ofSize: storedFontSize, weight: isItemRead ? .regular : .medium)
             
-            cell.accessoryType = .disclosureIndicator
+            // Configure for regular mode or bulk edit mode
+            if isBulkEditMode {
+                // Set accessory type based on selection state
+                cell.accessoryType = selectedItems.contains(indexPath.row) ? .checkmark : .none
+                cell.tintColor = AppColors.accent
+            } else {
+                // Use disclosure indicator in normal mode
+                cell.accessoryType = .disclosureIndicator
+            }
+            
             cell.contentConfiguration = config
             
             return cell
@@ -391,7 +467,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
     
     // Cache indicator handling is now implemented directly in the cell classes
     
-    // Add tag management via context menu
+    // Context menu for right-click and long press
     func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
         // Check if this is the special footer cell
         let isRssFeed: Bool
@@ -408,15 +484,162 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         
         // Get the item
         let item = items[indexPath.row]
+        let normalizedLink = normalizeLink(item.link)
         
-        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
-            // Create manage tags action
-            let manageTagsAction = UIAction(title: "Manage Tags", image: UIImage(systemName: "tag")) { [weak self] _ in
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            guard let self = self else { return UIMenu() }
+            
+            // Create menu actions for all swipe actions
+            var menuActions: [UIMenuElement] = []
+            
+            // BOOKMARK ACTION
+            let isBookmarked = self.bookmarkedItems.contains { self.normalizeLink($0) == normalizedLink }
+            let bookmarkAction = UIAction(
+                title: isBookmarked ? "Remove Bookmark" : "Bookmark",
+                image: UIImage(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+            ) { [weak self] _ in
+                self?.toggleBookmark(for: item) {
+                    // Reload the table to update UI
+                    self?.tableView.reloadData()
+                }
+            }
+            menuActions.append(bookmarkAction)
+            
+            // HEART/FAVORITE ACTION
+            let isHearted = self.heartedItems.contains { self.normalizeLink($0) == normalizedLink }
+            let heartAction = UIAction(
+                title: isHearted ? "Remove from Favorites" : "Add to Favorites",
+                image: UIImage(systemName: isHearted ? "heart.fill" : "heart")
+            ) { [weak self] _ in
+                self?.toggleHeart(for: item) {
+                    // Reload the table to update UI
+                    self?.tableView.reloadData()
+                }
+            }
+            menuActions.append(heartAction)
+            
+            // ARCHIVE ACTION
+            let isArchived = self.archivedItems.contains { self.normalizeLink($0) == normalizedLink }
+            let archiveAction = UIAction(
+                title: isArchived ? "Remove from Archive" : "Archive",
+                image: UIImage(systemName: isArchived ? "archivebox.fill" : "archivebox")
+            ) { [weak self] _ in
+                self?.toggleArchive(for: item) {
+                    // Reload the table to update UI
+                    self?.tableView.reloadData()
+                }
+            }
+            menuActions.append(archiveAction)
+            
+            // READ/UNREAD ACTION
+            let isItemRead = ReadStatusTracker.shared.isArticleRead(link: item.link)
+            let readAction = UIAction(
+                title: isItemRead ? "Mark as Unread" : "Mark as Read",
+                image: UIImage(systemName: isItemRead ? "envelope.open.fill" : "envelope.fill")
+            ) { [weak self] _ in
+                self?.toggleReadStatus(for: item) {
+                    // Reload the table to update UI
+                    self?.tableView.reloadData()
+                }
+            }
+            menuActions.append(readAction)
+            
+            // SHARE ACTION
+            let shareAction = UIAction(
+                title: "Share",
+                image: UIImage(systemName: "square.and.arrow.up")
+            ) { [weak self] _ in
+                guard let self = self, let url = URL(string: item.link) else { return }
+                
+                let activityViewController = UIActivityViewController(
+                    activityItems: [url],
+                    applicationActivities: nil
+                )
+                
+                // Present from the cell for iPad compatibility
+                if let cell = tableView.cellForRow(at: indexPath) {
+                    if let popoverController = activityViewController.popoverPresentationController {
+                        popoverController.sourceView = cell
+                        popoverController.sourceRect = cell.bounds
+                    }
+                } else {
+                    // Fallback to presenting from view
+                    if let popoverController = activityViewController.popoverPresentationController {
+                        popoverController.sourceView = self.view
+                        popoverController.sourceRect = CGRect(origin: point, size: CGSize(width: 1, height: 1))
+                    }
+                }
+                
+                self.present(activityViewController, animated: true)
+            }
+            menuActions.append(shareAction)
+            
+            // CACHE OFFLINE ACTION
+            let isArticleCached = self.cachedArticleLinks.contains(self.normalizeLink(item.link))
+            let cacheAction = UIAction(
+                title: isArticleCached ? "Remove from Offline Cache" : "Save for Offline Reading",
+                image: UIImage(systemName: isArticleCached ? "xmark.icloud" : "arrow.down.circle")
+            ) { [weak self] _ in
+                guard let self = self else { return }
+                
+                if isArticleCached {
+                    // Remove from offline cache
+                    StorageManager.shared.removeCachedArticle(link: item.link) { success, error in
+                        if success {
+                            DispatchQueue.main.async {
+                                // Update UI
+                                self.cachedArticleLinks.remove(self.normalizeLink(item.link))
+                                self.tableView.reloadData()
+                            }
+                        }
+                    }
+                } else {
+                    // Add to offline cache
+                    self.cacheArticleForOfflineReading(item) { success in
+                        if success {
+                            DispatchQueue.main.async {
+                                // Update UI
+                                self.cachedArticleLinks.insert(self.normalizeLink(item.link))
+                                self.tableView.reloadData()
+                            }
+                        }
+                    }
+                }
+            }
+            menuActions.append(cacheAction)
+            
+            // OPEN IN BROWSER ACTION
+            let openAction = UIAction(
+                title: "Open in Browser",
+                image: UIImage(systemName: "safari")
+            ) { [weak self] _ in
+                guard let self = self else { return }
+                self.openInSafari(item)
+            }
+            menuActions.append(openAction)
+            
+            // MANAGE TAGS ACTION
+            let tagsAction = UIAction(
+                title: "Manage Tags",
+                image: UIImage(systemName: "tag")
+            ) { [weak self] _ in
                 self?.showTagManager(for: item)
             }
+            menuActions.append(tagsAction)
             
-            // Create a menu with the action
-            return UIMenu(title: "", children: [manageTagsAction])
+            // MARK ABOVE AS READ ACTION
+            if indexPath.row > 0 {
+                let markAboveAction = UIAction(
+                    title: "Mark Above as Read",
+                    image: UIImage(systemName: "text.badge.checkmark")
+                ) { [weak self] _ in
+                    self?.markItemsAboveAsRead(indexPath)
+                }
+                menuActions.append(markAboveAction)
+            }
+            
+            // Create and return the menu with all actions
+            return UIMenu(title: "", children: menuActions)
         }
     }
     
@@ -588,8 +811,52 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             return
         }
         
-        // Mark item as read
+        // Handle differently in bulk edit mode
+        if isBulkEditMode {
+            // Toggle selection
+            if selectedItems.contains(indexPath.row) {
+                selectedItems.remove(indexPath.row)
+            } else {
+                selectedItems.insert(indexPath.row)
+            }
+            
+            // Update the Select All / Deselect All button
+            if selectedItems.count == items.count {
+                navigationItem.rightBarButtonItems?[1].title = "Deselect All"
+                navigationItem.rightBarButtonItems?[1].action = #selector(deselectAllItems)
+            } else {
+                navigationItem.rightBarButtonItems?[1].title = "Select All"
+                navigationItem.rightBarButtonItems?[1].action = #selector(selectAllItems)
+            }
+            
+            // Update navigation title with selection count
+            updateNavigationBarTitle()
+            
+            // Update toolbar state
+            updateBulkToolbarState()
+            
+            // Update the cell visually
+            tableView.reloadRows(at: [indexPath], with: .none)
+            return
+        }
+        
+        // Regular mode behavior - open the article
+        
+        // Get the current item
         let item = items[indexPath.row]
+        
+        // Check if this is a duplicate and handle it if needed
+        if isArticleDuplicate(item) && DuplicateManager.shared.handlingMode == .groupAndShow {
+            if let group = getDuplicateGroup(for: item) {
+                // If this is a duplicate but not the primary, show a menu to choose which one to view
+                if group.primary.link != item.link {
+                    showDuplicateOptions(for: group, atIndexPath: indexPath)
+                    return
+                }
+            }
+        }
+        
+        // Mark item as read
         items[indexPath.row].isRead = true  // Update the local item in the array
         
         // Mark as read in the ReadStatusTracker
@@ -612,7 +879,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         }
     }
     
-    private func openInArticleReader(_ item: RSSItem) {
+    internal func openInArticleReader(_ item: RSSItem) {
         guard let _ = URL(string: item.link) else {
             // Show error if URL is invalid
             let alert = UIAlertController(
@@ -702,7 +969,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         }
     }
     
-    private func openInSafari(_ item: RSSItem) {
+    internal func openInSafari(_ item: RSSItem) {
         guard let url = URL(string: item.link) else { return }
         
         // Check if offline mode and handle accordingly
@@ -945,6 +1212,58 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             
             DispatchQueue.main.async {
                 completion()
+            }
+        }
+    }
+    
+    func toggleArchive(for item: RSSItem, completion: @escaping () -> Void) {
+        // Use normalized link for consistent comparison
+        let normalizedLink = normalizeLink(item.link)
+        
+        // Check if the item is already archived by normalized link
+        let isArchived = archivedItems.contains { normalizeLink($0) == normalizedLink }
+        
+        if isArchived {
+            // Remove from archived items
+            StorageManager.shared.unarchiveArticle(link: item.link) { success, error in
+                if success {
+                    // Update local state
+                    DispatchQueue.main.async {
+                        self.archivedItems = self.archivedItems.filter { self.normalizeLink($0) != normalizedLink }
+                        
+                        // If currently viewing archived feed, remove the item from the current view
+                        if case .archive = self.currentFeedType {
+                            if let index = self.items.firstIndex(where: { self.normalizeLink($0.link) == normalizedLink }) {
+                                self.items.remove(at: index)
+                                self.tableView.deleteRows(at: [IndexPath(row: index, section: 0)], with: .automatic)
+                            }
+                        }
+                        
+                        // Call completion handler
+                        completion()
+                    }
+                } else {
+                    print("ERROR: Failed to unarchive article: \(error?.localizedDescription ?? "Unknown error")")
+                    DispatchQueue.main.async {
+                        completion()
+                    }
+                }
+            }
+        } else {
+            // Add to archived items
+            StorageManager.shared.archiveArticle(link: item.link) { success, error in
+                if success {
+                    // Update local state
+                    DispatchQueue.main.async {
+                        self.archivedItems.insert(normalizedLink)
+                        completion()
+                    }
+                } else {
+                    print("ERROR: Failed to archive article: \(error?.localizedDescription ?? "Unknown error")")
+                    DispatchQueue.main.async {
+                        completion()
+                    }
+                }
             }
         }
     }

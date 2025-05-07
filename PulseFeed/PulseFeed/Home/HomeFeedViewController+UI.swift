@@ -88,6 +88,12 @@ extension HomeFeedViewController {
             action: #selector(heartButtonTapped),
             tintColor: AppColors.dynamicIconColor
         )
+        archiveButton = createBarButton(
+            imageName: "archivebox", // Using system image for archive
+            action: #selector(archiveButtonTapped),
+            tintColor: AppColors.dynamicIconColor,
+            isSystemImage: true
+        )
         folderButton = createBarButton(
             imageName: "folder", // Using system image for folder
             action: #selector(folderButtonTapped),
@@ -103,6 +109,21 @@ extension HomeFeedViewController {
             action: #selector(openSettings),
             tintColor: AppColors.dynamicIconColor
         )
+        
+        // Create search button using custom icon from assets
+        let searchButton = createBarButton(
+            imageName: "search",
+            action: #selector(quickSearchButtonTapped),
+            tintColor: AppColors.dynamicIconColor
+        )
+        
+        // Create bulk edit button using system icon
+        let bulkEditButton = createBarButton(
+            imageName: "checkmark.circle",
+            action: #selector(bulkEditButtonTapped),
+            tintColor: AppColors.dynamicIconColor,
+            isSystemImage: true
+        )
 
         // Assign them in the order you want on the left side
         navigationItem.leftBarButtonItems = [
@@ -110,11 +131,12 @@ extension HomeFeedViewController {
             refreshButton,
             bookmarkButton,
             heartButton,
+            archiveButton,
             folderButton
         ].compactMap { $0 } // Use properties and compactMap to handle potential nils
 
-        // Assign the right-side buttons - only settings button remains
-        navigationItem.rightBarButtonItems = [settingsButton].compactMap { $0 }
+        // Assign the right-side buttons - include bulk edit, settings and search buttons
+        navigationItem.rightBarButtonItems = [settingsButton, searchButton, bulkEditButton].compactMap { $0 }
         
         // Initialize the read status indicator
         updateReadStatusIndicator()
@@ -215,6 +237,21 @@ extension HomeFeedViewController {
             targetSize: CGSize(width: 24, height: 24)
         )?.withRenderingMode(.alwaysTemplate)
         
+        // Update the Archive button image:
+        let isArchiveFeed = if case .archive = currentFeedType { true } else { false }
+        let archiveImageName = isArchiveFeed ? "archivebox.fill" : "archivebox"
+        archiveButton?.image = resizeImage(
+            UIImage(systemName: archiveImageName),
+            targetSize: CGSize(width: 24, height: 24)
+        )?.withRenderingMode(.alwaysTemplate)
+        
+        // Apply different tint based on selection status
+        if isArchiveFeed {
+            archiveButton?.tintColor = AppColors.primary
+        } else {
+            archiveButton?.tintColor = AppColors.dynamicIconColor
+        }
+        
         // Update the Folder button image:
         // Apply different tint based on selection status
         if isFolderFeed || isSmartFolderFeed {
@@ -262,6 +299,7 @@ extension HomeFeedViewController {
         if #available(iOS 15.0, *) {
             tableView.isPrefetchingEnabled = true
         }
+        
         
         // Listen for style changes
         NotificationCenter.default.addObserver(
@@ -375,7 +413,7 @@ extension HomeFeedViewController {
     }
     
     func updateFooterVisibility() {
-        // Show the footer for RSS feed type and folder feed type
+        // Show the footer for RSS feed type, folder feed type, and smart folder feed type
         let isRssFeed = if case .rss = currentFeedType { true } else { false }
         
         var isFolderFeed = false
@@ -383,7 +421,12 @@ extension HomeFeedViewController {
             isFolderFeed = true
         }
         
-        if isRssFeed || isFolderFeed {
+        var isSmartFolderFeed = false
+        if case .smartFolder = currentFeedType {
+            isSmartFolderFeed = true
+        }
+        
+        if isRssFeed || isFolderFeed || isSmartFolderFeed {
             // Add a new method to ensure footer is correctly sized and positioned
             addFooterToTableView()
         } else {
@@ -400,7 +443,12 @@ extension HomeFeedViewController {
             isFolderFeed = true
         }
         
-        if isRssFeed || isFolderFeed {
+        var isSmartFolderFeed = false
+        if case .smartFolder = currentFeedType {
+            isSmartFolderFeed = true
+        }
+        
+        if isRssFeed || isFolderFeed || isSmartFolderFeed {
             // Recreate the footer with updated width
             setupTableViewFooter()
             
@@ -417,7 +465,7 @@ extension HomeFeedViewController {
         let hasArticles = !items.isEmpty
         let allRead = hasArticles && !items.contains { !$0.isRead }
         
-        // Only modify the table footer when in RSS mode or folder mode
+        // Only modify the table footer when in RSS mode, folder mode, or smart folder mode
         let isRssFeed = if case .rss = currentFeedType { true } else { false }
         
         var isFolderFeed = false
@@ -425,7 +473,12 @@ extension HomeFeedViewController {
             isFolderFeed = true
         }
         
-        if isRssFeed || isFolderFeed {
+        var isSmartFolderFeed = false
+        if case .smartFolder = currentFeedType {
+            isSmartFolderFeed = true
+        }
+        
+        if isRssFeed || isFolderFeed || isSmartFolderFeed {
             // Always call addFooterToTableView to show the "Mark All as Read" button
             // instead of just showing a status label
             addFooterToTableView()
@@ -554,8 +607,9 @@ extension HomeFeedViewController {
                 self.items[i].isRead = true
             }
             
-            // Step 3: Also update the full allItems collection, but only for the current folder items
-            if case .folder(let folderId) = self.currentFeedType {
+            // Step 3: Also update the full allItems collection, based on the current view
+            switch self.currentFeedType {
+            case .folder(let folderId):
                 // When in folder view, only mark those specific articles as read in the full collection
                 let currentItemLinks = Set(self.items.map { self.normalizeLink($0.link) })
                 
@@ -567,7 +621,21 @@ extension HomeFeedViewController {
                 }
                 
                 print("DEBUG: Marked as read only the \(currentItemLinks.count) articles in the current folder")
-            } else {
+                
+            case .smartFolder(let folderId):
+                // For smart folders, also mark only the current items as read
+                let currentItemLinks = Set(self.items.map { self.normalizeLink($0.link) })
+                
+                for i in 0..<self._allItems.count {
+                    let normLink = self.normalizeLink(self._allItems[i].link)
+                    if currentItemLinks.contains(normLink) {
+                        self._allItems[i].isRead = true
+                    }
+                }
+                
+                print("DEBUG: Marked as read only the \(currentItemLinks.count) articles in the smart folder")
+                
+            case .rss, .bookmarks, .heart, .archive:
                 // In other views, mark all as read
                 for i in 0..<self._allItems.count {
                     self._allItems[i].isRead = true
@@ -575,11 +643,12 @@ extension HomeFeedViewController {
             }
             
             // Step 4: Save the new read state using ReadStatusTracker
-            if case .folder(let folderId) = self.currentFeedType {
-                // Get the links from the current folder
+            switch self.currentFeedType {
+            case .folder(let folderId), .smartFolder(let folderId):
+                // Get the links from the current folder or smart folder
                 let folderLinks = self.items.map { $0.link }
                 ReadStatusTracker.shared.markArticles(links: folderLinks, as: true)
-            } else {
+            case .rss, .bookmarks, .heart, .archive:
                 // Mark all items as read
                 let allLinks = self._allItems.map { $0.link }
                 ReadStatusTracker.shared.markArticles(links: allLinks, as: true)
@@ -606,10 +675,11 @@ extension HomeFeedViewController {
                               })
             
             // Step 6: Update storage in UserDefaults and iCloud
-            if case .folder(let folderId) = self.currentFeedType {
-                // For folder view, only save what we've already updated in readLinks
+            switch self.currentFeedType {
+            case .folder(let folderId), .smartFolder(let folderId):
+                // For folder and smart folder views, only save what we've already updated in readLinks
                 self.scheduleSaveReadState()
-            } else {
+            case .rss, .bookmarks, .heart, .archive:
                 // For all feeds view, use the global markAllAsRead for efficiency
                 StorageManager.shared.markAllAsRead { success, error in
                 DispatchQueue.main.async {
@@ -674,6 +744,321 @@ extension HomeFeedViewController {
     
     // MARK: - Button Actions
     
+    @objc func bulkEditButtonTapped() {
+        toggleBulkEditMode()
+    }
+    
+    func toggleBulkEditMode() {
+        // Toggle bulk edit mode
+        isBulkEditMode = !isBulkEditMode
+        
+        // Clear selection when exiting bulk edit mode
+        if !isBulkEditMode {
+            selectedItems.removeAll()
+        }
+        
+        // Update title to show selection count or reset to normal
+        updateNavigationBarTitle()
+        
+        // Reload the table to update cell appearance
+        tableView.reloadData()
+        
+        // Setup or remove the toolbar with bulk actions
+        if isBulkEditMode {
+            setupBulkEditToolbar()
+        } else {
+            removeBulkEditToolbar()
+        }
+    }
+    
+    func setupBulkEditToolbar() {
+        // Store original bar button items so we can restore them later
+        originalRightBarButtonItems = navigationItem.rightBarButtonItems
+        
+        // Create a "Done" button for exiting bulk edit mode
+        let doneButton = UIBarButtonItem(
+            title: "Done",
+            style: .done,
+            target: self,
+            action: #selector(bulkEditButtonTapped)
+        )
+        
+        // Create a "Select All" or "Deselect All" button
+        let selectAllButton = UIBarButtonItem(
+            title: "Select All",
+            style: .plain,
+            target: self,
+            action: #selector(selectAllBulkItems)
+        )
+        
+        // Set new right bar button items
+        navigationItem.rightBarButtonItems = [doneButton, selectAllButton]
+        
+        // Create the toolbar if it doesn't already exist
+        if bulkEditToolbar == nil {
+            bulkEditToolbar = UIToolbar()
+            bulkEditToolbar?.translatesAutoresizingMaskIntoConstraints = false
+            
+            // Apply appearance similar to the navigation bar
+            let appearance = UIToolbarAppearance()
+            appearance.configureWithOpaqueBackground()
+            appearance.backgroundColor = AppColors.navBarBackground
+            bulkEditToolbar?.standardAppearance = appearance
+            
+            // Add to view
+            view.addSubview(bulkEditToolbar!)
+            
+            // Constrain to bottom of the view
+            NSLayoutConstraint.activate([
+                bulkEditToolbar!.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                bulkEditToolbar!.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                bulkEditToolbar!.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            ])
+        }
+        
+        // Create toolbar items
+        let markReadButton = UIBarButtonItem(
+            title: "Mark Read",
+            style: .plain,
+            target: self,
+            action: #selector(bulkMarkAsRead)
+        )
+        
+        let markUnreadButton = UIBarButtonItem(
+            title: "Mark Unread",
+            style: .plain,
+            target: self,
+            action: #selector(bulkMarkAsUnread)
+        )
+        
+        let bookmarkButton = UIBarButtonItem(
+            title: "Bookmark",
+            style: .plain,
+            target: self,
+            action: #selector(bulkBookmark)
+        )
+        
+        let heartButton = UIBarButtonItem(
+            title: "Favorite",
+            style: .plain,
+            target: self,
+            action: #selector(bulkFavorite)
+        )
+        
+        let archiveButton = UIBarButtonItem(
+            title: "Archive",
+            style: .plain,
+            target: self,
+            action: #selector(bulkArchive)
+        )
+        
+        let flexibleSpace = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
+        
+        // Set toolbar items
+        bulkEditToolbar?.setItems([
+            markReadButton,
+            flexibleSpace,
+            markUnreadButton,
+            flexibleSpace,
+            bookmarkButton,
+            flexibleSpace,
+            heartButton,
+            flexibleSpace,
+            archiveButton
+        ], animated: true)
+        
+        // Update table view bottom constraint to account for toolbar
+        let bottomInset = bulkEditToolbar!.frame.height + view.safeAreaInsets.bottom
+        tableView.contentInset.bottom = bottomInset
+        tableView.scrollIndicatorInsets.bottom = bottomInset
+        
+        // Show toolbar with animation
+        bulkEditToolbar?.alpha = 0
+        UIView.animate(withDuration: 0.25) {
+            self.bulkEditToolbar?.alpha = 1
+        }
+    }
+    
+    func removeBulkEditToolbar() {
+        // Hide toolbar with animation
+        UIView.animate(withDuration: 0.25, animations: {
+            self.bulkEditToolbar?.alpha = 0
+        }, completion: { _ in
+            // Reset table view insets
+            self.tableView.contentInset.bottom = 0
+            self.tableView.scrollIndicatorInsets.bottom = 0
+        })
+        
+        // Restore original bar button items
+        navigationItem.rightBarButtonItems = originalRightBarButtonItems
+    }
+    
+    @objc func selectAllItems() {
+        // Select all items
+        selectedItems.removeAll()
+        for index in 0..<items.count {
+            selectedItems.insert(index)
+        }
+        
+        // Update UI
+        tableView.reloadData()
+        updateNavigationBarTitle()
+        updateBulkToolbarState()
+        
+        // Change button to "Deselect All"
+        if let selectAllButton = navigationItem.rightBarButtonItems?[1] {
+            selectAllButton.title = "Deselect All"
+            selectAllButton.action = #selector(deselectAllItems)
+        }
+    }
+    
+    @objc func deselectAllItems() {
+        // Deselect all items
+        selectedItems.removeAll()
+        
+        // Update UI
+        tableView.reloadData()
+        updateNavigationBarTitle()
+        updateBulkToolbarState()
+        
+        // Change button to "Select All"
+        if let selectAllButton = navigationItem.rightBarButtonItems?[1] {
+            selectAllButton.title = "Select All"
+            selectAllButton.action = #selector(selectAllBulkItems)
+        }
+    }
+    
+    func updateBulkToolbarState() {
+        // Enable/disable toolbar buttons based on selection
+        let isEnabled = !selectedItems.isEmpty
+        
+        for item in bulkEditToolbar?.items ?? [] {
+            item.isEnabled = isEnabled
+        }
+    }
+    
+    @objc func bulkMarkAsRead() {
+        // Mark selected items as read
+        for index in selectedItems {
+            if index < items.count {
+                items[index].isRead = true
+                
+                // Update in all items collection if matching
+                let selectedItem = items[index]
+                if let allItemIndex = _allItems.firstIndex(where: { $0.link == selectedItem.link }) {
+                    _allItems[allItemIndex].isRead = true
+                }
+                
+                // Mark as read in the ReadStatusTracker
+                ReadStatusTracker.shared.markArticle(link: items[index].link, as: true)
+            }
+        }
+        
+        // Save the read state
+        scheduleSaveReadState()
+        
+        // Update UI
+        tableView.reloadData()
+        
+        // Exit bulk edit mode
+        toggleBulkEditMode()
+    }
+    
+    @objc func bulkMarkAsUnread() {
+        // Mark selected items as unread
+        for index in selectedItems {
+            if index < items.count {
+                items[index].isRead = false
+                
+                // Update in all items collection if matching
+                let selectedItem = items[index]
+                if let allItemIndex = _allItems.firstIndex(where: { $0.link == selectedItem.link }) {
+                    _allItems[allItemIndex].isRead = false
+                }
+                
+                // Mark as unread in the ReadStatusTracker
+                ReadStatusTracker.shared.markArticle(link: items[index].link, as: false)
+            }
+        }
+        
+        // Save the read state
+        scheduleSaveReadState()
+        
+        // Update UI
+        tableView.reloadData()
+        
+        // Exit bulk edit mode
+        toggleBulkEditMode()
+    }
+    
+    @objc func bulkBookmark() {
+        // Add selected items to bookmarks
+        for index in selectedItems {
+            if index < items.count {
+                let item = items[index]
+                let normalizedLink = normalizeLink(item.link)
+                bookmarkedItems.insert(normalizedLink)
+            }
+        }
+        
+        // Save bookmarked items
+        StorageManager.shared.save(Array(bookmarkedItems), forKey: "bookmarkedItems") { error in
+            if let error = error {
+                print("Error saving bookmarked items: \(error.localizedDescription)")
+            }
+        }
+        
+        // Update UI
+        tableView.reloadData()
+        
+        // Exit bulk edit mode
+        toggleBulkEditMode()
+    }
+    
+    @objc func bulkFavorite() {
+        // Add selected items to favorites
+        for index in selectedItems {
+            if index < items.count {
+                let item = items[index]
+                let normalizedLink = normalizeLink(item.link)
+                heartedItems.insert(normalizedLink)
+            }
+        }
+        
+        // Save hearted items
+        StorageManager.shared.save(Array(heartedItems), forKey: "heartedItems") { error in
+            if let error = error {
+                print("Error saving hearted items: \(error.localizedDescription)")
+            }
+        }
+        
+        // Update UI
+        tableView.reloadData()
+        
+        // Exit bulk edit mode
+        toggleBulkEditMode()
+    }
+    
+    @objc func bulkArchive() {
+        // Add selected items to archive
+        for index in selectedItems {
+            if index < items.count {
+                let item = items[index]
+                let normalizedLink = normalizeLink(item.link)
+                archivedItems.insert(normalizedLink)
+                
+                // Also archive using the StorageManager
+                StorageManager.shared.archiveArticle(link: item.link) { _, _ in }
+            }
+        }
+        
+        // Update UI
+        tableView.reloadData()
+        
+        // Exit bulk edit mode
+        toggleBulkEditMode()
+    }
+    
     @objc func rssButtonTapped() {
         if case .folder = currentFeedType {
             // If we're already in a folder, go back to all feeds
@@ -701,7 +1086,18 @@ extension HomeFeedViewController {
         currentFeedType = .heart
     }
     
-    func updateTitle() {
+    @objc func archiveButtonTapped() {
+        currentFeedType = .archive
+    }
+    
+    func updateNavigationBarTitle() {
+        // If we're in bulk edit mode, show the selection count
+        if isBulkEditMode {
+            title = selectedItems.isEmpty ? "Select Items" : "\(selectedItems.count) Items Selected"
+            return
+        }
+        
+        // Normal mode title based on feed type
         switch currentFeedType {
         case .rss:
             title = "All Feeds"
@@ -709,11 +1105,13 @@ extension HomeFeedViewController {
             title = "Bookmarks"
         case .heart:
             title = "Favorites"
-        case .folder:
+        case .archive:
+            title = "Archive"
+        case .folder(let id):
             // Get folder name if we have it
-            if let folder = currentFolder {
+            if let folder = currentFolder, folder.id == id {
                 title = folder.name
-            } else if case .folder(let id) = currentFeedType {
+            } else {
                 // Load folder name if needed
                 StorageManager.shared.getFolders { [weak self] result in
                     if case .success(let folders) = result, 
@@ -725,14 +1123,12 @@ extension HomeFeedViewController {
                     }
                 }
                 title = "Folder"
-            } else {
-                title = "Folder"
             }
-        case .smartFolder:
+        case .smartFolder(let id):
             // Get smart folder name if we have it
-            if let folder = currentSmartFolder {
+            if let folder = currentSmartFolder, folder.id == id {
                 title = folder.name
-            } else if case .smartFolder(let id) = currentFeedType {
+            } else {
                 // Load smart folder name if needed
                 StorageManager.shared.getSmartFolders { [weak self] result in
                     if case .success(let folders) = result, 
@@ -744,10 +1140,13 @@ extension HomeFeedViewController {
                     }
                 }
                 title = "Smart Folder"
-            } else {
-                title = "Smart Folder"
             }
         }
+    }
+    
+    // Keep the original method for compatibility, but have it call our new method
+    func updateTitle() {
+        updateNavigationBarTitle()
     }
     
     func showFolderSelection() {
@@ -1427,10 +1826,37 @@ extension HomeFeedViewController {
                 }
             }
             
-        case .smartFolder(let folderId):
-            // For smart folder view, just reload all feeds
-            // The smart folder filtering will happen in updateTableViewContent
+        case .bookmarks, .heart:
+            // For bookmarks and favorites, we load all feeds and then filter
             loadRSSFeeds()
+            
+        case .archive:
+            // For archived items, load the archive
+            loadArchivedFeeds()
+            
+        case .smartFolder(let folderId):
+            // For smart folder view, refresh the current smart folder
+            if let folder = currentSmartFolder, folder.id == folderId {
+                // Load the smart folder contents
+                loadSmartFolderContents(folder: folder)
+            } else {
+                // Smart folder not loaded yet, load it first
+                StorageManager.shared.getSmartFolders { [weak self] result in
+                    guard let self = self else { return }
+                    
+                    DispatchQueue.main.async {
+                        if case .success(let folders) = result,
+                           let folder = folders.first(where: { $0.id == folderId }) {
+                            self.currentSmartFolder = folder
+                            // Load the smart folder contents
+                            self.loadSmartFolderContents(folder: folder)
+                        } else {
+                            // Smart folder not found, fall back to all feeds
+                            self.loadRSSFeeds()
+                        }
+                    }
+                }
+            }
             
         case .bookmarks:
             // Refresh bookmarked feeds
@@ -1511,54 +1937,20 @@ extension HomeFeedViewController {
         // Save sort order to UserDefaults
         UserDefaults.standard.set(ascending, forKey: "articleSortAscending")
         
-        // Sort the current items using the date utilities
-        items.sort {
-            // Get dates for both items
-            let date1 = DateUtils.parseDate($0.pubDate)
-            let date2 = DateUtils.parseDate($1.pubDate)
-            
-            // If both dates can be parsed, use them for comparison
-            if let d1 = date1, let d2 = date2 {
-                return ascending ? d1 < d2 : d1 > d2
-            }
-            
-            // Handle other cases (one or both dates can't be parsed)
-            if date1 != nil { return ascending ? false : true }
-            if date2 != nil { return ascending ? true : false }
-            
-            if !$0.pubDate.isEmpty && !$1.pubDate.isEmpty {
-                return ascending ? $0.pubDate < $1.pubDate : $0.pubDate > $1.pubDate
-            }
-            
-            if $0.pubDate.isEmpty { return ascending ? true : false }
-            if $1.pubDate.isEmpty { return ascending ? false : true }
-            
-            return false
-        }
+        // Use the FeedFilterManagerNew to create and set the sort option
+        let sortOption = FeedFilterManagerNew.shared.createSortOption(field: .date, order: ascending ? .ascending : .descending)
+        FeedFilterManagerNew.shared.setSortOption(sortOption)
+        
+        // Apply the sort to current items
+        items = FeedFilterManagerNew.shared.applySort(to: items)
         
         // Also sort the allItems array if we're viewing the RSS feed
         if case .rss = currentFeedType {
-            _allItems.sort {
-                let date1 = DateUtils.parseDate($0.pubDate)
-                let date2 = DateUtils.parseDate($1.pubDate)
-                
-                if let d1 = date1, let d2 = date2 {
-                    return ascending ? d1 < d2 : d1 > d2
-                }
-                
-                if date1 != nil { return ascending ? false : true }
-                if date2 != nil { return ascending ? true : false }
-                
-                if !$0.pubDate.isEmpty && !$1.pubDate.isEmpty {
-                    return ascending ? $0.pubDate < $1.pubDate : $0.pubDate > $1.pubDate
-                }
-                
-                if $0.pubDate.isEmpty { return ascending ? true : false }
-                if $1.pubDate.isEmpty { return ascending ? false : true }
-                
-                return false
-            }
+            _allItems = FeedFilterManagerNew.shared.applySort(to: _allItems)
         }
+        
+        // Update the sort filter view if it exists
+        sortFilterView?.setSortOption(sortOption)
         
         // Reload the table to show newly sorted items
         tableView.reloadData()
@@ -1581,25 +1973,18 @@ extension HomeFeedViewController {
                 loadingIndicator.startAnimating()
                 startRefreshAnimation() // Start refresh button animation
                 
-                // Step 1: First filter by read status based on settings
-                let hideReadArticles = UserDefaults.standard.bool(forKey: "hideReadArticles")
-                var filteredItems = allItems
+                // Apply advanced filtering and sorting
+                items = FeedFilterManagerNew.shared.applySortAndFilter(to: _allItems)
                 
-                if hideReadArticles {
-                    // Hide read articles when setting is enabled
-                    filteredItems = allItems.filter { !ReadStatusTracker.shared.isArticleRead(link: $0.link) && !$0.isRead }
-                    print("DEBUG: Read status filtered \(allItems.count) items to \(filteredItems.count) items")
+                // Update the sort/filter view with the current settings if it exists
+                if let sortFilterView = self.sortFilterView {
+                    sortFilterView.setSortOption(FeedFilterManagerNew.shared.getSortOption())
+                    sortFilterView.setFilterOption(FeedFilterManagerNew.shared.getFilterOption())
                 }
                 
-                // Step 2: Apply content filtering if enabled
-                if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
-                    // Filter out articles that match any of the filter keywords
-                    items = filteredItems.filter { !self.shouldFilterArticle($0) }
-                    print("DEBUG: Keyword filtered \(filteredItems.count) items to \(items.count) items")
-                } else {
-                    // No keyword filtering
-                    items = filteredItems
-                }
+                // Log counts for debugging
+                print("DEBUG: Applied sorting and filtering: \(_allItems.count) items to \(items.count) items")
+                
                 tableView.reloadData()
                 
                 // Show tableView after a short delay to ensure smooth transition
@@ -1617,6 +2002,35 @@ extension HomeFeedViewController {
                     }
                 }
             }
+            
+        case .bookmarks, .heart:
+            // For bookmarks and favorites, filter from all items
+            if _allItems.isEmpty {
+                // Need to load all RSS feeds first
+                loadRSSFeeds()
+            } else {
+                // Filter the existing items based on the feed type
+                // We'll use different filters depending on the feed type
+                switch currentFeedType {
+                case .bookmarks:
+                    items = _allItems.filter { item in
+                        return bookmarkedItems.contains { normalizeLink($0) == normalizeLink(item.link) }
+                    }
+                case .heart:
+                    items = _allItems.filter { item in
+                        return heartedItems.contains { normalizeLink($0) == normalizeLink(item.link) }
+                    }
+                default:
+                    // This should not happen, but just in case
+                    items = _allItems
+                }
+                tableView.reloadData()
+            }
+            
+        case .archive:
+            // For archive view, load the archived items
+            loadArchivedFeeds()
+            
         case .smartFolder(let id):
             // Handle smart folder case
             if let folder = currentSmartFolder, folder.id == id {
@@ -1770,40 +2184,17 @@ extension HomeFeedViewController {
     
     // Helper function to sort a given array of items based on the current setting
     func sortFilteredItems(_ itemsToSort: inout [RSSItem]) {
-        itemsToSort.sort {
-            // Get dates for both items
-            let date1 = DateUtils.parseDate($0.pubDate)
-            let date2 = DateUtils.parseDate($1.pubDate)
-            
-            // If both dates can be parsed, use them for comparison
-            if let d1 = date1, let d2 = date2 {
-                return self.isSortedAscending ? d1 < d2 : d1 > d2
-            }
-            
-            // If only one date can be parsed, the one with a valid date should come first
-            if date1 != nil {
-                return self.isSortedAscending ? false : true  // Valid date first in descending order
-            }
-            if date2 != nil {
-                return self.isSortedAscending ? true : false  // Valid date first in descending order
-            }
-            
-            // If neither date can be parsed and both are not empty, compare strings
-            if !$0.pubDate.isEmpty && !$1.pubDate.isEmpty {
-                // Just use string comparison as a fallback
-                return self.isSortedAscending ? $0.pubDate < $1.pubDate : $0.pubDate > $1.pubDate
-            }
-            
-            // Place empty dates at the end
-            if $0.pubDate.isEmpty {
-                return self.isSortedAscending ? true : false
-            }
-            if $1.pubDate.isEmpty {
-                return self.isSortedAscending ? false : true
-            }
-            
-            // If we're here, both are empty - considered equal
-            return false
-        }
+        // Create a sort option config with the date field and current sort order  
+        let sortOption = FeedFilterManagerNew.shared.createSortOption(field: .date, order: isSortedAscending ? .ascending : .descending)
+        
+        // Apply the sort using the new FeedFilterManagerNew
+        itemsToSort = FeedFilterManagerNew.shared.applySort(to: itemsToSort)
+    }
+    
+    @objc func quickSearchButtonTapped() {
+        // Implement search functionality by going to the search screen
+        let query = SearchQuery()
+        let searchVC = SearchResultsViewController(query: query, results: self._allItems)
+        navigationController?.pushViewController(searchVC, animated: true)
     }
 }

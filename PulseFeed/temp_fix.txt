@@ -1,6 +1,86 @@
-        case .smartFolder:
-            // For smart folder view, just reload all feeds
-            // The smart folder filtering will happen in updateTableViewContent
-            loadRSSFeeds()
-            
-EOF < /dev/null
+// Fix for the nil optional crash in HomeFeedViewController
+
+// The issue is likely with the FeedFilterManager.shared instance trying to use a sort option
+// when the filter view hasn't been properly set up yet. Here are the recommended fixes:
+
+// 1. First, make sure sortFilterView is declared as an optional (already done):
+internal var sortFilterView: SortFilterView?
+
+// 2. In the setupSortFilterView() method, initialize sortFilterView:
+func setupSortFilterView() {
+    // Create and configure the sort filter view
+    sortFilterView = SortFilterView(frame: CGRect(x: 0, y: 0, width: view.bounds.width, height: 70))
+    sortFilterView?.delegate = self
+    
+    // Add it to the view hierarchy
+    if let sortFilterView = sortFilterView {
+        view.addSubview(sortFilterView)
+        
+        // Set up constraints
+        sortFilterView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            sortFilterView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            sortFilterView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            sortFilterView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            sortFilterView.heightAnchor.constraint(equalToConstant: 70)
+        ])
+        
+        // Adjust table view constraints to be below the filter view
+        tableView.topAnchor.constraint(equalTo: sortFilterView.bottomAnchor).isActive = true
+    }
+}
+
+// 3. Update HomeFeedViewController to conform to SortFilterViewDelegate:
+extension HomeFeedViewController: SortFilterViewDelegate {
+    func sortOptionSelected(_ option: SortOption) {
+        // Apply the selected sort option
+        items = FeedFilterManager.shared.applySort(to: items)
+        tableView.reloadData()
+    }
+    
+    func filterOptionSelected(_ option: FilterOption) {
+        // Apply the selected filter option
+        items = FeedFilterManager.shared.applyFilter(to: _allItems)
+        tableView.reloadData()
+    }
+    
+    func clearFiltersSelected() {
+        // Clear all filters
+        FeedFilterManager.shared.clearAllFilters()
+        items = _allItems
+        tableView.reloadData()
+    }
+}
+
+// 4. Ensure all places that access sortFilterView use optional chaining:
+sortFilterView?.setSortOption(sortOption)
+
+// 5. Check for FeedFilterManager.shared usage and make sure its methods handle nil cases gracefully
+// In FeedFilterManager.swift:
+func setSortOption(_ option: SortOption) {
+    currentSortOption = option
+    saveSortOption()
+}
+
+// Modify to:
+func setSortOption(_ option: SortOption?) {
+    if let option = option {
+        currentSortOption = option
+        saveSortOption()
+    }
+}
+
+// 6. In viewDidLoad where the filterView would be set up:
+override func viewDidLoad() {
+    super.viewDidLoad()
+    
+    NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged(_:)), name: Notification.Name("fontSizeChanged"), object: nil)
+    
+    // Setup UI elements
+    setupLoadingIndicator()
+    setupRefreshControl()
+    setupTableView()
+    
+    // Uncomment this when SortFilterView is ready for use
+    // setupSortFilterView()
+}

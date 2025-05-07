@@ -22,6 +22,11 @@ extension HomeFeedViewController {
             
             switch result {
             case .success(let feeds):
+                // Record the refresh time for all feeds being refreshed
+                for feed in feeds {
+                    RefreshIntervalManager.shared.recordRefresh(forFeed: feed.url)
+                }
+                
                 self.fetchFeedsContent(feeds: feeds)
                 
             case .failure(let error):
@@ -228,10 +233,51 @@ extension HomeFeedViewController {
                         
                         // Delay for a moment so the message is visible
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            // Add safety check before completing
+                            guard !filteredItems.isEmpty else {
+                                // Handle empty items case
+                                self.loadingLabel.text = "No articles found"
+                                self.loadingLabel.isHidden = false
+                                self.loadingIndicator.stopAnimating()
+                                self.stopRefreshAnimation()
+                                self.refreshControl.endRefreshing()
+                                self.tableView.isHidden = false
+                                return
+                            }
+                            
                             self.completeLoadingWithItems(filteredItems)
                         }
                     } else {
-                        self.completeLoadingWithItems(filteredItems)
+                        // Add safety check for nil values and ensure we're on the main thread
+                        guard !filteredItems.isEmpty else {
+                            // Handle empty items case
+                            DispatchQueue.main.async {
+                                self.loadingLabel.text = "No articles found"
+                                self.loadingLabel.isHidden = false
+                                self.loadingIndicator.stopAnimating()
+                                self.stopRefreshAnimation()
+                                self.refreshControl.endRefreshing()
+                                self.tableView.isHidden = false
+                            }
+                            return
+                        }
+                        
+                        // Use async to ensure we're on the main thread
+                        DispatchQueue.main.async {
+                            // Add safety check before completing
+                            guard !filteredItems.isEmpty else {
+                                // Handle empty items case
+                                self.loadingLabel.text = "No articles found"
+                                self.loadingLabel.isHidden = false
+                                self.loadingIndicator.stopAnimating()
+                                self.stopRefreshAnimation()
+                                self.refreshControl.endRefreshing()
+                                self.tableView.isHidden = false
+                                return
+                            }
+                            
+                            self.completeLoadingWithItems(filteredItems)
+                        }
                     }
                 }
             }
@@ -241,4 +287,10 @@ extension HomeFeedViewController {
     
     // MARK: - Data Management
     
+    // Reference to the loadSmartFolderContents and filterArticlesForSmartFolder
+    // are defined in HomeFeedViewController.swift
+    // Removing the duplicate implementation here to fix the build issue
+    
+    // MARK: - Specialized Feed Types
+    // Note: The loadArchivedFeeds function has been moved to HomeFeedViewController for better organization
     

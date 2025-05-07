@@ -2,6 +2,80 @@ import Foundation
 
 /// Class for managing tag operations
 class TagManager {
+    // Singleton instance
+    static let shared = TagManager()
+    
+    // Storage for instance methods
+    private var cachedTags: [Tag] = []
+    private var cachedTaggedItems: [TaggedItem] = []
+    private var isCacheLoaded = false
+    
+    // MARK: - Instance Methods
+    
+    /// Initialize with storage
+    init() {
+        // Load tags and tagged items into cache on initialization
+        loadCache()
+    }
+    
+    /// Load tags and tagged items from storage
+    private func loadCache() {
+        StorageManager.shared.load(forKey: "tags") { [weak self] (result: Result<[Tag], Error>) in
+            guard let self = self else { return }
+            if case .success(let tags) = result {
+                self.cachedTags = tags
+            }
+            
+            StorageManager.shared.load(forKey: "taggedItems") { [weak self] (result: Result<[TaggedItem], Error>) in
+                guard let self = self else { return }
+                if case .success(let taggedItems) = result {
+                    self.cachedTaggedItems = taggedItems
+                }
+                self.isCacheLoaded = true
+            }
+        }
+    }
+    
+    /// Get all tags
+    func getTags(completion: @escaping (Result<[Tag], Error>) -> Void) {
+        if isCacheLoaded {
+            completion(.success(cachedTags))
+        } else {
+            StorageManager.shared.load(forKey: "tags", completion: completion)
+        }
+    }
+    
+    /// Get a specific tag by ID
+    func getTag(id: String, completion: @escaping (Result<Tag, Error>) -> Void) {
+        getTags { result in
+            switch result {
+            case .success(let tags):
+                if let tag = tags.first(where: { $0.id == id }) {
+                    completion(.success(tag))
+                } else {
+                    completion(.failure(NSError(domain: "TagManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Tag not found"])))
+                }
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+    
+    /// Get items with a specific tag
+    func getItemsWithTag(tagId: String, itemType: TaggedItem.ItemType, completion: @escaping (Result<[String], Error>) -> Void) {
+        StorageManager.shared.load(forKey: "taggedItems") { (result: Result<[TaggedItem], Error>) in
+            switch result {
+            case .success(let taggedItems):
+                let items = TagManager.getItems(withTagId: tagId, itemType: itemType, from: taggedItems)
+                completion(.success(items))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+    
+    // MARK: - Static Helper Methods
+    
     /// Get all tags for a specific item
     static func getTags(for itemId: String, itemType: TaggedItem.ItemType, from tags: [Tag], taggedItems: [TaggedItem]) -> [Tag] {
         let tagIds = taggedItems.filter { $0.itemId == itemId && $0.itemType == itemType }

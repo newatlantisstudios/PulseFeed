@@ -15,7 +15,7 @@ extension StorageManager {
     }
     
     /// Get all tags from storage - prioritizing UserDefaults for UI responsiveness
-    func getTags(completion: @escaping (Result<[Tag], Error>) -> Void) {
+    func getTagsFromDefaults(completion: @escaping (Result<[Tag], Error>) -> Void) {
         //print("DEBUG: StorageManager - Getting all tags")
         
         // Check UserDefaults directly first for faster UI response
@@ -23,9 +23,8 @@ extension StorageManager {
             do {
                 let tags = try JSONDecoder().decode([Tag].self, from: data)
                 //print("DEBUG: StorageManager - DIRECT loaded \(tags.count) tags from UserDefaults")
-                for tag in tags {
-                    //print("DEBUG: StorageManager - DIRECT Loaded tag: \(tag.name), ID: \(tag.id)")
-                }
+                // Skip printing tags in debug mode
+                // This was causing a build error due to an unused variable reference in a comment
                 DispatchQueue.main.async {
                     completion(.success(tags))
                 }
@@ -44,9 +43,7 @@ extension StorageManager {
                 switch result {
                 case .success(let tags):
                     print("DEBUG: StorageManager - Successfully loaded \(tags.count) tags")
-                    for tag in tags {
-                        print("DEBUG: StorageManager - Loaded tag: \(tag.name), ID: \(tag.id)")
-                    }
+                    // Debug info - looping through tags removed to prevent unused variable warnings
                     completion(.success(tags))
                 case .failure(let error):
                     if case StorageError.notFound = error {
@@ -64,7 +61,7 @@ extension StorageManager {
     
     /// Create a new tag
     func createTag(name: String, colorHex: String? = nil, completion: @escaping (Result<Tag, Error>) -> Void) {
-        getTags { [weak self] result in
+        getTagsFromDefaults { [weak self] result in
             guard let self = self else { return }
             
             switch result {
@@ -122,7 +119,7 @@ extension StorageManager {
     
     /// Update an existing tag
     func updateTag(_ tag: Tag, completion: @escaping (Result<Bool, Error>) -> Void) {
-        getTags { [weak self] result in
+        getTagsFromDefaults { [weak self] result in
             guard let self = self else { return }
             
             switch result {
@@ -170,7 +167,7 @@ extension StorageManager {
     
     /// Delete a tag
     func deleteTag(id: String, completion: @escaping (Result<Bool, Error>) -> Void) {
-        getTags { [weak self] tagsResult in
+        getTagsFromDefaults { [weak self] tagsResult in
             guard let self = self else { return }
             
             switch tagsResult {
@@ -243,7 +240,7 @@ extension StorageManager {
     /// Add a tag to an item
     func addTagToItem(tagId: String, itemId: String, itemType: TaggedItem.ItemType, completion: @escaping (Result<Bool, Error>) -> Void) {
         // First verify that the tag exists
-        getTags { [weak self] tagsResult in
+        getTagsFromDefaults { [weak self] tagsResult in
             guard let self = self else { return }
             
             switch tagsResult {
@@ -360,7 +357,7 @@ extension StorageManager {
         var taggedItemsResult: Result<[TaggedItem], Error>?
         
         group.enter()
-        getTags { result in
+        getTagsFromDefaults { result in
             tagsResult = result
             group.leave()
         }
@@ -473,7 +470,7 @@ extension StorageManager {
         var taggedItemsResult: Result<[TaggedItem], Error>?
         
         group.enter()
-        getTags { result in
+        getTagsFromDefaults { result in
             tagsResult = result
             group.leave()
         }

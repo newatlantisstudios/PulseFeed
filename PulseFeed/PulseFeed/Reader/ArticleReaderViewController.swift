@@ -26,7 +26,22 @@ class ArticleReaderViewController: UIViewController {
     var backgroundColor: UIColor = .systemBackground
     var estimatedReadingTimeLabel: UILabel?
     
-    var item: RSSItem?
+    var item: RSSItem? {
+        didSet {
+            // Keep article property in sync for backward compatibility
+            article = item
+        }
+    }
+    
+    var article: RSSItem? { // Added for backward compatibility with SearchResultsViewController
+        didSet {
+            // Keep item property in sync
+            if item != article {
+                item = article
+            }
+        }
+    }
+    
     var htmlContent: String?
     private var webViewObservation: NSKeyValueObservation?
     
@@ -152,7 +167,7 @@ class ArticleReaderViewController: UIViewController {
     }
     
     private func setupReadingProgressTracking() {
-        guard let item = item else { return }
+        guard item != nil else { return }
         
         // Configure reading progress bar
         readingProgressBar.translatesAutoresizingMaskIntoConstraints = false

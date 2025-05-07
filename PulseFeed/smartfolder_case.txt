@@ -1,3 +1,0 @@
-        case .smartFolder:
-            // For smart folder view, just refresh all feeds
-            loadRSSFeeds()

@@ -66,7 +66,7 @@ struct SettingSection {
 
 // MARK: - Custom TableView Cells
 
-class SwitchTableViewCell: UITableViewCell {
+class SettingsSwitchTableViewCell: UITableViewCell {
     static let identifier = "SwitchTableViewCell"
     
     private let iconContainer: UIView = {
@@ -471,6 +471,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                            self?.openTagManagement()
                        },
                        icon: UIImage(systemName: "tag.fill")),
+            .navigation(title: "Refresh Intervals", 
+                       action: { [weak self] in
+                           self?.openRefreshIntervals()
+                       },
+                       icon: UIImage(systemName: "clock.arrow.circlepath")),
             .navigation(title: "RSS Feed Loading Speeds", 
                        action: { [weak self] in
                            self?.openRSSLoadingSpeeds()
@@ -550,6 +555,12 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         
         // Advanced Section
         var advancedItems: [SettingItemType] = [
+            .navigation(title: "Duplicate Article Settings", 
+                       action: { [weak self] in
+                           let duplicateSettingsVC = DuplicateSettingsViewController()
+                           self?.navigationController?.pushViewController(duplicateSettingsVC, animated: true)
+                       },
+                       icon: UIImage(systemName: "doc.on.doc")),
             .toggle(title: "Simulate Offline Mode", 
                    isOn: isSimulatingOfflineMode,
                    action: { [weak self] isOn in
@@ -817,6 +828,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     @objc private func openNonWorkingFeeds() {
         let nonWorkingFeedsVC = NonWorkingFeedsViewController(style: .plain)
         navigationController?.pushViewController(nonWorkingFeedsVC, animated: true)
+    }
+    
+    @objc private func openRefreshIntervals() {
+        let refreshIntervalsVC = RefreshIntervalViewController()
+        navigationController?.pushViewController(refreshIntervalsVC, animated: true)
     }
 
     @objc private func openTipJar() {

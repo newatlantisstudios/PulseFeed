@@ -1,2 +1,10 @@
 **/.claude/settings.local.json
 /PulseFeed/build
+*.log
+PulseFeed/build_log.txt
+PulseFeed/build_log_new.txt
+PulseFeed/temp_fix.txt
+PulseFeed/temp_fix.txt
+/PulseFeed/temp_test
+PulseFeed/test_build.swift
+PulseFeed/temp_fix.txt

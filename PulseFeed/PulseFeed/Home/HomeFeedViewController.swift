@@ -74,10 +74,62 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         case .heart:
             // For hearted feed type, go back to standard behavior  
             loadRSSFeeds()
+            
+        case .archive:
+            // For archive feed, load archived articles
+            loadArchivedFeeds()
         }
     }
     
     // MARK: - Loading Methods
+    
+    /// Loads the archived items feed
+    func loadArchivedFeeds() {
+        // Set the title
+        self.title = "Archive"
+        
+        // Hide table and show loading
+        tableView.isHidden = true
+        loadingIndicator.startAnimating()
+        loadingLabel.text = "Loading archived articles..."
+        loadingLabel.isHidden = false
+        
+        // If no items are archived, show empty message and return
+        if archivedItems.isEmpty {
+            items = []
+            tableView.reloadData()
+            
+            // Update UI
+            loadingLabel.text = "No archived articles"
+            loadingLabel.isHidden = false
+            loadingIndicator.stopAnimating()
+            tableView.isHidden = false
+            return
+        }
+        
+        // If we already have items loaded, just filter and display
+        if !_allItems.isEmpty {
+            // Filter to show only archived items
+            let filteredItems = _allItems.filter { item in
+                let normalizedLink = normalizeLink(item.link)
+                return archivedItems.contains { normalizeLink($0) == normalizedLink }
+            }
+            
+            // Update UI
+            items = filteredItems
+            tableView.reloadData()
+            tableView.isHidden = false
+            loadingIndicator.stopAnimating()
+            loadingLabel.isHidden = filteredItems.isEmpty ? false : true
+            
+            if filteredItems.isEmpty {
+                loadingLabel.text = "No archived articles"
+            }
+        } else {
+            // If no items are loaded yet, load main RSS feeds first
+            loadRSSFeeds()
+        }
+    }
     
     // Helper to complete the loading process with the filtered items
     func completeLoadingWithItems(_ filteredItems: [RSSItem]) {
@@ -103,6 +155,25 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     
     // Helper to finalize loading process after full-text extraction (if any)
     func finalizeItemLoading(_ filteredItems: [RSSItem]) {
+        // Safety check for empty arrays
+        guard !filteredItems.isEmpty else {
+            // Handle empty items case
+            DispatchQueue.main.async {
+                self._allItems = []
+                self.items = []
+                self.duplicateGroups = []
+                self.duplicateArticleLinks = []
+                self.tableView.reloadData()
+                self.refreshControl.endRefreshing()
+                self.loadingIndicator.stopAnimating()
+                self.loadingLabel.text = "No articles found"
+                self.loadingLabel.isHidden = false
+                self.tableView.isHidden = false
+                self.stopRefreshAnimation()
+            }
+            return
+        }
+        
         // Update our data source
         self._allItems = filteredItems
         
@@ -111,27 +182,28 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             self._allItems[i].isRead = ReadStatusTracker.shared.isArticleRead(link: self._allItems[i].link)
         }
         
+        // Detect duplicates if enabled
+        self.detectDuplicates()
+        
         // Update the currently displayed items if RSS feed is active
         if case .rss = self.currentFeedType {
-            // First apply Hide Read Articles filter
-            let hideReadArticles = UserDefaults.standard.bool(forKey: "hideReadArticles")
-            var filteredByReadStatus = self._allItems
+            // Apply advanced filtering and sorting
+            self.items = FeedFilterManagerNew.shared.applySortAndFilter(to: self._allItems)
             
-            if hideReadArticles {
-                // If setting is enabled, filter out read articles
-                filteredByReadStatus = self._allItems.filter { !$0.isRead }
-                print("DEBUG: Read status filtered \(self._allItems.count) items to \(filteredByReadStatus.count) items")
+            // Apply duplicate handling according to user settings
+            if DuplicateManager.shared.isDuplicateDetectionEnabled {
+                self.items = DuplicateManager.shared.processItems(self.items)
             }
             
-            // Then apply content filtering if enabled
-            if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
-                // Filter out articles that match any of the filter keywords
-                self.items = filteredByReadStatus.filter { !self.shouldFilterArticle($0) }
-                print("DEBUG: Keyword filtered \(filteredByReadStatus.count) items to \(self.items.count) items")
-            } else {
-                // No keyword filtering
-                self.items = filteredByReadStatus
+            // Update the sort/filter view with the current settings if it exists
+            if let sortFilterView = self.sortFilterView {
+                sortFilterView.setSortOption(FeedFilterManagerNew.shared.getSortOption())
+                sortFilterView.setFilterOption(FeedFilterManagerNew.shared.getFilterOption())
             }
+            
+            // Log counts for debugging
+            print("DEBUG: Applied sorting and filtering: \(self._allItems.count) items to \(self.items.count) items")
+            print("DEBUG: Found \(self.duplicateGroups.count) duplicate groups with \(self.duplicateArticleLinks.count) articles")
         }
         
         // First, reload the table while it's still hidden
@@ -182,6 +254,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             self.isAutoScrolling = false
         }
     }
+    
 
     // MARK: - Properties
     
@@ -191,12 +264,28 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     var readLinks: Set<String> = [] // Store normalized read links
     internal var heartedItems: Set<String> = []
     internal var bookmarkedItems: Set<String> = []
+    internal var archivedItems: Set<String> = [] // Track which articles are archived
     internal var cachedArticleLinks: Set<String> = [] // Track which articles are cached for offline reading
     internal var hasLoadedRSSFeeds = false
     internal var isSortedAscending: Bool = false // State for sorting order
     internal var isOfflineMode = false // Track if we're in offline mode
     internal var filterKeywords: [String] = [] // Keywords used to filter articles
     internal var isContentFilteringEnabled: Bool = false // Whether content filtering is enabled
+    internal var originalItemsBeforeSearch: [RSSItem] = [] // Stores original items during search
+    
+    // Sort & Filter view
+    internal var sortFilterView: SortFilterView?
+    
+    // Bulk editing mode
+    internal var isBulkEditMode: Bool = false
+    internal var originalRightBarButtonItems: [UIBarButtonItem]?
+    internal var isCachingCancelled: Bool = false // Flag to cancel bulk caching operations
+    internal var selectedItems: Set<Int> = []
+    internal var bulkEditToolbar: UIToolbar?
+    
+    // Duplicate article tracking
+    internal var duplicateGroups: [DuplicateArticleGroup] = []
+    internal var duplicateArticleLinks: Set<String> = [] // Links that are part of a duplicate group
     
     // UI Components
     let tableView = UITableView()
@@ -213,11 +302,15 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     var refreshButton: UIBarButtonItem?
     var bookmarkButton: UIBarButtonItem?
     var heartButton: UIBarButtonItem?
+    var archiveButton: UIBarButtonItem?
     var folderButton: UIBarButtonItem?
     var settingsButton: UIBarButtonItem?
     
     // Timer for refresh operations
     internal var refreshTimeoutTimer: Timer?
+    
+    // Timer for automatic refresh based on intervals
+    internal var autoRefreshTimer: Timer?
     
     // Configuration
     internal var useEnhancedStyle: Bool {
@@ -226,13 +319,14 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     
     // Feed types
     enum FeedType {
-        case rss, bookmarks, heart, folder(id: String), smartFolder(id: String)
+        case rss, bookmarks, heart, archive, folder(id: String), smartFolder(id: String)
         
         var displayName: String {
             switch self {
             case .rss: return "All Feeds"
             case .bookmarks: return "Bookmarks"
             case .heart: return "Favorites"
+            case .archive: return "Archive"
             case .folder: return "Folder"
             case .smartFolder: return "Smart Folder"
             }
@@ -274,6 +368,17 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         setupLoadingIndicator()
         setupRefreshControl()
         setupTableView()
+        // Temporarily commented out until SortFilterView is properly implemented
+        // setupSortFilterView()
+        
+        // Setup automatic refresh timer
+        setupAutoRefreshTimer()
+    }
+    
+    // Stub implementation to be properly implemented later
+    func setupSortFilterView() {
+        // This is a temporary stub implementation
+        print("SortFilterView setup will be implemented in a future update")
     }
     
     override func viewWillAppear(_ animated: Bool) {
@@ -406,6 +511,16 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             if case .success(let items) = result {
                 DispatchQueue.main.async {
                     self.bookmarkedItems = Set(items)
+                }
+            }
+        }
+        
+        // Load archived items
+        StorageManager.shared.load(forKey: "archivedItems") {
+            (result: Result<[String], Error>) in
+            if case .success(let items) = result {
+                DispatchQueue.main.async {
+                    self.archivedItems = Set(items)
                 }
             }
         }
@@ -1123,6 +1238,13 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         }
     }
     
+    @objc private func handleRefreshIntervalSettingsChanged() {
+        // When refresh interval settings change, restart the auto-refresh timer
+        DispatchQueue.main.async { [weak self] in
+            self?.setupAutoRefreshTimer()
+        }
+    }
+    
     private func setupNotificationObserver() {
         // Add observers for various notification events
         let notifications: [(name: Notification.Name, selector: Selector)] = [
@@ -1130,12 +1252,15 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             (.init("readItemsUpdated"), #selector(handleReadItemsUpdated)),
             (.init("bookmarkedItemsUpdated"), #selector(handleBookmarkedItemsUpdated)),
             (.init("heartedItemsUpdated"), #selector(handleHeartedItemsUpdated)),
+            (.init("archivedItemsUpdated"), #selector(handleArchivedItemsUpdated)),
             (.init("articleSortOrderChanged"), #selector(handleSortOrderChanged)),
             (.init("feedFoldersUpdated"), #selector(handleFeedFoldersUpdated)),
             (.init("smartFoldersUpdated"), #selector(handleSmartFoldersUpdated)),
             (.init("hideReadArticlesChanged"), #selector(handleHideReadArticlesChanged)),
+            (DuplicateManager.duplicateSettingsChangedNotification, #selector(handleDuplicateSettingsChanged)),
             (.init("contentFilteringChanged"), #selector(handleContentFilteringChanged)),
             (.init("fullTextExtractionChanged"), #selector(handleFullTextExtractionChanged)),
+            (.init("refreshIntervalSettingsChanged"), #selector(handleRefreshIntervalSettingsChanged)),
             // Add tag-related notifications
             (.init("tagsUpdated"), #selector(handleTagsUpdated)),
             (.init("taggedItemsUpdated"), #selector(handleTaggedItemsUpdated))
@@ -1189,6 +1314,10 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
                 if !heartedItems.isEmpty {
                     currentFeedType = .heart
                     loadHeartedFeeds()
+                } else if !archivedItems.isEmpty {
+                    // Skip to archive if no favorites
+                    currentFeedType = .archive
+                    updateTableViewContent()
                 } else {
                     // Skip to folders if available
                     StorageManager.shared.getFolders { [weak self] result in
@@ -1235,7 +1364,32 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             }
             
         case .heart:
-            // From favorites -> folders if available
+            // From favorites -> archive if available
+            if !archivedItems.isEmpty {
+                currentFeedType = .archive
+                updateTableViewContent()
+            } else {
+                // Skip to folders if available
+                StorageManager.shared.getFolders { [weak self] result in
+                    guard let self = self else { return }
+                    
+                    DispatchQueue.main.async {
+                        if case .success(let folders) = result, !folders.isEmpty {
+                            // Switch to first folder
+                            self.currentFeedType = .folder(id: folders[0].id)
+                            self.currentFolder = folders[0]
+                            self.loadFolderFeeds(folder: folders[0])
+                        } else {
+                            // Loop back to RSS feed
+                            self.currentFeedType = .rss
+                            self.updateTableViewContent()
+                        }
+                    }
+                }
+            }
+            
+        case .archive:
+            // From archive -> folders if available
             StorageManager.shared.getFolders { [weak self] result in
                 guard let self = self else { return }
                 
@@ -1344,7 +1498,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     private func navigateToPreviousFeedType() {
         // Move to the previous feed type
         switch currentFeedType {
-        case .rss:
+        case .rss, .bookmarks, .heart, .archive, .folder, .smartFolder:
             // From RSS, go to the last feed type (last smart folder, last folder, heart, or bookmarks)
             // First check for smart folders
             StorageManager.shared.getSmartFolders { [weak self] result in
@@ -1571,7 +1725,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     }
     
     // Show a toast message
-    private func showToast(message: String) {
+    func showToast(message: String) {
         let toastLabel = UILabel(frame: CGRect(x: view.frame.width/2 - 150, y: view.frame.height - 200, width: 300, height: 35))
         toastLabel.backgroundColor = AppColors.primary.withAlphaComponent(0.9)
         toastLabel.textColor = UIColor.white
@@ -1620,7 +1774,8 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         present(alert, animated: true)
     }
     
-    private func markItemsAboveAsRead(_ indexPath: IndexPath) {
+    // Changed from private to internal to fix build error in HomeFeedViewController+TableView.swift
+    func markItemsAboveAsRead(_ indexPath: IndexPath) {
         // Collect all links from items above the tapped row
         let linksToMark = (0...indexPath.row).map { items[$0].link }
         
@@ -1757,6 +1912,31 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         }
     }
     
+    @objc private func handleArchivedItemsUpdated() {
+        StorageManager.shared.load(forKey: "archivedItems") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else { return }
+            
+            switch result {
+            case .success(let archivedItems):
+                DispatchQueue.main.async {
+                    // Update cached archived links
+                    self.archivedItems = Set(archivedItems)
+                    
+                    // If currently viewing archived feed, refresh it
+                    if case .archive = self.currentFeedType {
+                        // Reload the current view to refresh archive content
+                        self.updateTableViewContent()
+                    } else {
+                        // Otherwise just reload the table to update swipe actions
+                        self.tableView.reloadData()
+                    }
+                }
+            case .failure(let error):
+                print("ERROR: Failed to load updated archived items: \(error.localizedDescription)")
+            }
+        }
+    }
+    
     @objc private func fontSizeChanged(_ notification: Notification) {
         tableView.reloadData()
     }
@@ -1834,7 +2014,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             if let folder = currentSmartFolder, folder.id == folderId {
                 loadSmartFolderContents(folder: folder)
             }
-        case .bookmarks, .heart:
+        case .bookmarks, .heart, .archive:
             // For these views, we don't filter by read status
             // so no need to refresh
             break
@@ -1923,8 +2103,91 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         }
     }
     
+    // MARK: - Automatic Refresh
+    
+    /// Sets up the timer for automatic refresh based on configured intervals
+    private func setupAutoRefreshTimer() {
+        // Stop any existing timer
+        stopAutoRefreshTimer()
+        
+        // Create a new timer that checks for feeds to refresh every minute
+        autoRefreshTimer = Timer.scheduledTimer(
+            timeInterval: 60, // Check every minute
+            target: self,
+            selector: #selector(checkFeedsForAutoRefresh),
+            userInfo: nil,
+            repeats: true
+        )
+        
+        // Add to run loop to ensure it runs when scrolling
+        RunLoop.current.add(autoRefreshTimer!, forMode: .common)
+        
+        // Run once immediately
+        checkFeedsForAutoRefresh()
+    }
+    
+    /// Stops the automatic refresh timer
+    private func stopAutoRefreshTimer() {
+        autoRefreshTimer?.invalidate()
+        autoRefreshTimer = nil
+    }
+    
+    /// Checks if any feeds are due for refresh based on their intervals
+    @objc private func checkFeedsForAutoRefresh() {
+        // Skip if offline or a refresh is already in progress
+        if isOfflineMode || tableView.isHidden || loadingIndicator.isAnimating {
+            return
+        }
+        
+        // Only check when showing the main feed or a folder
+        switch currentFeedType {
+        case .rss, .folder:
+            // Continue with checks
+            break
+        default:
+            // Skip for other feed types
+            return
+        }
+        
+        // Load all feeds to check their refresh status
+        StorageManager.shared.load(forKey: "rssFeeds") { [weak self] (result: Result<[RSSFeed], Error>) in
+            guard let self = self else { return }
+            
+            switch result {
+            case .success(let feeds):
+                var feedsToRefresh: [RSSFeed] = []
+                
+                // Find feeds that are due for refresh
+                for feed in feeds {
+                    if RefreshIntervalManager.shared.shouldRefreshFeed(feed) {
+                        feedsToRefresh.append(feed)
+                    }
+                }
+                
+                // If any feeds need refresh, trigger a refresh
+                if !feedsToRefresh.isEmpty {
+                    print("DEBUG: Auto-refreshing \(feedsToRefresh.count) feeds")
+                    
+                    // Record refresh time for all feeds being refreshed
+                    for feed in feedsToRefresh {
+                        RefreshIntervalManager.shared.recordRefresh(forFeed: feed.url)
+                    }
+                    
+                    // Perform the refresh on the main thread
+                    DispatchQueue.main.async {
+                        self.refreshFeeds()
+                    }
+                }
+                
+            case .failure(let error):
+                print("ERROR: Failed to load feeds for auto-refresh check: \(error.localizedDescription)")
+            }
+        }
+    }
+    
     deinit {
         NotificationCenter.default.removeObserver(self)
         tableView.removeObserver(self, forKeyPath: "contentSize")
+        stopAutoRefreshTimer()
     }
 }

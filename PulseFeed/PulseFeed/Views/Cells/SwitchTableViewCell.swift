@@ -1,12 +1,19 @@
 import UIKit
 
-class SettingSwitchCell: UITableViewCell {
+class SwitchTableViewCell: UITableViewCell {
     
     // MARK: - Properties
     
-    var switchToggled: ((Bool) -> Void)?
+    var switchToggleHandler: ((Bool) -> Void)?
     
-    private let switchControl: UISwitch = {
+    // Alternate name for compatibility with existing code
+    var onSwitchChanged: ((Bool) -> Void)? {
+        get { return switchToggleHandler }
+        set { switchToggleHandler = newValue }
+    }
+    
+    // Make switchControl public so it can be accessed from other classes
+    let switchControl: UISwitch = {
         let switchControl = UISwitch()
         switchControl.onTintColor = AppColors.accent
         switchControl.translatesAutoresizingMaskIntoConstraints = false
@@ -40,12 +47,12 @@ class SettingSwitchCell: UITableViewCell {
     // MARK: - Actions
     
     @objc private func switchValueChanged(_ sender: UISwitch) {
-        switchToggled?(sender.isOn)
+        switchToggleHandler?(sender.isOn)
     }
     
     // MARK: - Public Methods
     
-    func configure(title: String, subtitle: String? = nil, isOn: Bool) {
+    func configure(with title: String, subtitle: String? = nil, isOn: Bool) {
         textLabel?.text = title
         detailTextLabel?.text = subtitle
         switchControl.isOn = isOn

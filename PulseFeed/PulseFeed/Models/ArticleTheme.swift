@@ -1,5 +1,8 @@
 import UIKit
 
+// Import for access to UIColor hex initializer
+import class UIKit.UIColor
+
 struct ArticleTheme: Codable {
     // MARK: - Properties
     

@@ -8,7 +8,7 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
         table.dataSource = self
         table.backgroundColor = AppColors.background
         table.register(UITableViewCell.self, forCellReuseIdentifier: "FeedCell")
-        table.register(SettingSwitchCell.self, forCellReuseIdentifier: "SwitchCell")
+        table.register(SwitchTableViewCell.self, forCellReuseIdentifier: "SwitchCell")
         table.translatesAutoresizingMaskIntoConstraints = false
         return table
     }()
@@ -94,7 +94,14 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
     }
     
     private func setupNavigationBar() {
-        let addButton = createBarButton(imageName: "add", action: #selector(addButtonTapped))
+        // Use system plus symbol instead of asset from catalog
+        let plusImage = UIImage(systemName: "plus")
+        let addButton = UIBarButtonItem(
+            image: plusImage,
+            style: .plain,
+            target: self,
+            action: #selector(addButtonTapped)
+        )
         navigationItem.rightBarButtonItems = [addButton]
     }
     
@@ -208,17 +215,17 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         switch indexPath.section {
         case 0: // Settings section
-            guard let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as? SettingSwitchCell else {
+            guard let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as? SwitchTableViewCell else {
                 return UITableViewCell()
             }
             
             cell.configure(
-                title: "Enable Full-Text Extraction",
+                with: "Enable Full-Text Extraction",
                 subtitle: "Automatically extract full content for partial feeds",
                 isOn: enableFullTextExtraction
             )
             
-            cell.switchToggled = { [weak self] (isOn: Bool) in
+            cell.switchToggleHandler = { [weak self] (isOn: Bool) in
                 UserDefaults.standard.set(isOn, forKey: "enableFullTextExtraction")
                 // Post notification so other parts of the app can respond
                 NotificationCenter.default.post(name: Notification.Name("fullTextExtractionChanged"), object: nil)

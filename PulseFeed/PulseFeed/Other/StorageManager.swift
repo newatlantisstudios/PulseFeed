@@ -355,6 +355,7 @@ class StorageManager {
         case feedFolders
         case cachedArticles
         case readingProgress
+        case archivedItems
     }
     
     /// Dictionary to track which articles are currently being cached to prevent duplicate requests
@@ -505,7 +506,7 @@ class StorageManager {
         var syncSuccess = true
         
         // Sync all item types including hierarchical folders
-        for itemType in [SyncItemType.readItems, .bookmarkedItems, .heartedItems, .feedFolders] {
+        for itemType in [SyncItemType.readItems, .bookmarkedItems, .heartedItems, .archivedItems, .feedFolders] {
             syncGroup.enter()
             syncItemsFromCloud(type: itemType) { success in
                 if !success {
@@ -1443,6 +1444,147 @@ class StorageManager {
         }
     }
     
+    // MARK: - Article Archiving
+    
+    /// Archive an article
+    /// - Parameters:
+    ///   - link: The URL of the article to archive
+    ///   - completion: Called with success or error information
+    func archiveArticle(link: String, completion: @escaping (Bool, Error?) -> Void) {
+        // Use normalized link for consistency
+        let normalizedLink = normalizeLink(link)
+        
+        load(forKey: "archivedItems") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else {
+                completion(false, NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Storage manager no longer exists"]))
+                return
+            }
+            
+            var archivedItems: [String] = []
+            
+            if case .success(let items) = result {
+                archivedItems = items
+            }
+            
+            // Check if already archived
+            if archivedItems.contains(where: { self.normalizeLink($0) == normalizedLink }) {
+                // Already archived, return success
+                completion(true, nil)
+                return
+            }
+            
+            // Add to archived items
+            archivedItems.append(normalizedLink)
+            
+            // Save the updated list
+            if self.method == .cloudKit {
+                self.mergeAndSaveItems(archivedItems, forKey: "archivedItems") { error in
+                    completion(error == nil, error)
+                }
+            } else {
+                self.save(archivedItems, forKey: "archivedItems") { error in
+                    if let error = error {
+                        completion(false, error)
+                    } else {
+                        // Post notification that an article was archived
+                        NotificationCenter.default.post(
+                            name: Notification.Name("archivedItemsUpdated"),
+                            object: nil,
+                            userInfo: ["link": normalizedLink, "action": "archive"]
+                        )
+                        completion(true, nil)
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Unarchive an article
+    /// - Parameters:
+    ///   - link: The URL of the article to unarchive
+    ///   - completion: Called with success or error information
+    func unarchiveArticle(link: String, completion: @escaping (Bool, Error?) -> Void) {
+        // Use normalized link for consistency
+        let normalizedLink = normalizeLink(link)
+        
+        load(forKey: "archivedItems") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else {
+                completion(false, NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Storage manager no longer exists"]))
+                return
+            }
+            
+            var archivedItems: [String] = []
+            
+            if case .success(let items) = result {
+                archivedItems = items
+            } else {
+                // No archived items, nothing to unarchive
+                completion(true, nil)
+                return
+            }
+            
+            // Check if not archived
+            if !archivedItems.contains(where: { self.normalizeLink($0) == normalizedLink }) {
+                // Not archived, return success
+                completion(true, nil)
+                return
+            }
+            
+            // Remove from archived items
+            archivedItems.removeAll { self.normalizeLink($0) == normalizedLink }
+            
+            // Save the updated list
+            if self.method == .cloudKit {
+                self.mergeAndSaveItems(archivedItems, forKey: "archivedItems") { error in
+                    completion(error == nil, error)
+                }
+            } else {
+                self.save(archivedItems, forKey: "archivedItems") { error in
+                    if let error = error {
+                        completion(false, error)
+                    } else {
+                        // Post notification that an article was unarchived
+                        NotificationCenter.default.post(
+                            name: Notification.Name("archivedItemsUpdated"),
+                            object: nil,
+                            userInfo: ["link": normalizedLink, "action": "unarchive"]
+                        )
+                        completion(true, nil)
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Check if an article is archived
+    /// - Parameters:
+    ///   - link: The URL of the article to check
+    ///   - completion: Called with a boolean indicating whether the article is archived
+    func isArticleArchived(link: String, completion: @escaping (Bool) -> Void) {
+        // Use normalized link for consistency
+        let normalizedLink = normalizeLink(link)
+        
+        load(forKey: "archivedItems") { [weak self] (result: Result<[String], Error>) in
+            guard let self = self else {
+                completion(false)
+                return
+            }
+            
+            if case .success(let items) = result {
+                let isArchived = items.contains { self.normalizeLink($0) == normalizedLink }
+                completion(isArchived)
+            } else {
+                completion(false)
+            }
+        }
+    }
+    
+    /// Get all archived articles
+    /// - Parameter completion: Called with the list of archived article URLs
+    func getArchivedArticles(completion: @escaping (Result<[String], Error>) -> Void) {
+        load(forKey: "archivedItems", completion: completion)
+    }
+    
     /// Get the folder that contains a specific feed
     func getFolderForFeed(feedURL: String, completion: @escaping (Result<FeedFolder?, Error>) -> Void) {
         getFolders { result in
@@ -1558,6 +1700,29 @@ class StorageManager {
                     object: nil
                 )
                 completion(true, nil)
+            }
+        }
+    }
+    
+    // MARK: - Tag Management
+    
+    /// Get all tags
+    func getTags(completion: @escaping (Result<[Tag], Error>) -> Void) {
+        load(forKey: "tags", completion: completion)
+    }
+    
+    /// Get a specific tag by ID
+    func getTag(id: String, completion: @escaping (Result<Tag, Error>) -> Void) {
+        load(forKey: "tags") { (result: Result<[Tag], Error>) in
+            switch result {
+            case .success(let tags):
+                if let tag = tags.first(where: { $0.id == id }) {
+                    completion(.success(tag))
+                } else {
+                    completion(.failure(NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Tag not found"])))
+                }
+            case .failure(let error):
+                completion(.failure(error))
             }
         }
     }

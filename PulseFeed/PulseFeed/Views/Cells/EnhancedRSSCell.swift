@@ -104,6 +104,10 @@ class TagsContainerView: UIView {
 class EnhancedRSSCell: UITableViewCell {
     static let identifier = "EnhancedRSSCell"
     
+    // Properties to track bookmarked and hearted status
+    var isBookmarked: Bool = false
+    var isHearted: Bool = false
+    
     private let titleLabel: UILabel = {
         let label = UILabel()
         label.numberOfLines = 0
@@ -177,6 +181,32 @@ class EnhancedRSSCell: UITableViewCell {
         return indicator
     }()
     
+    // Duplicate indicator badge
+    private let duplicateBadge: UILabel = {
+        let label = UILabel()
+        label.backgroundColor = UIColor(hex: "1E90FF") // Blue color for duplicates
+        label.textColor = .white
+        label.font = UIFont.systemFont(ofSize: 11, weight: .bold)
+        label.textAlignment = .center
+        label.layer.cornerRadius = 10
+        label.layer.masksToBounds = true
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.isHidden = true // Hide by default
+        return label
+    }()
+    
+    // Duplicate indicator border
+    private let duplicateBorder: UIView = {
+        let view = UIView()
+        view.layer.borderColor = UIColor(hex: "1E90FF").cgColor
+        view.layer.borderWidth = 2
+        view.backgroundColor = .clear
+        view.layer.cornerRadius = 8
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.isHidden = true // Hide by default
+        return view
+    }()
+    
     // Tags container
     private let tagsContainerView = TagsContainerView()
     
@@ -203,6 +233,9 @@ class EnhancedRSSCell: UITableViewCell {
         backgroundColor = AppColors.background
         selectionStyle = .none
         
+        // Add the duplicate border behind the card to highlight the entire cell
+        contentView.addSubview(duplicateBorder)
+        
         contentView.addSubview(cardView)
         cardView.addSubview(titleLabel)
         cardView.addSubview(articleImageView)
@@ -212,6 +245,10 @@ class EnhancedRSSCell: UITableViewCell {
         cardView.addSubview(timeAgoLabel)
         cardView.addSubview(cacheIndicator) // Add cache indicator to card view
         
+        // Add duplicate indicator views
+        contentView.addSubview(duplicateBorder)
+        contentView.addSubview(duplicateBadge)
+        
         // Base constraints that are always active
         NSLayoutConstraint.activate([
             // Card view constraints
@@ -219,6 +256,18 @@ class EnhancedRSSCell: UITableViewCell {
             cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
+            
+            // Duplicate border constraints (slightly larger than the card view)
+            duplicateBorder.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
+            duplicateBorder.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
+            duplicateBorder.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
+            duplicateBorder.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+            
+            // Duplicate badge constraints (positioned at the top right)
+            duplicateBadge.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            duplicateBadge.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            duplicateBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 20),
+            duplicateBadge.heightAnchor.constraint(equalToConstant: 20),
             
             // Title label constraints
             titleLabel.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 16),
@@ -251,6 +300,18 @@ class EnhancedRSSCell: UITableViewCell {
             cacheIndicator.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -8),
             cacheIndicator.widthAnchor.constraint(equalToConstant: 12),
             cacheIndicator.heightAnchor.constraint(equalToConstant: 12),
+            
+            // Duplicate badge constraints
+            duplicateBadge.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            duplicateBadge.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            duplicateBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 20),
+            duplicateBadge.heightAnchor.constraint(equalToConstant: 20),
+            
+            // Duplicate border constraints (slightly larger than the card view)
+            duplicateBorder.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
+            duplicateBorder.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
+            duplicateBorder.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
+            duplicateBorder.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
         ])
         
         // Store constraints that will be modified dynamically
@@ -275,6 +336,7 @@ class EnhancedRSSCell: UITableViewCell {
         tagsContainerView.isHidden = true
     }
     
+    // Original configure method with required parameters
     func configure(with item: RSSItem, fontSize: CGFloat, isRead: Bool, isCached: Bool = false) {
         titleLabel.text = item.title
         sourceLabel.text = item.source
@@ -286,6 +348,9 @@ class EnhancedRSSCell: UITableViewCell {
         
         // Update card appearance for read state
         cardView.alpha = isRead ? 0.85 : 1.0
+        
+        // Reset duplicate indicators
+        resetDuplicateIndicators()
         
         // Set preview text based on user preferences
         configurePreviewText(item: item)
@@ -301,6 +366,70 @@ class EnhancedRSSCell: UITableViewCell {
         
         // Set cache indicator visibility
         cacheIndicator.isHidden = !isCached
+    }
+    
+    /// Add a duplicate count badge to the cell
+    /// - Parameter count: Number of articles in the duplicate group
+    func addDuplicateBadge(count: Int) {
+        guard count > 1 else {
+            duplicateBadge.isHidden = true
+            return
+        }
+        
+        // Configure badge with count
+        duplicateBadge.text = "\(count)"
+        
+        // Make badge wide enough to fit the text with padding
+        let badgeWidth = duplicateBadge.intrinsicContentSize.width + 8
+        duplicateBadge.widthAnchor.constraint(equalToConstant: max(20, badgeWidth)).isActive = true
+        
+        // Style the badge
+        duplicateBadge.layer.backgroundColor = UIColor(hex: "1E90FF").cgColor
+        
+        // Show the badge
+        duplicateBadge.isHidden = false
+        
+        // Add a subtle blue border to indicate this is the primary article
+        duplicateBorder.isHidden = false
+        duplicateBorder.layer.borderColor = UIColor(hex: "1E90FF").withAlphaComponent(0.5).cgColor
+    }
+    
+    /// Mark this cell as a duplicate article (not the primary version)
+    func markAsDuplicate() {
+        // Style changes to indicate this is a secondary duplicate
+        cardView.alpha = 0.8
+        
+        // Add a dimmed blue border
+        duplicateBorder.isHidden = false
+        duplicateBorder.layer.borderColor = UIColor(hex: "1E90FF").withAlphaComponent(0.3).cgColor
+        duplicateBorder.layer.borderWidth = 1
+        
+        // Add a subtle prefix to the title
+        if !titleLabel.text!.hasPrefix("⤷ ") {
+            titleLabel.text = "⤷ " + titleLabel.text!
+        }
+    }
+    
+    /// Reset all duplicate indicators to default state
+    private func resetDuplicateIndicators() {
+        duplicateBadge.isHidden = true
+        duplicateBorder.isHidden = true
+    }
+    
+    // MARK: - Layout
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        
+        // Make sure the duplicate badge has rounded corners
+        duplicateBadge.layer.cornerRadius = duplicateBadge.bounds.height / 2
+    }
+    
+    // Overloaded configure method for backward compatibility with SearchResultsViewController
+    func configure(with item: RSSItem) {
+        let fontSize = UserDefaults.standard.float(forKey: "fontSize")
+        let isRead = item.isRead
+        configure(with: item, fontSize: CGFloat(fontSize), isRead: isRead)
     }
     
     private func configurePreviewText(item: RSSItem) {
