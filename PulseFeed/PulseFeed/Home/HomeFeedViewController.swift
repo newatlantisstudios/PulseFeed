@@ -4,12 +4,154 @@ import UIKit
 // MARK: - HomeFeedViewController
 class HomeFeedViewController: UIViewController, CALayerDelegate {
     
+    // MARK: - Feed Refresh
+    
+    @objc func refreshFeeds() {
+        // Hide tableView and show loading indicator during refresh
+        tableView.isHidden = true
+        loadingIndicator.startAnimating()
+        startRefreshAnimation() // Start animation
+        
+        // Reset the scroll position tracker to ensure we start at the top after refresh
+        previousMinVisibleRow = 0
+        
+        // Based on the current feed type, refresh the appropriate content
+        switch currentFeedType {
+        case .rss:
+            // For main RSS feed, load all feeds
+            loadRSSFeeds()
+            
+        case .folder(let folderId):
+            // For folder view, only refresh the current folder
+            if let folder = currentFolder, folder.id == folderId {
+                loadFolderFeeds(folder: folder)
+            } else {
+                // Folder not loaded yet, load it first
+                StorageManager.shared.getFolders { [weak self] result in
+                    guard let self = self else { return }
+                    
+                    DispatchQueue.main.async {
+                        if case .success(let folders) = result,
+                           let folder = folders.first(where: { $0.id == folderId }) {
+                            self.currentFolder = folder
+                            self.loadFolderFeeds(folder: folder)
+                        } else {
+                            // Folder not found, fall back to all feeds
+                            self.loadRSSFeeds()
+                        }
+                    }
+                }
+            }
+            
+        default:
+            // For other feed types (bookmarks, heart), go back to standard behavior
+            loadRSSFeeds()
+        }
+    }
+    
+    // MARK: - Loading Methods
+    
+    // Helper to complete the loading process with the filtered items
+    func completeLoadingWithItems(_ filteredItems: [RSSItem]) {
+        // If full-text extraction is enabled, attempt to extract content for partial feeds
+        if FullTextExtractor.shared.isEnabled {
+            // Show loading message for full-text extraction
+            DispatchQueue.main.async {
+                self.loadingLabel.text = "Extracting full content for partial feeds..."
+            }
+            
+            // Process items with FullTextExtractor
+            FullTextExtractor.shared.extractFullContentForItems(filteredItems) { [weak self] updatedItems in
+                guard let self = self else { return }
+                
+                // Continue with the regular flow
+                self.finalizeItemLoading(updatedItems)
+            }
+        } else {
+            // Skip full-text extraction and continue with the regular flow
+            finalizeItemLoading(filteredItems)
+        }
+    }
+    
+    // Helper to finalize loading process after full-text extraction (if any)
+    func finalizeItemLoading(_ filteredItems: [RSSItem]) {
+        // Update our data source
+        self._allItems = filteredItems
+        
+        // Set read status for all items
+        for i in 0..<self._allItems.count {
+            self._allItems[i].isRead = ReadStatusTracker.shared.isArticleRead(link: self._allItems[i].link)
+        }
+        
+        // Update the currently displayed items if RSS feed is active
+        if case .rss = self.currentFeedType {
+            // First apply Hide Read Articles filter
+            let hideReadArticles = UserDefaults.standard.bool(forKey: "hideReadArticles")
+            var filteredByReadStatus = self._allItems
+            
+            if hideReadArticles {
+                // If setting is enabled, filter out read articles
+                filteredByReadStatus = self._allItems.filter { !$0.isRead }
+                print("DEBUG: Read status filtered \(self._allItems.count) items to \(filteredByReadStatus.count) items")
+            }
+            
+            // Then apply content filtering if enabled
+            if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
+                // Filter out articles that match any of the filter keywords
+                self.items = filteredByReadStatus.filter { !self.shouldFilterArticle($0) }
+                print("DEBUG: Keyword filtered \(filteredByReadStatus.count) items to \(self.items.count) items")
+            } else {
+                // No keyword filtering
+                self.items = filteredByReadStatus
+            }
+        }
+        
+        // First, reload the table while it's still hidden
+        self.tableView.reloadData()
+        
+        // Update state and show the tableView
+        self.refreshControl.endRefreshing()
+        self.hasLoadedRSSFeeds = true
+        self.updateFooterVisibility()
+        
+        // Show the tableView after everything is ready
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            self.stopRefreshAnimation()
+            self.loadingIndicator.stopAnimating()
+            self.loadingLabel.isHidden = true
+            self.tableView.isHidden = false
+            self.updateFooterVisibility()
+            
+            // Scroll to top of the list safely
+            self.safeScrollToTop()
+        }
+    }
+    
     // MARK: - CALayerDelegate
     func layoutSublayers(of layer: CALayer) {
         // This is called when the layer's bounds change
         // Update any gradient layers to fit their containing views
         if let gradientLayer = layer.sublayers?.first as? CAGradientLayer {
             gradientLayer.frame = layer.bounds
+        }
+    }
+    
+    // MARK: - Safe Scroll To Top
+    
+    /// Scrolls the table view to the top without marking articles as read
+    internal func safeScrollToTop() {
+        // Only proceed if there are items and the table is visible
+        guard !items.isEmpty && !tableView.isHidden else { return }
+        
+        // Set the auto-scrolling flag to prevent marking articles as read
+        isAutoScrolling = true
+        
+        // Perform the scroll
+        tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .top, animated: true)
+        
+        // Reset the flag after a delay that's longer than the animation duration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.isAutoScrolling = false
         }
     }
 
@@ -84,6 +226,12 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         set { _allItems = newValue }
     }
     
+    // Variable to track rows to mark as read after scrolling stops
+    internal var pendingReadRows: [Int] = []
+    
+    // Flag to prevent marking articles as read during programmatic scrolling
+    internal var isAutoScrolling: Bool = false
+    
     // MARK: - Lifecycle
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -105,6 +253,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         setupNavigationBar()
         setupNotificationObserver()
         setupLongPressGesture()
+        setupSwipeGestures()
         
         // Only do initial loading if we haven't loaded feeds yet
         if !hasLoadedRSSFeeds {
@@ -287,6 +436,74 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         
         // Update UI based on offline status
         updateOfflineModeUI()
+    }
+    
+    // MARK: - Offline Caching
+    
+    /// Caches an article for offline reading
+    /// - Parameters:
+    ///   - item: The RSSItem to cache
+    ///   - completion: Callback with success status
+    func cacheArticleForOfflineReading(_ item: RSSItem, completion: @escaping (Bool) -> Void) {
+        guard let url = URL(string: item.link) else {
+            completion(false)
+            return
+        }
+        
+        // Create a loading indicator to show progress
+        let loadingAlert = UIAlertController(
+            title: "Saving Article",
+            message: "Downloading article content for offline reading...",
+            preferredStyle: .alert
+        )
+        
+        // Add activity indicator
+        let indicator = UIActivityIndicatorView(style: .medium)
+        indicator.translatesAutoresizingMaskIntoConstraints = false
+        indicator.startAnimating()
+        
+        loadingAlert.view.addSubview(indicator)
+        
+        // Position indicator in alert
+        NSLayoutConstraint.activate([
+            indicator.centerXAnchor.constraint(equalTo: loadingAlert.view.centerXAnchor),
+            indicator.bottomAnchor.constraint(equalTo: loadingAlert.view.bottomAnchor, constant: -20)
+        ])
+        
+        // Present the loading alert
+        present(loadingAlert, animated: true)
+        
+        // Use ContentExtractor to grab the article content
+        let content = ContentExtractor.extractReadableContent(from: "", url: url)
+        
+        // Cache the article with the extracted content
+        StorageManager.shared.cacheArticleContent(
+            link: item.link,
+            content: content,
+            title: item.title,
+            source: item.source
+        ) { success, error in
+            DispatchQueue.main.async {
+                loadingAlert.dismiss(animated: true) {
+                    // Show success/failure message
+                    let title = success ? "Article Saved" : "Save Failed"
+                    let message = success ?
+                        "The article has been saved for offline reading." :
+                        "Could not save the article. Please try again."
+                    
+                    let alert = UIAlertController(
+                        title: title,
+                        message: message,
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(alert, animated: true)
+                }
+                
+                // Call completion handler with result
+                completion(success)
+            }
+        }
     }
     
     private func updateOfflineModeUI() {
@@ -618,6 +835,26 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         }
     }
     
+    @objc private func handleFullTextExtractionChanged() {
+        // When full-text extraction setting changes, refresh feeds to apply the new setting
+        if hasLoadedRSSFeeds {
+            // If already loaded, just clear the FullTextExtractor cache
+            FullTextExtractor.shared.clearCache()
+            
+            // Display a message to let the user know they need to refresh for the change to take effect
+            let alert = UIAlertController(
+                title: "Setting Changed",
+                message: "The full-text extraction setting has been updated. Refresh feeds to apply this change.",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "Refresh Now", style: .default) { [weak self] _ in
+                self?.refreshFeeds()
+            })
+            alert.addAction(UIAlertAction(title: "Later", style: .cancel))
+            present(alert, animated: true)
+        }
+    }
+    
     private func setupNotificationObserver() {
         // Add observers for various notification events
         let notifications: [(name: Notification.Name, selector: Selector)] = [
@@ -627,8 +864,12 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             (.init("heartedItemsUpdated"), #selector(handleHeartedItemsUpdated)),
             (.init("articleSortOrderChanged"), #selector(handleSortOrderChanged)),
             (.init("feedFoldersUpdated"), #selector(handleFeedFoldersUpdated)),
-            (.init("showReadArticlesChanged"), #selector(handleShowReadArticlesChanged)),
-            (.init("contentFilteringChanged"), #selector(handleContentFilteringChanged))
+            (.init("hideReadArticlesChanged"), #selector(handleHideReadArticlesChanged)),
+            (.init("contentFilteringChanged"), #selector(handleContentFilteringChanged)),
+            (.init("fullTextExtractionChanged"), #selector(handleFullTextExtractionChanged)),
+            // Add tag-related notifications
+            (.init("tagsUpdated"), #selector(handleTagsUpdated)),
+            (.init("taggedItemsUpdated"), #selector(handleTaggedItemsUpdated))
         ]
         
         notifications.forEach { notification in
@@ -644,6 +885,275 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         longPressGesture = UILongPressGestureRecognizer(
             target: self, action: #selector(handleLongPress(_:)))
         tableView.addGestureRecognizer(longPressGesture)
+    }
+    
+    // MARK: - Swipe Gestures
+    
+    private func setupSwipeGestures() {
+        // Setup swipe gestures to navigate between feed types
+        SwipeGestureManager.shared.addFeedNavigationGestures(
+            to: self,
+            leftAction: { [weak self] in
+                self?.navigateToNextFeedType()
+            },
+            rightAction: { [weak self] in
+                self?.navigateToPreviousFeedType()
+            }
+        )
+    }
+    
+    @objc func handleFeedSwipe(_ gesture: UISwipeGestureRecognizer) {
+        // This method will be called by the SwipeGestureManager
+        // Action is handled via closures set in setupSwipeGestures
+    }
+    
+    private func navigateToNextFeedType() {
+        // Progress to the next feed type
+        switch currentFeedType {
+        case .rss:
+            // From main feed -> bookmarks
+            if !bookmarkedItems.isEmpty {
+                currentFeedType = .bookmarks
+                loadBookmarkedFeeds()
+            } else {
+                // Skip to favorites if no bookmarks
+                if !heartedItems.isEmpty {
+                    currentFeedType = .heart
+                    loadHeartedFeeds()
+                } else {
+                    // Skip to folders if available
+                    StorageManager.shared.getFolders { [weak self] result in
+                        guard let self = self else { return }
+                        
+                        DispatchQueue.main.async {
+                            if case .success(let folders) = result, !folders.isEmpty {
+                                // Switch to first folder
+                                self.currentFeedType = .folder(id: folders[0].id)
+                                self.currentFolder = folders[0]
+                                self.loadFolderFeeds(folder: folders[0])
+                            } else {
+                                // No other feeds to switch to - stay on RSS
+                                self.showToast(message: "No other feed types available")
+                            }
+                        }
+                    }
+                }
+            }
+            
+        case .bookmarks:
+            // From bookmarks -> favorites
+            if !heartedItems.isEmpty {
+                currentFeedType = .heart
+                loadHeartedFeeds()
+            } else {
+                // Skip to folders if available
+                StorageManager.shared.getFolders { [weak self] result in
+                    guard let self = self else { return }
+                    
+                    DispatchQueue.main.async {
+                        if case .success(let folders) = result, !folders.isEmpty {
+                            // Switch to first folder
+                            self.currentFeedType = .folder(id: folders[0].id)
+                            self.currentFolder = folders[0]
+                            self.loadFolderFeeds(folder: folders[0])
+                        } else {
+                            // Loop back to RSS feed
+                            self.currentFeedType = .rss
+                            self.updateTableViewContent()
+                        }
+                    }
+                }
+            }
+            
+        case .heart:
+            // From favorites -> folders if available
+            StorageManager.shared.getFolders { [weak self] result in
+                guard let self = self else { return }
+                
+                DispatchQueue.main.async {
+                    if case .success(let folders) = result, !folders.isEmpty {
+                        // Switch to first folder
+                        self.currentFeedType = .folder(id: folders[0].id)
+                        self.currentFolder = folders[0]
+                        self.loadFolderFeeds(folder: folders[0])
+                    } else {
+                        // Loop back to RSS feed
+                        self.currentFeedType = .rss
+                        self.updateTableViewContent()
+                    }
+                }
+            }
+            
+        case .folder(let currentFolderId):
+            // From folder -> next folder or back to RSS
+            StorageManager.shared.getFolders { [weak self] result in
+                guard let self = self else { return }
+                
+                DispatchQueue.main.async {
+                    if case .success(let folders) = result {
+                        // Find current folder index
+                        if let currentIndex = folders.firstIndex(where: { $0.id == currentFolderId }) {
+                            if currentIndex < folders.count - 1 {
+                                // Move to next folder
+                                let nextFolder = folders[currentIndex + 1]
+                                self.currentFeedType = .folder(id: nextFolder.id)
+                                self.currentFolder = nextFolder
+                                self.loadFolderFeeds(folder: nextFolder)
+                            } else {
+                                // Loop back to RSS feed
+                                self.currentFeedType = .rss
+                                self.updateTableViewContent()
+                            }
+                        } else {
+                            // Current folder not found, go back to RSS
+                            self.currentFeedType = .rss
+                            self.updateTableViewContent()
+                        }
+                    } else {
+                        // Error getting folders, go back to RSS
+                        self.currentFeedType = .rss
+                        self.updateTableViewContent()
+                    }
+                }
+            }
+        }
+        
+        // Show haptic feedback for feed change
+        let feedbackGenerator = UIImpactFeedbackGenerator(style: .medium)
+        feedbackGenerator.prepare()
+        feedbackGenerator.impactOccurred()
+    }
+    
+    private func navigateToPreviousFeedType() {
+        // Move to the previous feed type
+        switch currentFeedType {
+        case .rss:
+            // From RSS, go to the last feed type (last folder or heart or bookmarks)
+            StorageManager.shared.getFolders { [weak self] result in
+                guard let self = self else { return }
+                
+                DispatchQueue.main.async {
+                    if case .success(let folders) = result, !folders.isEmpty {
+                        // Go to last folder
+                        let lastFolder = folders.last!
+                        self.currentFeedType = .folder(id: lastFolder.id)
+                        self.currentFolder = lastFolder
+                        self.loadFolderFeeds(folder: lastFolder)
+                    } else if !self.heartedItems.isEmpty {
+                        // No folders, go to favorites
+                        self.currentFeedType = .heart
+                        self.loadHeartedFeeds()
+                    } else if !self.bookmarkedItems.isEmpty {
+                        // No favorites, go to bookmarks
+                        self.currentFeedType = .bookmarks
+                        self.loadBookmarkedFeeds()
+                    } else {
+                        // No other feeds to go to - stay on RSS
+                        self.showToast(message: "No other feed types available")
+                    }
+                }
+            }
+            
+        case .bookmarks:
+            // From bookmarks -> RSS
+            currentFeedType = .rss
+            updateTableViewContent()
+            
+        case .heart:
+            // From favorites -> bookmarks or RSS
+            if !bookmarkedItems.isEmpty {
+                currentFeedType = .bookmarks
+                loadBookmarkedFeeds()
+            } else {
+                currentFeedType = .rss
+                updateTableViewContent()
+            }
+            
+        case .folder(let currentFolderId):
+            // From folder -> previous folder or heart or bookmarks or RSS
+            StorageManager.shared.getFolders { [weak self] result in
+                guard let self = self else { return }
+                
+                DispatchQueue.main.async {
+                    if case .success(let folders) = result {
+                        // Find current folder index
+                        if let currentIndex = folders.firstIndex(where: { $0.id == currentFolderId }) {
+                            if currentIndex > 0 {
+                                // Move to previous folder
+                                let prevFolder = folders[currentIndex - 1]
+                                self.currentFeedType = .folder(id: prevFolder.id)
+                                self.currentFolder = prevFolder
+                                self.loadFolderFeeds(folder: prevFolder)
+                            } else {
+                                // We're at first folder, go to favorites if available
+                                if !self.heartedItems.isEmpty {
+                                    self.currentFeedType = .heart
+                                    self.loadHeartedFeeds()
+                                } else if !self.bookmarkedItems.isEmpty {
+                                    // No favorites, go to bookmarks
+                                    self.currentFeedType = .bookmarks
+                                    self.loadBookmarkedFeeds()
+                                } else {
+                                    // No other feeds, go to RSS
+                                    self.currentFeedType = .rss
+                                    self.updateTableViewContent()
+                                }
+                            }
+                        } else {
+                            // Current folder not found, go to heart or bookmarks or RSS
+                            if !self.heartedItems.isEmpty {
+                                self.currentFeedType = .heart
+                                self.loadHeartedFeeds()
+                            } else if !self.bookmarkedItems.isEmpty {
+                                self.currentFeedType = .bookmarks
+                                self.loadBookmarkedFeeds()
+                            } else {
+                                self.currentFeedType = .rss
+                                self.updateTableViewContent()
+                            }
+                        }
+                    } else {
+                        // Error getting folders, try heart or bookmarks or RSS
+                        if !self.heartedItems.isEmpty {
+                            self.currentFeedType = .heart
+                            self.loadHeartedFeeds()
+                        } else if !self.bookmarkedItems.isEmpty {
+                            self.currentFeedType = .bookmarks
+                            self.loadBookmarkedFeeds()
+                        } else {
+                            self.currentFeedType = .rss
+                            self.updateTableViewContent()
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Show haptic feedback for feed change
+        let feedbackGenerator = UIImpactFeedbackGenerator(style: .medium)
+        feedbackGenerator.prepare()
+        feedbackGenerator.impactOccurred()
+    }
+    
+    // Show a toast message
+    private func showToast(message: String) {
+        let toastLabel = UILabel(frame: CGRect(x: view.frame.width/2 - 150, y: view.frame.height - 200, width: 300, height: 35))
+        toastLabel.backgroundColor = AppColors.primary.withAlphaComponent(0.9)
+        toastLabel.textColor = UIColor.white
+        toastLabel.textAlignment = .center
+        toastLabel.text = message
+        toastLabel.alpha = 1.0
+        toastLabel.layer.cornerRadius = 10
+        toastLabel.clipsToBounds = true
+        toastLabel.font = .systemFont(ofSize: 14)
+        
+        view.addSubview(toastLabel)
+        
+        UIView.animate(withDuration: 2.0, delay: 0.1, options: .curveEaseInOut, animations: {
+            toastLabel.alpha = 0.0
+        }, completion: { _ in
+            toastLabel.removeFromSuperview()
+        })
     }
     
     // Helper to normalize links for consistent comparison
@@ -676,10 +1186,18 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     }
     
     private func markItemsAboveAsRead(_ indexPath: IndexPath) {
+        // Collect all links from items above the tapped row
+        let linksToMark = (0...indexPath.row).map { items[$0].link }
+        
+        // Mark them all as read in ReadStatusTracker
+        ReadStatusTracker.shared.markArticles(links: linksToMark, as: true)
+        
+        // Update the local items array
         for index in 0...indexPath.row {
             items[index].isRead = true
         }
-        scheduleSaveReadState()
+        
+        // Reload the affected rows
         let indexPaths = (0...indexPath.row).map { IndexPath(row: $0, section: 0) }
         tableView.reloadRows(at: indexPaths, with: .fade)
     }
@@ -691,7 +1209,24 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     func scheduleSaveReadState() {
         saveReadStateWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
-            self?.saveReadState()
+            // Collect read items from current visible items
+            guard let self = self else { return }
+            
+            // Collect all links from read items
+            var readItemLinks: [String] = []
+            
+            // Add all read items from the current view
+            for item in self.items where item.isRead {
+                readItemLinks.append(item.link)
+            }
+            
+            // Also include any read items from allItems that may not be in the current view
+            for item in self._allItems where item.isRead {
+                readItemLinks.append(item.link)
+            }
+            
+            // Use the ReadStatusTracker to mark these articles as read
+            ReadStatusTracker.shared.markArticles(links: readItemLinks, as: true)
         }
         saveReadStateWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + saveReadStateDebounceInterval, execute: workItem)
@@ -824,7 +1359,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         }
     }
     
-    @objc private func handleShowReadArticlesChanged(_ notification: Notification) {
+    @objc private func handleHideReadArticlesChanged(_ notification: Notification) {
         // Reload feeds based on the current view
         switch currentFeedType {
         case .rss:
@@ -839,6 +1374,66 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             // For other views (bookmarks, heart), we don't filter by read status
             // so no need to refresh
             break
+        }
+    }
+    
+    @objc private func handleTagsUpdated(_ notification: Notification) {
+        // When tags themselves are updated (added, modified, or deleted)
+        // We need to refresh the table to show the updated tags
+        print("DEBUG: Tags updated notification received")
+        
+        // First, clear any cached tag data
+        StorageManager.shared.clearTagCache()
+        
+        DispatchQueue.main.async {
+            // Force a full table reload with animation to ensure changes are visible
+            print("DEBUG: Forcing complete table reload due to tag updates")
+            UIView.transition(with: self.tableView, 
+                          duration: 0.3,
+                          options: .transitionCrossDissolve,
+                          animations: { self.tableView.reloadData() },
+                          completion: nil)
+        }
+    }
+    
+    @objc private func handleTaggedItemsUpdated(_ notification: Notification) {
+        // When items are tagged or untagged, we need to refresh the relevant cells
+        if let itemId = notification.userInfo?["itemId"] as? String {
+            // Print debug information
+            print("DEBUG: Tagged item updated notification received for item: \(itemId)")
+            if let tagId = notification.userInfo?["tagId"] as? String {
+                print("DEBUG: Tag ID: \(tagId)")
+            }
+            
+            DispatchQueue.main.async {
+                // Find the cells that need updating
+                let matchingIndices = self.items.enumerated()
+                    .filter { $0.element.link == itemId || StorageManager.shared.normalizeLink($0.element.link) == itemId }
+                
+                // Print debug information
+                print("DEBUG: Found \(matchingIndices.count) matching item(s) in the table")
+                for match in matchingIndices {
+                    print("DEBUG: Match at index \(match.offset): \(match.element.title)")
+                }
+                
+                let indexPathsToReload = matchingIndices.map { IndexPath(row: $0.offset, section: 0) }
+                
+                if !indexPathsToReload.isEmpty {
+                    print("DEBUG: Reloading specific rows: \(indexPathsToReload)")
+                    // Force reload with animation to ensure the update is visible
+                    self.tableView.reloadRows(at: indexPathsToReload, with: .fade)
+                } else {
+                    // If we can't find the specific cells, just reload all (less efficient but ensures UI is up to date)
+                    print("DEBUG: No matching rows found, reloading entire table")
+                    self.tableView.reloadData()
+                }
+            }
+        } else {
+            // No specific item ID, reload all cells
+            print("DEBUG: Tagged item updated notification received without item ID")
+            DispatchQueue.main.async {
+                self.tableView.reloadData()
+            }
         }
     }
     

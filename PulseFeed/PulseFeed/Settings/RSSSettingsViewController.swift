@@ -3,13 +3,13 @@ import UIKit
 class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableViewDataSource {
     
     private lazy var tableView: UITableView = {
-        let table = UITableView()
+        let table = UITableView(frame: .zero, style: .grouped)
         table.delegate = self
         table.dataSource = self
         table.backgroundColor = AppColors.background
         table.register(UITableViewCell.self, forCellReuseIdentifier: "FeedCell")
+        table.register(SettingSwitchCell.self, forCellReuseIdentifier: "SwitchCell")
         table.translatesAutoresizingMaskIntoConstraints = false
-        table.allowsSelection = false
         return table
     }()
     
@@ -22,6 +22,10 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
     private var useICloud: Bool {
         // The switch flag stored in UserDefaults.
         return UserDefaults.standard.bool(forKey: "useICloud")
+    }
+    
+    private var enableFullTextExtraction: Bool {
+        return UserDefaults.standard.bool(forKey: "enableFullTextExtraction")
     }
     
     override func viewDidLoad() {
@@ -186,25 +190,74 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
     
     // MARK: - UITableViewDataSource Methods
     
+    func numberOfSections(in tableView: UITableView) -> Int {
+        return 2
+    }
+    
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return feeds.count
+        switch section {
+        case 0: // Settings section
+            return 1
+        case 1: // Feeds section
+            return feeds.count
+        default:
+            return 0
+        }
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "FeedCell", for: indexPath)
-        let feed = feeds[indexPath.row]
-        var config = cell.defaultContentConfiguration()
-        config.text = feed.title
-        config.secondaryText = feed.url
-        cell.contentConfiguration = config
-        return cell
+        switch indexPath.section {
+        case 0: // Settings section
+            guard let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as? SettingSwitchCell else {
+                return UITableViewCell()
+            }
+            
+            cell.configure(
+                title: "Enable Full-Text Extraction",
+                subtitle: "Automatically extract full content for partial feeds",
+                isOn: enableFullTextExtraction
+            )
+            
+            cell.switchToggled = { [weak self] (isOn: Bool) in
+                UserDefaults.standard.set(isOn, forKey: "enableFullTextExtraction")
+                // Post notification so other parts of the app can respond
+                NotificationCenter.default.post(name: Notification.Name("fullTextExtractionChanged"), object: nil)
+            }
+            
+            return cell
+            
+        case 1: // Feeds section
+            let cell = tableView.dequeueReusableCell(withIdentifier: "FeedCell", for: indexPath)
+            let feed = feeds[indexPath.row]
+            var config = cell.defaultContentConfiguration()
+            config.text = feed.title
+            config.secondaryText = feed.url
+            cell.contentConfiguration = config
+            return cell
+            
+        default:
+            return UITableViewCell()
+        }
+    }
+    
+    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        switch section {
+        case 0:
+            return "Feed Settings"
+        case 1:
+            return "Your RSS Feeds"
+        default:
+            return nil
+        }
     }
     
     // MARK: - UITableViewDelegate Methods
     
     func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle,
                    forRowAt indexPath: IndexPath) {
-        guard editingStyle == .delete else { return }
+        // Only allow deletion in the feeds section
+        guard indexPath.section == 1, editingStyle == .delete else { return }
+        
         let _ = feeds[indexPath.row]
         feeds.remove(at: indexPath.row)
         // Save the updated feeds array.
@@ -213,6 +266,60 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
                 self.showError("Failed to update feeds: \(error.localizedDescription)")
             }
         }
+    }
+    
+    func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        // Only allow editing in the feeds section
+        return indexPath.section == 1
+    }
+    
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        
+        // If a feed is selected, allow editing the feed title
+        if indexPath.section == 1 {
+            let feed = feeds[indexPath.row]
+            showEditFeedDialog(feed: feed, at: indexPath)
+        }
+    }
+    
+    private func showEditFeedDialog(feed: RSSFeed, at indexPath: IndexPath) {
+        let alert = UIAlertController(
+            title: "Edit Feed",
+            message: "Update the feed title",
+            preferredStyle: .alert
+        )
+        
+        alert.addTextField { textField in
+            textField.text = feed.title
+            textField.placeholder = "Feed Title"
+        }
+        
+        let saveAction = UIAlertAction(title: "Save", style: .default) { [weak self] _ in
+            guard let self = self,
+                  let newTitle = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !newTitle.isEmpty else {
+                return
+            }
+            
+            // Update the feed with the new title
+            var updatedFeed = feed
+            updatedFeed.title = newTitle
+            
+            // Update the feeds array
+            self.feeds[indexPath.row] = updatedFeed
+            
+            // Save the updated feeds array
+            StorageManager.shared.save(self.feeds, forKey: "rssFeeds") { error in
+                if let error = error {
+                    self.showError("Failed to update feed: \(error.localizedDescription)")
+                }
+            }
+        }
+        
+        alert.addAction(saveAction)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
     }
     
     private func showError(_ message: String) {

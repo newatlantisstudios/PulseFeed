@@ -6,35 +6,45 @@ class ArticleReaderViewController: UIViewController {
     
     // MARK: - Properties
     
-    private let webView = WKWebView()
+    let webView = WKWebView()
     private let loadingIndicator = UIActivityIndicatorView(style: .medium)
-    private let titleLabel = UILabel()
-    private let sourceLabel = UILabel()
-    private let dateLabel = UILabel()
-    private let toolbar = UIToolbar()
-    private let progressView = UIProgressView()
+    let titleLabel = UILabel()
+    let sourceLabel = UILabel()
+    let dateLabel = UILabel()
+    let toolbar = UIToolbar()
+    let progressView = UIProgressView()
     
-    private var fontSize: CGFloat = 18
-    private var lineHeight: CGFloat = 1.5
-    private var fontColor: UIColor = .label
-    private var backgroundColor: UIColor = .systemBackground
-    private var estimatedReadingTimeLabel: UILabel?
+    // Reading progress
+    let readingProgressBar = ReadingProgressBar(frame: .zero)
+    private var currentReadingProgress: Float = 0
+    private var lastProgressUpdateTime: Date = Date()
+    private var isTrackingProgress = true
+    private var scrollObserver: NSKeyValueObservation?
+    
+    var typographySettings = TypographySettings.loadFromUserDefaults()
+    var fontColor: UIColor = .label
+    var backgroundColor: UIColor = .systemBackground
+    var estimatedReadingTimeLabel: UILabel?
     
     var item: RSSItem?
     var htmlContent: String?
     private var webViewObservation: NSKeyValueObservation?
     
-    // Reading modes
+    // Navigation properties
+    var allItems: [RSSItem] = []
+    var currentItemIndex: Int = -1
+    
+    // Edge swipe visual indicators
+    private let leftSwipeIndicator = UIView()
+    private let rightSwipeIndicator = UIView()
+    
+    // This enum is kept for backward compatibility
+    // It will be removed in future versions as we migrate to the theme system
+    @available(*, deprecated, message: "Use ArticleThemeManager instead")
     enum ReadingMode: String {
         case regular = "regular"
         case sepia = "sepia"
         case dark = "dark"
-    }
-    
-    private var currentReadingMode: ReadingMode {
-        let isDarkMode = traitCollection.userInterfaceStyle == .dark
-        let storedMode = UserDefaults.standard.string(forKey: "readerMode") ?? (isDarkMode ? "dark" : "regular")
-        return ReadingMode(rawValue: storedMode) ?? (isDarkMode ? .dark : .regular)
     }
     
     // MARK: - Lifecycle
@@ -44,10 +54,16 @@ class ArticleReaderViewController: UIViewController {
         
         setupUI()
         setupNavigationBar()
+        setupThemeSupport()
+        setupReadingProgressTracking()
+        setupSwipeGestures()
+        setupSwipeIndicators()
+        findCurrentItemIndex()
         loadArticleContent()
         
-        // Listen for font size changes
+        // Listen for font size and typography changes
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged(_:)), name: Notification.Name("fontSizeChanged"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(typographySettingsChanged(_:)), name: Notification.Name("typographySettingsChanged"), object: nil)
         
         // Set up web view progress tracking
         webViewObservation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] webView, change in
@@ -59,9 +75,120 @@ class ArticleReaderViewController: UIViewController {
         }
     }
     
+    // MARK: - Swipe Gestures
+    
+    private func setupSwipeGestures() {
+        // Use SwipeGestureManager to add gestures for article navigation
+        SwipeGestureManager.shared.addArticleNavigationGestures(
+            to: self,
+            previousAction: { [weak self] in
+                self?.navigateToPreviousArticle()
+            },
+            nextAction: { [weak self] in
+                self?.navigateToNextArticle()
+            }
+        )
+    }
+    
+    @objc func handleArticleSwipe(_ gesture: UISwipeGestureRecognizer) {
+        // This method will be called by the SwipeGestureManager
+        // Actions are handled via closures
+    }
+    
+    private func setupSwipeIndicators() {
+        // Setup edge indicators that appear when user swipes
+        leftSwipeIndicator.backgroundColor = AppColors.primary.withAlphaComponent(0.5)
+        leftSwipeIndicator.layer.cornerRadius = 8
+        leftSwipeIndicator.clipsToBounds = true
+        leftSwipeIndicator.translatesAutoresizingMaskIntoConstraints = false
+        leftSwipeIndicator.alpha = 0
+        
+        rightSwipeIndicator.backgroundColor = AppColors.primary.withAlphaComponent(0.5)
+        rightSwipeIndicator.layer.cornerRadius = 8
+        rightSwipeIndicator.clipsToBounds = true
+        rightSwipeIndicator.translatesAutoresizingMaskIntoConstraints = false
+        rightSwipeIndicator.alpha = 0
+        
+        // Create arrow indicators
+        let leftArrow = UIImageView(image: UIImage(systemName: "chevron.left"))
+        leftArrow.tintColor = .white
+        leftArrow.translatesAutoresizingMaskIntoConstraints = false
+        
+        let rightArrow = UIImageView(image: UIImage(systemName: "chevron.right"))
+        rightArrow.tintColor = .white
+        rightArrow.translatesAutoresizingMaskIntoConstraints = false
+        
+        leftSwipeIndicator.addSubview(leftArrow)
+        rightSwipeIndicator.addSubview(rightArrow)
+        
+        view.addSubview(leftSwipeIndicator)
+        view.addSubview(rightSwipeIndicator)
+        
+        // Setup constraints
+        NSLayoutConstraint.activate([
+            leftSwipeIndicator.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            leftSwipeIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            leftSwipeIndicator.widthAnchor.constraint(equalToConstant: 40),
+            leftSwipeIndicator.heightAnchor.constraint(equalToConstant: 60),
+            
+            rightSwipeIndicator.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            rightSwipeIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            rightSwipeIndicator.widthAnchor.constraint(equalToConstant: 40),
+            rightSwipeIndicator.heightAnchor.constraint(equalToConstant: 60),
+            
+            leftArrow.centerXAnchor.constraint(equalTo: leftSwipeIndicator.centerXAnchor),
+            leftArrow.centerYAnchor.constraint(equalTo: leftSwipeIndicator.centerYAnchor),
+            
+            rightArrow.centerXAnchor.constraint(equalTo: rightSwipeIndicator.centerXAnchor),
+            rightArrow.centerYAnchor.constraint(equalTo: rightSwipeIndicator.centerYAnchor)
+        ])
+    }
+    
+    private func findCurrentItemIndex() {
+        // Find the current item's index in the array
+        if let item = item {
+            currentItemIndex = allItems.firstIndex(where: { $0.link == item.link }) ?? -1
+        }
+    }
+    
+    private func setupReadingProgressTracking() {
+        guard let item = item else { return }
+        
+        // Configure reading progress bar
+        readingProgressBar.translatesAutoresizingMaskIntoConstraints = false
+        readingProgressBar.progressColor = AppColors.accent
+        readingProgressBar.trackColor = AppColors.secondary.withAlphaComponent(0.2)
+        readingProgressBar.height = 3
+        
+        // Add to view hierarchy - needs to be above the content but below loading indicators
+        view.addSubview(readingProgressBar)
+        view.bringSubviewToFront(progressView) // Keep the loading progress view on top
+        
+        // Set up constraints
+        NSLayoutConstraint.activate([
+            readingProgressBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            readingProgressBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            readingProgressBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            readingProgressBar.heightAnchor.constraint(equalToConstant: 3)
+        ])
+        
+        // Load previous reading progress
+        loadSavedReadingProgress()
+        
+        // Set up scroll tracking
+        setupScrollTracking()
+    }
+    
     deinit {
         NotificationCenter.default.removeObserver(self)
         webViewObservation?.invalidate()
+        scrollObserver?.invalidate()
+        
+        // Save final reading progress before deinitializing
+        if currentReadingProgress > 0.01 {
+            guard let item = item else { return }
+            StorageManager.shared.saveReadingProgress(for: item.link, progress: currentReadingProgress, completion: { _, _ in })
+        }
     }
     
     // MARK: - UI Setup
@@ -80,24 +207,24 @@ class ArticleReaderViewController: UIViewController {
         progressView.translatesAutoresizingMaskIntoConstraints = false
         
         // Setup title label
-        titleLabel.font = UIFont.systemFont(ofSize: 22, weight: .bold)
+        titleLabel.font = typographySettings.fontFamily.font(withSize: 22, weight: .bold)
         titleLabel.textColor = fontColor
         titleLabel.numberOfLines = 0
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         
         // Setup source label
-        sourceLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium)
+        sourceLabel.font = typographySettings.fontFamily.font(withSize: 14, weight: .medium)
         sourceLabel.textColor = AppColors.secondary
         sourceLabel.translatesAutoresizingMaskIntoConstraints = false
         
         // Setup date label
-        dateLabel.font = UIFont.systemFont(ofSize: 14)
+        dateLabel.font = typographySettings.fontFamily.font(withSize: 14)
         dateLabel.textColor = AppColors.secondary
         dateLabel.translatesAutoresizingMaskIntoConstraints = false
         
         // Setup reading time
         estimatedReadingTimeLabel = UILabel()
-        estimatedReadingTimeLabel?.font = UIFont.systemFont(ofSize: 14, weight: .regular)
+        estimatedReadingTimeLabel?.font = typographySettings.fontFamily.font(withSize: 14, weight: .regular)
         estimatedReadingTimeLabel?.textColor = AppColors.secondary
         estimatedReadingTimeLabel?.textAlignment = .right
         estimatedReadingTimeLabel?.translatesAutoresizingMaskIntoConstraints = false
@@ -210,15 +337,22 @@ class ArticleReaderViewController: UIViewController {
         
         let increaseFontButton = UIBarButtonItem(image: UIImage(systemName: "textformat.size.larger"), style: .plain, target: self, action: #selector(increaseFontSize))
         
-        // Create reading mode button based on current mode
+        // Create reading mode button based on current theme
+        let themeManager = ArticleThemeManager.shared
+        let currentThemeName = themeManager.selectedTheme.name
+        
         var modeIcon: UIImage?
-        switch currentReadingMode {
-        case .regular:
+        switch currentThemeName {
+        case "System":
             modeIcon = UIImage(systemName: "sun.max")
-        case .sepia:
+        case "Light":
+            modeIcon = UIImage(systemName: "sun.max.fill")
+        case "Sepia":
             modeIcon = UIImage(systemName: "book")
-        case .dark:
+        case "Dark":
             modeIcon = UIImage(systemName: "moon")
+        default:
+            modeIcon = UIImage(systemName: "paintpalette")
         }
         
         let toggleModeButton = UIBarButtonItem(image: modeIcon, style: .plain, target: self, action: #selector(toggleReadingMode))
@@ -244,6 +378,33 @@ class ArticleReaderViewController: UIViewController {
         if let content = htmlContent {
             // If HTML content is already provided, use it
             displayContent(content)
+        } else if let itemContent = item.content, !itemContent.isEmpty {
+            // If the item already has full content (from full-text extraction), use it
+            // but still cache it for offline reading
+            displayContent(itemContent)
+            self.htmlContent = itemContent
+            
+            // Calculate reading time
+            self.calculateReadingTime(for: itemContent)
+            
+            // Cache the article for offline reading
+            StorageManager.shared.cacheArticleContent(
+                link: item.link,
+                content: itemContent,
+                title: item.title,
+                source: item.source
+            ) { success, error in
+                if let error = error {
+                    print("DEBUG: Failed to cache article: \(error.localizedDescription)")
+                } else if success {
+                    print("DEBUG: Successfully cached article with pre-extracted content: \(item.title)")
+                    
+                    // Update the navigation bar buttons
+                    DispatchQueue.main.async {
+                        self.updateOfflineCacheButton()
+                    }
+                }
+            }
         } else {
             // First check if we have a cached version of this article
             DispatchQueue.main.async { [weak self] in
@@ -453,7 +614,7 @@ class ArticleReaderViewController: UIViewController {
         return ContentExtractor.extractReadableContent(from: html, url: url)
     }
     
-    private func wrapInReadableHTML(content: String) -> String {
+    func wrapInReadableHTML(content: String) -> String {
         // Get stored typography settings
         loadTypographySettings()
         
@@ -461,20 +622,24 @@ class ArticleReaderViewController: UIViewController {
         let useJustifiedText = UserDefaults.standard.bool(forKey: "readerJustifiedText")
         let justifiedClass = useJustifiedText ? " justified" : ""
         
+        // Get accent color from theme manager
+        let themeManager = ArticleThemeManager.shared
+        let (_, _, accentColor) = themeManager.getCurrentThemeColors(for: traitCollection)
+        
         // Use ContentExtractor to wrap content in readable HTML
         let wrappedHTML = ContentExtractor.wrapInReadableHTML(
             content: "<div class=\"content\(justifiedClass)\">\(content)</div>",
-            fontSize: fontSize,
-            lineHeight: lineHeight,
+            fontSize: typographySettings.fontSize,
+            lineHeight: typographySettings.lineHeight,
             fontColor: fontColor.hexString,
             backgroundColor: backgroundColor.hexString,
-            accentColor: AppColors.accent.hexString
+            accentColor: accentColor.hexString
         )
         
         return wrappedHTML
     }
     
-    private func displayContent(_ html: String) {
+    func displayContent(_ html: String) {
         // Ensure we're on the main thread for WebView updates
         if !Thread.isMainThread {
             DispatchQueue.main.async { [weak self] in
@@ -512,30 +677,106 @@ class ArticleReaderViewController: UIViewController {
         progressView.setProgress(progress, animated: true)
     }
     
+    // MARK: - Reading Progress Tracking
+    
+    private func setupScrollTracking() {
+        // Set up scroll position observer to track reading progress
+        scrollObserver = webView.scrollView.observe(\.contentOffset, options: [.new]) { [weak self] scrollView, change in
+            guard let self = self, self.isTrackingProgress else { return }
+            
+            // Only update progress every 500ms to avoid excessive updates
+            let now = Date()
+            if now.timeIntervalSince(self.lastProgressUpdateTime) < 0.5 {
+                return
+            }
+            self.lastProgressUpdateTime = now
+            
+            self.updateReadingProgress()
+        }
+    }
+    
+    private func updateReadingProgress() {
+        // Calculate reading progress based on scroll position
+        let scrollView = webView.scrollView
+        let contentHeight = scrollView.contentSize.height
+        let frameHeight = scrollView.frame.size.height
+        let contentOffset = scrollView.contentOffset.y
+        
+        // Avoid division by zero
+        guard contentHeight > frameHeight else {
+            return
+        }
+        
+        // Calculate reading progress as percentage (0.0 to 1.0)
+        let maxScrollableHeight = contentHeight - frameHeight
+        var progress = Float(contentOffset / maxScrollableHeight)
+        
+        // Ensure progress is within valid range
+        progress = min(1.0, max(0.0, progress))
+        
+        // Update the progress UI
+        readingProgressBar.setProgress(progress, animated: true)
+        
+        // Store current progress for saving
+        if abs(Float(progress) - currentReadingProgress) > 0.05 { // Only update if changed by more than 5%
+            currentReadingProgress = progress
+            saveReadingProgress()
+        }
+    }
+    
+    private func loadSavedReadingProgress() {
+        guard let item = item else { return }
+        
+        StorageManager.shared.getReadingProgress(for: item.link) { [weak self] result in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let progress):
+                    self.currentReadingProgress = progress
+                    self.readingProgressBar.setProgress(progress, animated: false)
+                    
+                    // If progress is beyond the beginning, scroll to that position after content is loaded
+                    if progress > 0.05 { // Only if progress is beyond the first 5%
+                        self.scrollToSavedPosition = true
+                    }
+                case .failure:
+                    // If there's an error, start from the beginning
+                    self.currentReadingProgress = 0
+                    self.readingProgressBar.setProgress(0, animated: false)
+                }
+            }
+        }
+    }
+    
+    private func saveReadingProgress() {
+        guard let item = item else { return }
+        
+        // Only save if progress is meaningful (beyond the first 1%)
+        // This helps avoid saving meaningless progress data for articles just opened
+        if currentReadingProgress > 0.01 {
+            StorageManager.shared.saveReadingProgress(for: item.link, progress: currentReadingProgress) { _, _ in
+                // Nothing to do on completion
+            }
+        }
+    }
+    
+    // Variable to track if we need to scroll to saved position
+    private var scrollToSavedPosition = false
+    
     // MARK: - Typography Settings
     
-    private func loadTypographySettings() {
-        // Load font size from UserDefaults
-        let storedFontSize = UserDefaults.standard.float(forKey: "readerFontSize")
-        fontSize = storedFontSize != 0 ? CGFloat(storedFontSize) : 18
+    func loadTypographySettings() {
+        // Load typography settings
+        typographySettings = TypographySettings.loadFromUserDefaults()
         
-        // Load line height
-        let storedLineHeight = UserDefaults.standard.float(forKey: "readerLineHeight")
-        lineHeight = storedLineHeight != 0 ? CGFloat(storedLineHeight) : 1.5
+        // Get colors from theme manager
+        let themeManager = ArticleThemeManager.shared
+        let (textColor, bgColor, _) = themeManager.getCurrentThemeColors(for: traitCollection)
         
-        // Set color based on current theme
-        switch currentReadingMode {
-        case .regular:
-            // Use system colors
-            backgroundColor = traitCollection.userInterfaceStyle == .dark ? .black : .white
-            fontColor = traitCollection.userInterfaceStyle == .dark ? .white : .black
-        case .sepia:
-            backgroundColor = UIColor(hex: "F9F5E9") // Sepia background
-            fontColor = UIColor(hex: "5B4636") // Sepia text color
-        case .dark:
-            backgroundColor = .black
-            fontColor = .white
-        }
+        // Update color properties
+        fontColor = textColor
+        backgroundColor = bgColor
         
         // Update UI with new colors
         view.backgroundColor = backgroundColor
@@ -549,6 +790,118 @@ class ArticleReaderViewController: UIViewController {
         if let content = htmlContent {
             displayContent(content)
         }
+    }
+    
+    @objc private func typographySettingsChanged(_ notification: Notification) {
+        // Reload typography settings and update UI
+        loadTypographySettings()
+        
+        // Update title and labels
+        titleLabel.font = typographySettings.fontFamily.font(withSize: 22, weight: .bold)
+        sourceLabel.font = typographySettings.fontFamily.font(withSize: 14, weight: .medium)
+        dateLabel.font = typographySettings.fontFamily.font(withSize: 14)
+        estimatedReadingTimeLabel?.font = typographySettings.fontFamily.font(withSize: 14, weight: .regular)
+        
+        // Reload the article content with new typography settings
+        if let content = htmlContent {
+            displayContent(content)
+        }
+    }
+    
+    // MARK: - Article Navigation
+    
+    func navigateToNextArticle() {
+        guard !allItems.isEmpty, currentItemIndex >= 0, currentItemIndex < allItems.count - 1 else {
+            // Show indicator that we're at the end of the list
+            showNoMoreArticlesIndicator(direction: .next)
+            return
+        }
+        
+        // Save reading progress for current article
+        saveReadingProgress()
+        
+        // Show visual indicator
+        showNavigationIndicator(direction: .next)
+        
+        // Navigate to the next article
+        currentItemIndex += 1
+        loadNewArticle(allItems[currentItemIndex])
+    }
+    
+    func navigateToPreviousArticle() {
+        guard !allItems.isEmpty, currentItemIndex > 0 else {
+            // Show indicator that we're at the beginning of the list
+            showNoMoreArticlesIndicator(direction: .previous)
+            return
+        }
+        
+        // Save reading progress for current article
+        saveReadingProgress()
+        
+        // Show visual indicator
+        showNavigationIndicator(direction: .previous)
+        
+        // Navigate to the previous article
+        currentItemIndex -= 1
+        loadNewArticle(allItems[currentItemIndex])
+    }
+    
+    private func loadNewArticle(_ newItem: RSSItem) {
+        // Save the current article's reading progress before switching
+        if let currentItem = item, currentReadingProgress > 0.01 {
+            StorageManager.shared.saveReadingProgress(for: currentItem.link, progress: currentReadingProgress, completion: { _, _ in })
+        }
+        
+        // Update the item
+        item = newItem
+        htmlContent = nil
+        currentReadingProgress = 0
+        scrollToSavedPosition = false
+        
+        // Reset UI
+        loadingIndicator.startAnimating()
+        progressView.isHidden = false
+        progressView.progress = 0
+        
+        // Update UI
+        updateArticleDetails()
+        
+        // Load the new article content
+        loadArticleContent()
+        
+        // Add haptic feedback for navigation
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.prepare()
+        generator.impactOccurred()
+    }
+    
+    enum NavigationDirection {
+        case previous
+        case next
+    }
+    
+    private func showNavigationIndicator(direction: NavigationDirection) {
+        // Show the appropriate edge indicator
+        let indicator = direction == .previous ? leftSwipeIndicator : rightSwipeIndicator
+        
+        // Animate indicator
+        UIView.animate(withDuration: 0.2, animations: {
+            indicator.alpha = 1.0
+        }, completion: { _ in
+            UIView.animate(withDuration: 0.2, delay: 0.3, options: [], animations: {
+                indicator.alpha = 0.0
+            }, completion: nil)
+        })
+    }
+    
+    private func showNoMoreArticlesIndicator(direction: NavigationDirection) {
+        // Show a toast message indicating no more articles
+        let message = direction == .previous ? "No previous articles" : "No more articles"
+        showToast(message: message)
+        
+        // Add a subtle haptic feedback to indicate we're at the end
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.warning)
     }
     
     // MARK: - Actions
@@ -579,9 +932,9 @@ class ArticleReaderViewController: UIViewController {
     }
     
     @objc private func decreaseFontSize() {
-        if fontSize > 12 {
-            fontSize -= 2
-            UserDefaults.standard.set(Float(fontSize), forKey: "readerFontSize")
+        if typographySettings.fontSize > 12 {
+            typographySettings.fontSize -= 2
+            typographySettings.saveToUserDefaults()
             
             if let content = htmlContent {
                 displayContent(content)
@@ -590,9 +943,9 @@ class ArticleReaderViewController: UIViewController {
     }
     
     @objc private func increaseFontSize() {
-        if fontSize < 32 {
-            fontSize += 2
-            UserDefaults.standard.set(Float(fontSize), forKey: "readerFontSize")
+        if typographySettings.fontSize < 32 {
+            typographySettings.fontSize += 2
+            typographySettings.saveToUserDefaults()
             
             if let content = htmlContent {
                 displayContent(content)
@@ -601,59 +954,43 @@ class ArticleReaderViewController: UIViewController {
     }
     
     @objc private func toggleReadingMode() {
-        // Cycle through reading modes
-        let newMode: ReadingMode
+        // Cycle through built-in themes using the theme manager
+        let themeManager = ArticleThemeManager.shared
+        let currentThemeName = themeManager.selectedTheme.name
         
-        switch currentReadingMode {
-        case .regular:
-            newMode = .sepia
-        case .sepia:
-            newMode = .dark
-        case .dark:
-            newMode = .regular
-        }
+        // Define the cycle sequence
+        let themeSequence = ["System", "Light", "Sepia", "Dark"]
         
-        // Save new mode to UserDefaults
-        UserDefaults.standard.set(newMode.rawValue, forKey: "readerMode")
-        
-        // Update colors
-        switch newMode {
-        case .regular:
-            // Use system colors
-            backgroundColor = traitCollection.userInterfaceStyle == .dark ? .black : .white
-            fontColor = traitCollection.userInterfaceStyle == .dark ? .white : .black
-        case .sepia:
-            backgroundColor = UIColor(hex: "F9F5E9") // Sepia background
-            fontColor = UIColor(hex: "5B4636") // Sepia text color
-        case .dark:
-            backgroundColor = .black
-            fontColor = .white
-        }
-        
-        // Update UI with new colors
-        view.backgroundColor = backgroundColor
-        webView.backgroundColor = backgroundColor
-        webView.scrollView.backgroundColor = backgroundColor
-        titleLabel.textColor = fontColor
-        
-        // Update toolbar icon
-        let modeImage: UIImage?
-        switch newMode {
-        case .regular:
-            modeImage = UIImage(systemName: "sun.max")
-        case .sepia:
-            modeImage = UIImage(systemName: "book")
-        case .dark:
-            modeImage = UIImage(systemName: "moon")
-        }
-        
-        if let toggleModeButton = toolbar.items?[2] {
-            toggleModeButton.image = modeImage
-        }
-        
-        // Reload content with new styles
-        if let content = htmlContent {
-            displayContent(content)
+        // Find the current theme in the sequence
+        if let currentIndex = themeSequence.firstIndex(of: currentThemeName) {
+            // Get the next theme in the sequence
+            let nextIndex = (currentIndex + 1) % themeSequence.count
+            let nextThemeName = themeSequence[nextIndex]
+            
+            // Apply the next theme
+            themeManager.selectTheme(named: nextThemeName)
+            
+            // Update the toolbar icon
+            let modeImage: UIImage?
+            switch nextThemeName {
+            case "System":
+                modeImage = UIImage(systemName: "sun.max")
+            case "Light":
+                modeImage = UIImage(systemName: "sun.max.fill")
+            case "Sepia":
+                modeImage = UIImage(systemName: "book")
+            case "Dark":
+                modeImage = UIImage(systemName: "moon")
+            default:
+                modeImage = UIImage(systemName: "paintpalette")
+            }
+            
+            if let toggleModeButton = toolbar.items?[2] {
+                toggleModeButton.image = modeImage
+            }
+        } else {
+            // If current theme is not in the sequence, default to System
+            themeManager.selectTheme(named: "System")
         }
     }
     
@@ -825,8 +1162,12 @@ class ArticleReaderViewController: UIViewController {
         super.traitCollectionDidChange(previousTraitCollection)
         
         if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
-            // Only update if we're using the regular reading mode
-            if currentReadingMode == .regular {
+            // Get current theme
+            let themeManager = ArticleThemeManager.shared
+            let currentThemeName = themeManager.selectedTheme.name
+            
+            // Only update if we're using the system theme that adapts to dark mode
+            if currentThemeName == "System" {
                 loadTypographySettings()
                 
                 // Reload the article to update colors
@@ -843,6 +1184,75 @@ class ArticleReaderViewController: UIViewController {
 extension ArticleReaderViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loadingIndicator.stopAnimating()
+        
+        // Apply image caching script to the WebView
+        let imageCachingScript = """
+        document.addEventListener('DOMContentLoaded', function() {
+            const images = document.querySelectorAll('img[data-cached="true"]');
+            images.forEach(img => {
+                if (!img.src) return;
+                
+                img.addEventListener('load', function() {
+                    console.log('Image loaded successfully: ' + img.src);
+                });
+                
+                img.addEventListener('error', function() {
+                    console.log('Error loading image: ' + img.src);
+                    // Apply fallback styling for failed images
+                    this.style.background = '#f0f0f0';
+                    this.style.display = 'flex';
+                    this.style.alignItems = 'center';
+                    this.style.justifyContent = 'center';
+                    this.style.color = '#999';
+                    this.style.padding = '20px';
+                    this.style.border = '1px solid #ddd';
+                    this.style.borderRadius = '8px';
+                });
+                
+                // Apply lazy loading
+                if ('loading' in HTMLImageElement.prototype) {
+                    img.loading = 'lazy';
+                }
+            });
+        });
+        """
+        
+        webView.evaluateJavaScript(imageCachingScript) { _, error in
+            if let error = error {
+                print("Error executing image caching script: \(error)")
+            }
+        }
+        
+        // If we have a saved reading position, scroll to it after a short delay
+        // to ensure the content is fully rendered
+        if scrollToSavedPosition {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self = self else { return }
+                
+                // Temporarily disable progress tracking during programmatic scrolling
+                self.isTrackingProgress = false
+                
+                // Calculate the scroll position based on saved progress
+                let scrollView = self.webView.scrollView
+                let contentHeight = scrollView.contentSize.height
+                let frameHeight = scrollView.frame.size.height
+                let maxScrollableHeight = contentHeight - frameHeight
+                
+                // Calculate y offset based on reading progress
+                let targetOffset = CGFloat(self.currentReadingProgress) * maxScrollableHeight
+                
+                // Scroll to position with animation
+                scrollView.setContentOffset(CGPoint(x: 0, y: targetOffset), animated: true)
+                
+                // Re-enable tracking after animation completes
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.isTrackingProgress = true
+                }
+                
+                // Reset flag
+                self.scrollToSavedPosition = false
+            }
+        }
     }
     
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -857,11 +1267,22 @@ extension ArticleReaderViewController: WKNavigationDelegate {
             return
         }
         
-        // For links clicked in the article, open them in Safari
+        // For links clicked in the article, open them in WebViewController
         if navigationAction.navigationType == .linkActivated,
            let url = navigationAction.request.url {
             decisionHandler(.cancel)
-            UIApplication.shared.open(url)
+            
+            // Check user preference for link handling
+            let useInAppBrowser = UserDefaults.standard.bool(forKey: "useInAppBrowser")
+            
+            if useInAppBrowser {
+                // Open in our custom WebViewController
+                let webViewController = WebViewController(url: url)
+                navigationController?.pushViewController(webViewController, animated: true)
+            } else {
+                // Fallback to opening in external browser
+                UIApplication.shared.open(url)
+            }
             return
         }
         

@@ -1,10 +1,11 @@
 import UIKit
 import SafariServices
 import Foundation
+import WebKit
 
 // MARK: - TableView Delegate and DataSource
-extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
-
+extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UITableViewDataSourcePrefetching {
+    
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         // Ensure we're dealing with the table view's scroll view
         guard scrollView == tableView else { return }
@@ -18,31 +19,72 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         let currentMinVisibleRow = visibleRows.map { $0.row }.min() ?? 0
 
         // Check if the user scrolled down past the previously tracked top row
-        if currentMinVisibleRow > previousMinVisibleRow {
-            var indexPathsToUpdate: [IndexPath] = []
-
-            // Iterate through the rows that have just scrolled off the top
+        // Only mark items as read if this is NOT an auto-scroll
+        if currentMinVisibleRow > previousMinVisibleRow && !isAutoScrolling {
+            // Collect rows that should be marked as read
             for index in previousMinVisibleRow..<currentMinVisibleRow {
                 // Ensure the index is valid
                 if index >= 0 && index < items.count {
                     let normLink = normalizeLink(items[index].link)
                     if !items[index].isRead && !readLinks.contains(normLink) {
-                        items[index].isRead = true
-                        indexPathsToUpdate.append(IndexPath(row: index, section: 0))
+                        // Add to pending instead of updating immediately
+                        if !pendingReadRows.contains(index) {
+                            pendingReadRows.append(index)
+                        }
                     }
                 }
             }
-
-            // If any items were marked as read, save the state and reload the rows
-            if !indexPathsToUpdate.isEmpty {
-                scheduleSaveReadState()
-                // Use .none to avoid animation glitches during scrolling
-                tableView.reloadRows(at: indexPathsToUpdate, with: .none)
-            }
         }
 
-        // Update the tracker for the next scroll event
-        previousMinVisibleRow = currentMinVisibleRow
+        // Update the tracker for the next scroll event, but only if not auto-scrolling
+        if !isAutoScrolling {
+            previousMinVisibleRow = currentMinVisibleRow
+        }
+        
+        // Cancel any existing timer
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(processReadItemsAfterScrolling), object: nil)
+        
+        // Set a new timer to process the read items after scrolling stops, but only if not auto-scrolling
+        if !isAutoScrolling {
+            perform(#selector(processReadItemsAfterScrolling), with: nil, afterDelay: 0.3)
+        }
+    }
+    
+    @objc private func processReadItemsAfterScrolling() {
+        guard !pendingReadRows.isEmpty else { return }
+        
+        var indexPathsToUpdate: [IndexPath] = []
+        
+        // Mark all pending items as read
+        for index in pendingReadRows {
+            if index >= 0 && index < items.count {
+                items[index].isRead = true
+                indexPathsToUpdate.append(IndexPath(row: index, section: 0))
+            }
+        }
+        
+        // Clear the pending array
+        pendingReadRows.removeAll()
+        
+        // If any items were marked as read, save the state and reload the rows
+        if !indexPathsToUpdate.isEmpty {
+            scheduleSaveReadState()
+            tableView.reloadRows(at: indexPathsToUpdate, with: .none)
+        }
+    }
+    
+    // Add a scrollViewDidEndDragging method to handle when user manually stops scrolling
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate {
+            // Scrolling stopped immediately, process read items now
+            processReadItemsAfterScrolling()
+        }
+    }
+    
+    // Add a scrollViewDidEndDecelerating method to handle when scroll view stops moving
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        // Scrolling has completely stopped, process read items now
+        processReadItemsAfterScrolling()
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int)
@@ -64,6 +106,99 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         }
         
         return count
+    }
+    
+    // MARK: - Leading Swipe Actions (New)
+    
+    func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        // Check if this is our special "All Articles Read" footer cell
+        let isRssFeed: Bool
+        if case .rss = currentFeedType {
+            isRssFeed = true
+        } else {
+            isRssFeed = false
+        }
+        
+        let allArticlesRead = !items.isEmpty && !items.contains(where: { !$0.isRead }) && isRssFeed
+        if allArticlesRead && indexPath.row == items.count {
+            // No swipe actions for our special footer cell
+            return nil
+        }
+        
+        let item = items[indexPath.row]
+        
+        // Configure Share Action
+        let shareAction = UIContextualAction(style: .normal, title: nil) { [weak self] (action, view, completion) in
+            guard let self = self, let url = URL(string: item.link) else {
+                completion(false)
+                return
+            }
+            
+            let activityViewController = UIActivityViewController(
+                activityItems: [url], 
+                applicationActivities: nil
+            )
+            
+            // Present from the cell for iPad compatibility
+            if let popoverController = activityViewController.popoverPresentationController {
+                if let cell = tableView.cellForRow(at: indexPath) {
+                    popoverController.sourceView = cell
+                    popoverController.sourceRect = cell.bounds
+                }
+            }
+            
+            self.present(activityViewController, animated: true)
+            completion(true)
+        }
+        
+        // Use system icon for sharing
+        shareAction.image = UIImage(systemName: "square.and.arrow.up")
+        shareAction.backgroundColor = AppColors.accent
+        
+        // Configure Save Offline Action
+        let isArticleCached = cachedArticleLinks.contains(normalizeLink(item.link))
+        let cacheAction = UIContextualAction(style: .normal, title: nil) { [weak self] (action, view, completion) in
+            guard let self = self else {
+                completion(false)
+                return
+            }
+            
+            if isArticleCached {
+                // Remove from offline cache
+                StorageManager.shared.removeCachedArticle(link: item.link) { success, error in
+                    if success {
+                        DispatchQueue.main.async {
+                            // Update UI
+                            self.cachedArticleLinks.remove(self.normalizeLink(item.link))
+                            tableView.reloadRows(at: [indexPath], with: .automatic)
+                            completion(true)
+                        }
+                    } else {
+                        completion(false)
+                    }
+                }
+            } else {
+                // Add to offline cache
+                self.cacheArticleForOfflineReading(item) { success in
+                    if success {
+                        DispatchQueue.main.async {
+                            // Update UI
+                            self.cachedArticleLinks.insert(self.normalizeLink(item.link))
+                            tableView.reloadRows(at: [indexPath], with: .automatic)
+                            completion(true)
+                        }
+                    } else {
+                        completion(false)
+                    }
+                }
+            }
+        }
+        
+        // Use different icons based on cache status
+        cacheAction.image = UIImage(systemName: isArticleCached ? "xmark.icloud" : "arrow.down.circle")
+        cacheAction.backgroundColor = isArticleCached ? AppColors.warning : AppColors.success
+        
+        return UISwipeActionsConfiguration(actions: [shareAction, cacheAction])
     }
 
     func tableView(
@@ -113,9 +248,22 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             named: isBookmarked ? "bookmarkFilled" : "bookmark")?
             .withRenderingMode(.alwaysTemplate)
         bookmarkAction.backgroundColor = AppColors.primary
+        
+        // Configure Read/Unread Action
+        let isItemRead = ReadStatusTracker.shared.isArticleRead(link: item.link)
+        let readAction = UIContextualAction(style: .normal, title: nil) {
+            (action, view, completion) in
+            self.toggleReadStatus(for: item) {
+                tableView.reloadRows(at: [indexPath], with: .none)
+                completion(true)
+            }
+        }
+        // Use standard system icons for read/unread status
+        readAction.image = UIImage(systemName: isItemRead ? "envelope.open.fill" : "envelope.fill")
+        readAction.backgroundColor = isItemRead ? AppColors.secondary : AppColors.accent
 
         return UISwipeActionsConfiguration(actions: [
-            bookmarkAction, heartAction,
+            bookmarkAction, heartAction, readAction,
         ])
     }
 
@@ -155,12 +303,11 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         // Regular content cell
         let item = items[indexPath.row]
         
-        // Check if the item should be marked as read based on normalized link
-        let normLink = normalizeLink(item.link)
-        let isItemRead = item.isRead || readLinks.contains(normLink)
+        // Check if the item should be marked as read using the ReadStatusTracker
+        let isItemRead = item.isRead || ReadStatusTracker.shared.isArticleRead(link: item.link)
         
         // Check if the article is cached
-        let isArticleCached = cachedArticleLinks.contains(normLink)
+        let isArticleCached = cachedArticleLinks.contains(normalizeLink(item.link))
         
         // Get the font size from UserDefaults (defaulting to 16 if not set)
         let storedFontSize = CGFloat(UserDefaults.standard.float(forKey: "fontSize") != 0 ? UserDefaults.standard.float(forKey: "fontSize") : 16)
@@ -170,15 +317,8 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             let cell = tableView.dequeueReusableCell(
                 withIdentifier: EnhancedRSSCell.identifier, for: indexPath) as! EnhancedRSSCell
             
-            // Configure with item data
-            cell.configure(with: item, fontSize: storedFontSize, isRead: isItemRead)
-            
-            // Add cache indicator if article is cached
-            if isArticleCached {
-                addCacheIndicator(to: cell)
-            } else {
-                removeCacheIndicator(from: cell)
-            }
+            // Configure with item data including cached state
+            cell.configure(with: item, fontSize: storedFontSize, isRead: isItemRead, isCached: isArticleCached)
             
             return cell
         } else {
@@ -194,6 +334,43 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             if isArticleCached {
                 secondaryText += " • 📥 Cached"
             }
+            
+            // Add read status indicator to secondary text
+            if isItemRead {
+                secondaryText += " • 👁️ Read"
+            }
+            
+            // Add tags to secondary text if any
+            item.getTags { result in
+                if case .success(let tags) = result, !tags.isEmpty {
+                    DispatchQueue.main.async {
+                        var tagText = ""
+                        for (index, tag) in tags.enumerated() {
+                            if index == 0 {
+                                tagText += " • 🏷️ "
+                            } else {
+                                tagText += ", "
+                            }
+                            tagText += tag.name
+                        }
+                        
+                        // Update config with tags
+                        var updatedConfig = cell.defaultContentConfiguration()
+                        updatedConfig.text = config.text
+                        updatedConfig.secondaryText = secondaryText + tagText
+                        
+                        // Apply text properties
+                        updatedConfig.textProperties.color = isItemRead ? AppColors.secondary : AppColors.accent
+                        updatedConfig.secondaryTextProperties.color = AppColors.secondary
+                        updatedConfig.secondaryTextProperties.font = .systemFont(ofSize: 12)
+                        updatedConfig.textProperties.font = .systemFont(ofSize: storedFontSize, weight: isItemRead ? .regular : .medium)
+                        
+                        // Update cell
+                        cell.contentConfiguration = updatedConfig
+                    }
+                }
+            }
+            
             config.secondaryText = secondaryText
             
             cell.backgroundColor = AppColors.background
@@ -212,49 +389,183 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         }
     }
     
-    // Helper method to add a cache indicator to a cell
-    private func addCacheIndicator(to cell: UITableViewCell) {
-        // Remove any existing indicator first
-        removeCacheIndicator(from: cell)
-        
-        // Create a small badge icon to indicate cached status
-        let indicator = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 12))
-        indicator.backgroundColor = AppColors.cacheIndicator
-        indicator.layer.cornerRadius = 6
-        indicator.tag = 999 // Tag for identification
-        
-        // Add to cell
-        if let contentView = cell as? EnhancedRSSCell {
-            // For enhanced cells, place it in the card corner
-            contentView.addSubview(indicator)
-            
-            // Position in top right corner with margins
-            indicator.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                indicator.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
-                indicator.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
-                indicator.widthAnchor.constraint(equalToConstant: 12),
-                indicator.heightAnchor.constraint(equalToConstant: 12)
-            ])
+    // Cache indicator handling is now implemented directly in the cell classes
+    
+    // Add tag management via context menu
+    func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
+        // Check if this is the special footer cell
+        let isRssFeed: Bool
+        if case .rss = currentFeedType {
+            isRssFeed = true
         } else {
-            // For standard cells, add to the right side
-            cell.accessoryView = indicator
+            isRssFeed = false
+        }
+        
+        let allArticlesRead = !items.isEmpty && !items.contains(where: { !$0.isRead }) && isRssFeed
+        if allArticlesRead && indexPath.row == items.count {
+            return nil
+        }
+        
+        // Get the item
+        let item = items[indexPath.row]
+        
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
+            // Create manage tags action
+            let manageTagsAction = UIAction(title: "Manage Tags", image: UIImage(systemName: "tag")) { [weak self] _ in
+                self?.showTagManager(for: item)
+            }
+            
+            // Create a menu with the action
+            return UIMenu(title: "", children: [manageTagsAction])
         }
     }
     
-    // Helper method to remove a cache indicator from a cell
-    private func removeCacheIndicator(from cell: UITableViewCell) {
-        // Remove from enhanced cell
-        if let contentView = cell as? EnhancedRSSCell {
-            if let indicator = contentView.viewWithTag(999) {
-                indicator.removeFromSuperview()
+    func showTagManager(for item: RSSItem) {
+        // Create alert controller
+        let alert = UIAlertController(title: "Manage Tags", message: "Apply tags to this article", preferredStyle: .actionSheet)
+        
+        // First, get all existing tags
+        StorageManager.shared.getTags { [weak self] result in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let tags):
+                    // Get the tags for this item
+                    item.getTags { itemTagsResult in
+                        let itemTags: [Tag]
+                        if case .success(let tags) = itemTagsResult {
+                            itemTags = tags
+                        } else {
+                            itemTags = []
+                        }
+                        
+                        // Add actions for each existing tag
+                        for tag in tags.sorted(by: { $0.name < $1.name }) {
+                            let isTagged = itemTags.contains { $0.id == tag.id }
+                            let action = UIAlertAction(
+                                title: isTagged ? "✓ \(tag.name)" : tag.name,
+                                style: isTagged ? .destructive : .default
+                            ) { _ in
+                                // Toggle the tag
+                                if isTagged {
+                                    // Remove tag
+                                    item.removeTag(tag) { [weak self] result in
+                                        if case .success = result {
+                                            // Force refresh the table
+                                            DispatchQueue.main.async {
+                                                self?.tableView.reloadData()
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Add tag
+                                    item.addTag(tag) { [weak self] result in
+                                        if case .success = result {
+                                            // Force refresh the table
+                                            DispatchQueue.main.async {
+                                                self?.tableView.reloadData()
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            alert.addAction(action)
+                        }
+                        
+                        // Add an action to create a new tag
+                        alert.addAction(UIAlertAction(title: "Create New Tag", style: .default) { [weak self] _ in
+                            self?.showCreateTagDialog(for: item)
+                        })
+                        
+                        // Add cancel action
+                        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+                        
+                        // Present alert
+                        if let popoverController = alert.popoverPresentationController {
+                            popoverController.sourceView = self.view
+                            popoverController.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+                            popoverController.permittedArrowDirections = []
+                        }
+                        
+                        self.present(alert, animated: true)
+                    }
+                    
+                case .failure:
+                    // If we can't get tags, just show the create new tag option
+                    alert.addAction(UIAlertAction(title: "Create New Tag", style: .default) { [weak self] _ in
+                        self?.showCreateTagDialog(for: item)
+                    })
+                    alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+                    
+                    if let popoverController = alert.popoverPresentationController {
+                        popoverController.sourceView = self.view
+                        popoverController.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+                        popoverController.permittedArrowDirections = []
+                    }
+                    
+                    self.present(alert, animated: true)
+                }
             }
-        } 
-        // Remove from standard cell
-        else if cell.accessoryView?.tag == 999 {
-            cell.accessoryView = nil
-            cell.accessoryType = .disclosureIndicator
         }
+    }
+    
+    func showCreateTagDialog(for item: RSSItem? = nil) {
+        let alert = UIAlertController(
+            title: "New Tag",
+            message: "Enter a name for the new tag",
+            preferredStyle: .alert
+        )
+        
+        alert.addTextField { textField in
+            textField.placeholder = "Tag Name"
+        }
+        
+        alert.addAction(UIAlertAction(title: "Create", style: .default) { [weak self] _ in
+            guard let self = self,
+                  let tagName = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !tagName.isEmpty else {
+                return
+            }
+            
+            // Create the tag
+            StorageManager.shared.createTag(name: tagName) { result in
+                switch result {
+                case .success(let newTag):
+                    // If we have an item, add the tag to it
+                    if let item = item {
+                        item.addTag(newTag) { [weak self] tagResult in
+                            if case .success = tagResult {
+                                // Force refresh the table
+                                DispatchQueue.main.async {
+                                    self?.tableView.reloadData()
+                                }
+                            }
+                        }
+                    } else {
+                        // Just reload the table to reflect any changes
+                        DispatchQueue.main.async {
+                            self.tableView.reloadData()
+                        }
+                    }
+                case .failure:
+                    // Show error message
+                    let errorAlert = UIAlertController(
+                        title: "Error",
+                        message: "Failed to create tag",
+                        preferredStyle: .alert
+                    )
+                    errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                    DispatchQueue.main.async {
+                        self.present(errorAlert, animated: true)
+                    }
+                }
+            }
+        })
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        present(alert, animated: true)
     }
 
     func tableView(
@@ -279,11 +590,15 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         
         // Mark item as read
         let item = items[indexPath.row]
-        items[indexPath.row].isRead = true  // Properly update the item in the array
+        items[indexPath.row].isRead = true  // Update the local item in the array
+        
+        // Mark as read in the ReadStatusTracker
+        ReadStatusTracker.shared.markArticle(link: item.link, as: true)
+        
+        // Update the cell
         if let cell = tableView.cellForRow(at: indexPath) {
             configureCell(cell, with: items[indexPath.row])
         }
-        scheduleSaveReadState()
         
         // Check if we should use in-app reader or Safari
         let useInAppReader = UserDefaults.standard.bool(forKey: "useInAppReader")
@@ -337,6 +652,12 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
         let articleReaderVC = ArticleReaderViewController()
         articleReaderVC.item = item
         
+        // Pass all items and find the current index for swipe navigation
+        articleReaderVC.allItems = self.items
+        if let index = self.items.firstIndex(where: { $0.link == item.link }) {
+            articleReaderVC.currentItemIndex = index
+        }
+        
         // Load cached content if offline
         if isOfflineMode {
             let normalizedLink = normalizeLink(item.link)
@@ -384,7 +705,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
     private func openInSafari(_ item: RSSItem) {
         guard let url = URL(string: item.link) else { return }
         
-        // Check if offline and offer cached version if available
+        // Check if offline mode and handle accordingly
         if isOfflineMode {
             let normalizedLink = normalizeLink(item.link)
             
@@ -417,67 +738,91 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             return
         }
         
-        // Create and show a loading alert before opening Safari
-        let loadingAlert = UIAlertController(
-            title: nil,
-            message: "Opening link...",
-            preferredStyle: .alert
-        )
+        // Check user preference for in-app browser
+        let useInAppBrowser = UserDefaults.standard.bool(forKey: "useInAppBrowser")
         
-        // Add an activity indicator to the alert
-        let loadingIndicator = UIActivityIndicatorView(style: .medium)
-        loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
-        loadingIndicator.startAnimating()
-        
-        // Add the indicator to the alert's view
-        loadingAlert.view.addSubview(loadingIndicator)
-        
-        // Set up constraints
-        NSLayoutConstraint.activate([
-            loadingIndicator.centerYAnchor.constraint(equalTo: loadingAlert.view.centerYAnchor, constant: -10),
-            loadingIndicator.centerXAnchor.constraint(equalTo: loadingAlert.view.centerXAnchor)
-        ])
-        
-        // Present the loading alert
-        present(loadingAlert, animated: true)
-        
-        // Configure and prepare Safari VC
-        let configuration = SFSafariViewController.Configuration()
-        
-        // Check if reader mode should be auto-enabled
-        configuration.entersReaderIfAvailable = UserDefaults.standard.bool(forKey: "autoEnableReaderMode")
-        
-        let safariVC = SFSafariViewController(
-            url: url, configuration: configuration)
-        safariVC.dismissButtonStyle = .close
-        safariVC.preferredControlTintColor = AppColors.accent
-        safariVC.delegate = self
-        
-        // Dismiss the loading alert and show Safari after a short delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            loadingAlert.dismiss(animated: true) {
-                self.present(safariVC, animated: true)
+        if useInAppBrowser {
+            // Open in our in-app browser
+            let webVC = WebViewController(url: url)
+            navigationController?.pushViewController(webVC, animated: true)
+        } else {
+            // Use Safari View Controller
+            // Create and show a loading alert before opening Safari
+            let loadingAlert = UIAlertController(
+                title: nil,
+                message: "Opening link...",
+                preferredStyle: .alert
+            )
+            
+            // Add an activity indicator to the alert
+            let loadingIndicator = UIActivityIndicatorView(style: .medium)
+            loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
+            loadingIndicator.startAnimating()
+            
+            // Add the indicator to the alert's view
+            loadingAlert.view.addSubview(loadingIndicator)
+            
+            // Set up constraints
+            NSLayoutConstraint.activate([
+                loadingIndicator.centerYAnchor.constraint(equalTo: loadingAlert.view.centerYAnchor, constant: -10),
+                loadingIndicator.centerXAnchor.constraint(equalTo: loadingAlert.view.centerXAnchor)
+            ])
+            
+            // Present the loading alert
+            present(loadingAlert, animated: true)
+            
+            // Configure and prepare Safari VC
+            let configuration = SFSafariViewController.Configuration()
+            
+            // Check if reader mode should be auto-enabled
+            configuration.entersReaderIfAvailable = UserDefaults.standard.bool(forKey: "autoEnableReaderMode")
+            
+            let safariVC = SFSafariViewController(
+                url: url, configuration: configuration)
+            safariVC.dismissButtonStyle = .close
+            safariVC.preferredControlTintColor = AppColors.accent
+            safariVC.delegate = self
+            
+            // Dismiss the loading alert and show Safari after a short delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                loadingAlert.dismiss(animated: true) {
+                    self.present(safariVC, animated: true)
+                }
             }
         }
     }
 
     func configureCell(_ cell: UITableViewCell, with item: RSSItem) {
-        // Check if the item should be marked as read based on normalized link
-        let normLink = normalizeLink(item.link)
-        let isItemRead = item.isRead || readLinks.contains(normLink)
+        // Check if the item should be marked as read using the ReadStatusTracker
+        let isItemRead = item.isRead || ReadStatusTracker.shared.isArticleRead(link: item.link)
+        
+        // Check if the article is cached
+        let isArticleCached = cachedArticleLinks.contains(normalizeLink(item.link))
         
         // Get the font size from UserDefaults (defaulting to 16 if not set)
         let storedFontSize = CGFloat(UserDefaults.standard.float(forKey: "fontSize") != 0 ? UserDefaults.standard.float(forKey: "fontSize") : 16)
         
         if let enhancedCell = cell as? EnhancedRSSCell {
-            // Configure the enhanced cell
-            enhancedCell.configure(with: item, fontSize: storedFontSize, isRead: isItemRead)
+            // Configure the enhanced cell with cached state
+            enhancedCell.configure(with: item, fontSize: storedFontSize, isRead: isItemRead, isCached: isArticleCached)
         } else {
             // Configure the default cell
             var config = cell.defaultContentConfiguration()
             
             config.text = item.title
-            config.secondaryText = "\(item.source) • \(DateUtils.getTimeAgo(from: item.pubDate))"
+            
+            // Add "Cached" indicator to secondary text if article is cached
+            var secondaryText = "\(item.source) • \(DateUtils.getTimeAgo(from: item.pubDate))"
+            if isArticleCached {
+                secondaryText += " • 📥 Cached"
+            }
+            
+            // Add read status indicator to secondary text
+            if isItemRead {
+                secondaryText += " • 👁️ Read"
+            }
+            
+            config.secondaryText = secondaryText
             
             // Apply text color based on read state
             config.textProperties.color = isItemRead ? AppColors.secondary : AppColors.accent
@@ -487,6 +832,37 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
             config.textProperties.font = .systemFont(ofSize: storedFontSize, weight: isItemRead ? .regular : .medium)
             
             cell.contentConfiguration = config
+            
+            // Add tags to secondary text if any (for standard cells)
+            item.getTags { result in
+                if case .success(let tags) = result, !tags.isEmpty {
+                    DispatchQueue.main.async {
+                        var tagText = ""
+                        for (index, tag) in tags.enumerated() {
+                            if index == 0 {
+                                tagText += " • 🏷️ "
+                            } else {
+                                tagText += ", "
+                            }
+                            tagText += tag.name
+                        }
+                        
+                        // Update config with tags
+                        var updatedConfig = cell.defaultContentConfiguration()
+                        updatedConfig.text = config.text
+                        updatedConfig.secondaryText = secondaryText + tagText
+                        
+                        // Apply text properties
+                        updatedConfig.textProperties.color = isItemRead ? AppColors.secondary : AppColors.accent
+                        updatedConfig.secondaryTextProperties.color = AppColors.secondary
+                        updatedConfig.secondaryTextProperties.font = .systemFont(ofSize: 12)
+                        updatedConfig.textProperties.font = .systemFont(ofSize: storedFontSize, weight: isItemRead ? .regular : .medium)
+                        
+                        // Update cell
+                        cell.contentConfiguration = updatedConfig
+                    }
+                }
+            }
         }
     }
 
@@ -544,6 +920,83 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource {
                 completion()
             }
         }
+    }
+    
+    func toggleReadStatus(for item: RSSItem, completion: @escaping () -> Void) {
+        // Check current read status
+        let isRead = ReadStatusTracker.shared.isArticleRead(link: item.link)
+        
+        // Toggle the status
+        ReadStatusTracker.shared.markArticle(link: item.link, as: !isRead) { success in
+            if success {
+                // Update the local item
+                if let index = self.items.firstIndex(where: { self.normalizeLink($0.link) == self.normalizeLink(item.link) }) {
+                    self.items[index].isRead = !isRead
+                }
+                
+                // Update the allItems array
+                if let index = self._allItems.firstIndex(where: { self.normalizeLink($0.link) == self.normalizeLink(item.link) }) {
+                    self._allItems[index].isRead = !isRead
+                }
+                
+                // Check if we should update the read status indicator
+                self.updateReadStatusIndicator()
+            }
+            
+            DispatchQueue.main.async {
+                completion()
+            }
+        }
+    }
+}
+
+// MARK: - Table View Prefetching
+extension HomeFeedViewController {
+    func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
+        // Prefetch cell data for smoother scrolling
+        for indexPath in indexPaths {
+            // Skip prefetching for out of bounds indexes
+            guard indexPath.row < items.count else { continue }
+            
+            let item = items[indexPath.row]
+            
+            // Pre-compute and cache essential data needed for cells
+            _ = normalizeLink(item.link)
+            _ = ReadStatusTracker.shared.isArticleRead(link: item.link)
+            
+            // If we're using enhanced cells, prepare image loading
+            if useEnhancedStyle, 
+               UserDefaults.standard.bool(forKey: "showArticleImages"),
+               let description = item.description,
+               let imageUrlString = extractImageUrlFromDescription(description),
+               let _ = URL(string: imageUrlString) {
+                // Just prepare the URL, we'll let the cell load it when needed
+                // This reduces unnecessary network requests for cells that might never be seen
+            }
+        }
+    }
+    
+    func tableView(_ tableView: UITableView, cancelPrefetchingForRowsAt indexPaths: [IndexPath]) {
+        // Cancel any expensive operations for rows that are no longer needed
+        // Currently we don't need to do anything here as our prefetching is lightweight
+    }
+    
+    // Helper method to extract image URL from description
+    private func extractImageUrlFromDescription(_ description: String) -> String? {
+        let pattern = "img\\s+[^>]*src\\s*=\\s*['\"]([^'\"]+)['\"]"
+        
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+            return nil
+        }
+        
+        let matches = regex.matches(in: description, options: [], range: NSRange(location: 0, length: description.count))
+        
+        guard let match = matches.first,
+              let range = Range(match.range(at: 1), in: description) else {
+            return nil
+        }
+        
+        return String(description[range])
     }
 }
 

@@ -54,6 +54,20 @@ class FolderManagementViewController: UIViewController, UITableViewDelegate, UIT
             action: #selector(addButtonTapped)
         )
         navigationItem.rightBarButtonItem = addButton
+        
+        // Add a back button
+        let backButton = UIBarButtonItem(
+            image: UIImage(systemName: "chevron.left"),
+            style: .plain,
+            target: self,
+            action: #selector(backButtonPressed)
+        )
+        backButton.tintColor = .systemBlue
+        navigationItem.leftBarButtonItem = backButton
+    }
+    
+    @objc private func backButtonPressed() {
+        navigationController?.popViewController(animated: true)
     }
     
     private func setupTableView() {

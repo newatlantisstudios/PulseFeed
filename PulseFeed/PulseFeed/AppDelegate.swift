@@ -7,7 +7,26 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Register for remote notifications to support CloudKit subscriptions
         application.registerForRemoteNotifications()
         
+        // Migrate settings from old keys to new keys
+        migrateUserSettings()
+        
         return true
+    }
+    
+    /// Migrate user settings from old keys to new keys
+    private func migrateUserSettings() {
+        // Migrate from "showReadArticles" to "hideReadArticles"
+        if UserDefaults.standard.object(forKey: "showReadArticles") != nil {
+            // Transfer the same value - meaning is the same, just the label changed
+            let oldValue = UserDefaults.standard.bool(forKey: "showReadArticles")
+            UserDefaults.standard.set(oldValue, forKey: "hideReadArticles")
+            
+            // Debug log
+            print("DEBUG: Migrated setting: showReadArticles (\(oldValue)) → hideReadArticles (\(oldValue))")
+            
+            // Remove the old key to prevent confusion
+            UserDefaults.standard.removeObject(forKey: "showReadArticles")
+        }
     }
 
     func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {

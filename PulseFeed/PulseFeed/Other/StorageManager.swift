@@ -65,10 +65,24 @@ struct UserDefaultsStorage: ArticleStorage {
                 let value = try JSONDecoder().decode(T.self, from: data)
                 completion(.success(value))
             } catch {
-                completion(.failure(error))
+                // For collection types, return empty array on decoding error
+                if T.self == [Tag].self || T.self == [TaggedItem].self || 
+                   T.self == [String].self || T.self == [RSSFeed].self {
+                    print("DEBUG: UserDefaultsStorage - Failed to decode \(key), returning empty array")
+                    completion(.success([] as! T))
+                } else {
+                    completion(.failure(error))
+                }
             }
         } else {
-            completion(.failure(StorageError.notFound))
+            // For collection types, return empty array when key doesn't exist
+            if T.self == [Tag].self || T.self == [TaggedItem].self || 
+               T.self == [String].self || T.self == [RSSFeed].self {
+                print("DEBUG: UserDefaultsStorage - No data for \(key), returning empty array")
+                completion(.success([] as! T))
+            } else {
+                completion(.failure(StorageError.notFound))
+            }
         }
     }
 }
@@ -340,6 +354,7 @@ class StorageManager {
         case heartedItems
         case feedFolders
         case cachedArticles
+        case readingProgress
     }
     
     /// Dictionary to track which articles are currently being cached to prevent duplicate requests
@@ -489,7 +504,7 @@ class StorageManager {
         let syncGroup = DispatchGroup()
         var syncSuccess = true
         
-        // Sync all item types
+        // Sync all item types including hierarchical folders
         for itemType in [SyncItemType.readItems, .bookmarkedItems, .heartedItems, .feedFolders] {
             syncGroup.enter()
             syncItemsFromCloud(type: itemType) { success in
@@ -500,10 +515,53 @@ class StorageManager {
             }
         }
         
+        // Sync hierarchical folders separately
+        syncGroup.enter()
+        syncHierarchicalFolders { success in
+            if !success {
+                syncSuccess = false
+            }
+            syncGroup.leave()
+        }
+        
         // Final callback after all syncs complete
         syncGroup.notify(queue: .main) {
             self.hasSyncedOnLaunch = true
             completion?(syncSuccess)
+        }
+    }
+    
+    // Sync hierarchical folders from CloudKit
+    private func syncHierarchicalFolders(completion: @escaping (Bool) -> Void) {
+        print("DEBUG: Syncing hierarchical folders from CloudKit")
+        
+        // Fetch folders from CloudKit
+        CloudKitStorage().load(forKey: "hierarchicalFolders") { (result: Result<[HierarchicalFolder], Error>) in
+            switch result {
+            case .success(let cloudFolders):
+                print("DEBUG: Successfully loaded \(cloudFolders.count) hierarchical folders from CloudKit")
+                // Save the folders directly to UserDefaults for local access
+                if let encodedData = try? JSONEncoder().encode(cloudFolders) {
+                    UserDefaults.standard.set(encodedData, forKey: "hierarchicalFolders")
+                    
+                    // Notify that folders were updated
+                    NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                    completion(true)
+                } else {
+                    print("ERROR: Failed to encode hierarchical folders")
+                    completion(false)
+                }
+                
+            case .failure(let error):
+                // If error is "not found", this might be normal for first run
+                if case StorageError.notFound = error {
+                    print("DEBUG: No hierarchical folders found in CloudKit (normal for first run)")
+                    completion(true)
+                } else {
+                    print("ERROR: Failed to load hierarchical folders from CloudKit: \(error.localizedDescription)")
+                    completion(false)
+                }
+            }
         }
     }
     
@@ -1089,6 +1147,12 @@ class StorageManager {
                     }
                     return
                 }
+                // Special handling for tags and taggedItems to return empty arrays instead of errors
+                if (key == "tags" || key == "taggedItems") && T.self == [Tag].self || T.self == [TaggedItem].self {
+                    print("DEBUG: StorageManager - Converting \(key) not found error to empty array")
+                    completion(.success([] as! T))
+                    return
+                }
                 completion(.failure(error))
             }
         }
@@ -1395,6 +1459,105 @@ class StorageManager {
                 DispatchQueue.main.async {
                     completion(.failure(error))
                 }
+            }
+        }
+    }
+    
+    // MARK: - Reading Progress Management
+    
+    /// Save reading progress for an article
+    func saveReadingProgress(for link: String, progress: Float, completion: @escaping (Bool, Error?) -> Void) {
+        let normalizedLink = normalizeLink(link)
+        let readingProgress = ReadingProgress(link: normalizedLink, progress: progress)
+        
+        // Get existing reading progress data
+        load(forKey: "readingProgress") { [weak self] (result: Result<[ReadingProgress], Error>) in
+            guard let self = self else {
+                completion(false, NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Storage manager no longer exists"]))
+                return
+            }
+            
+            var progressItems: [ReadingProgress] = []
+            
+            if case .success(let existingItems) = result {
+                progressItems = existingItems
+            }
+            
+            // Remove existing progress for this article if it exists
+            progressItems.removeAll { self.normalizeLink($0.link) == normalizedLink }
+            
+            // Only add progress if it's greater than 0 (to save space)
+            if progress > 0 {
+                // Add the new progress
+                progressItems.append(readingProgress)
+            }
+            
+            // Limit to most recent 500 items to prevent excessive storage use
+            if progressItems.count > 500 {
+                progressItems.sort { $0.lastReadDate > $1.lastReadDate }
+                progressItems = Array(progressItems.prefix(500))
+            }
+            
+            // Save the updated list
+            self.save(progressItems, forKey: "readingProgress") { error in
+                if let error = error {
+                    completion(false, error)
+                } else {
+                    // Post notification that reading progress was updated
+                    NotificationCenter.default.post(
+                        name: Notification.Name("ReadingProgressUpdated"),
+                        object: nil,
+                        userInfo: ["link": normalizedLink, "progress": progress]
+                    )
+                    completion(true, nil)
+                }
+            }
+        }
+    }
+    
+    /// Get reading progress for an article
+    func getReadingProgress(for link: String, completion: @escaping (Result<Float, Error>) -> Void) {
+        let normalizedLink = normalizeLink(link)
+        
+        load(forKey: "readingProgress") { (result: Result<[ReadingProgress], Error>) in
+            switch result {
+            case .success(let progressItems):
+                if let item = progressItems.first(where: { self.normalizeLink($0.link) == normalizedLink }) {
+                    completion(.success(item.progress))
+                } else {
+                    // No progress recorded for this article
+                    completion(.success(0))
+                }
+            case .failure:
+                // If there's an error or no data, return 0 progress
+                completion(.success(0))
+            }
+        }
+    }
+    
+    /// Get all reading progress items
+    func getAllReadingProgress(completion: @escaping (Result<[ReadingProgress], Error>) -> Void) {
+        load(forKey: "readingProgress", completion: completion)
+    }
+    
+    /// Clear reading progress for an article
+    func clearReadingProgress(for link: String, completion: @escaping (Bool, Error?) -> Void) {
+        saveReadingProgress(for: link, progress: 0, completion: completion)
+    }
+    
+    /// Clear all reading progress
+    func clearAllReadingProgress(completion: @escaping (Bool, Error?) -> Void) {
+        // Save an empty array to clear all progress
+        save([ReadingProgress](), forKey: "readingProgress") { error in
+            if let error = error {
+                completion(false, error)
+            } else {
+                // Post notification that all reading progress was cleared
+                NotificationCenter.default.post(
+                    name: Notification.Name("AllReadingProgressCleared"),
+                    object: nil
+                )
+                completion(true, nil)
             }
         }
     }

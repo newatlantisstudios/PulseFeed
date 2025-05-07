@@ -378,8 +378,11 @@ class ContentExtractor {
             if let srcRange = imgTag.range(of: "src=[\"'](.*?)[\"']", options: .regularExpression),
                let src = imgTag.substring(with: srcRange)?.replacingOccurrences(of: "src=", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) {
                 
-                // Create a clean version of the image tag
-                let cleanImgTag = "<img src=\"\(src)\" alt=\"Image\" class=\"article-image\">"
+                // Extract alt text if available
+                let alt = imgTag.matches(for: "alt=[\"'](.*?)[\"']").first?.replacingOccurrences(of: "alt=", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) ?? "Image"
+                
+                // Add data-cached attribute to enable client-side caching
+                let cleanImgTag = "<img src=\"\(src)\" alt=\"\(alt)\" class=\"article-image\" data-cached=\"true\" loading=\"lazy\">"
                 
                 // Replace the original tag
                 processedHtml = processedHtml.replacingOccurrences(of: imgTag, with: cleanImgTag, options: .literal)
@@ -392,7 +395,7 @@ class ContentExtractor {
         
         for iframeTag in iframeMatches {
             // Mark as video embed to avoid removal
-            let preservedTag = iframeTag.replacingOccurrences(of: "<iframe", with: "<iframe class=\"video-embed\"")
+            let preservedTag = iframeTag.replacingOccurrences(of: "<iframe", with: "<iframe class=\"video-embed\" loading=\"lazy\"")
             processedHtml = processedHtml.replacingOccurrences(of: iframeTag, with: preservedTag, options: .literal)
         }
         
@@ -485,6 +488,28 @@ class ContentExtractor {
     /// Wraps the extracted content in a reader-friendly HTML document
     static func wrapInReadableHTML(content: String, fontSize: CGFloat, lineHeight: CGFloat, fontColor: String, backgroundColor: String, accentColor: String) -> String {
         // Enhanced style sheet with better typography and responsive design
+        // Get font family from the current settings
+        let fontFamily = UserDefaults.standard.string(forKey: "readerFontFamily") ?? "System"
+        
+        // Get the correct font name based on the font family
+        let fontName: String
+        switch fontFamily {
+        case "Georgia":
+            fontName = "Georgia"
+        case "Times New Roman":
+            fontName = "TimesNewRomanPSMT"
+        case "Palatino":
+            fontName = "Palatino-Roman"
+        case "Avenir":
+            fontName = "Avenir-Book"
+        case "Helvetica Neue":
+            fontName = "HelveticaNeue"
+        case "Menlo":
+            fontName = "Menlo-Regular"
+        default:
+            fontName = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui"
+        }
+        
         let styleSheet = """
         <style>
             :root {
@@ -504,7 +529,7 @@ class ContentExtractor {
             }
             
             body {
-                font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif;
+                font-family: '\(fontName)', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif;
                 font-size: var(--font-size);
                 line-height: var(--line-height);
                 color: var(--text-color);

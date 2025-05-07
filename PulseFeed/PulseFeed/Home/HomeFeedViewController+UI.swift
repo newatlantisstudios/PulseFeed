@@ -34,7 +34,7 @@ extension HomeFeedViewController {
     
     func setupRefreshControl() {
         refreshControl.addTarget(
-            self, action: #selector(refreshFeeds), for: .valueChanged)
+            self, action: #selector(HomeFeedViewController.refreshFeeds), for: .valueChanged)
         tableView.refreshControl = refreshControl
     }
     
@@ -234,6 +234,7 @@ extension HomeFeedViewController {
 
         tableView.delegate = self
         tableView.dataSource = self
+        tableView.prefetchDataSource = self
         tableView.register(
             UITableViewCell.self, forCellReuseIdentifier: "RSSCell")
         tableView.register(
@@ -242,6 +243,11 @@ extension HomeFeedViewController {
         // Set appropriate row height depending on the style
         tableView.estimatedRowHeight = useEnhancedStyle ? 120 : 60
         tableView.rowHeight = UITableView.automaticDimension
+        
+        // Add prefetching to improve scroll performance
+        if #available(iOS 15.0, *) {
+            tableView.isPrefetchingEnabled = true
+        }
         
         // Listen for style changes
         NotificationCenter.default.addObserver(
@@ -575,8 +581,16 @@ extension HomeFeedViewController {
                 }
             }
             
-            // Step 4: Save the new read state locally
-            self.saveReadState()
+            // Step 4: Save the new read state using ReadStatusTracker
+            if case .folder(let folderId) = self.currentFeedType {
+                // Get the links from the current folder
+                let folderLinks = self.items.map { $0.link }
+                ReadStatusTracker.shared.markArticles(links: folderLinks, as: true)
+            } else {
+                // Mark all items as read
+                let allLinks = self._allItems.map { $0.link }
+                ReadStatusTracker.shared.markArticles(links: allLinks, as: true)
+            }
             
             // Step 5: Apply a fade animation to the table cells for better visual feedback
             UIView.transition(with: self.tableView,
@@ -599,9 +613,9 @@ extension HomeFeedViewController {
                               })
             
             // Step 6: Update storage in UserDefaults and iCloud
-            if case .folder(_) = self.currentFeedType {
+            if case .folder(let folderId) = self.currentFeedType {
                 // For folder view, only save what we've already updated in readLinks
-                self.saveReadState()
+                self.scheduleSaveReadState()
             } else {
                 // For all feeds view, use the global markAllAsRead for efficiency
                 StorageManager.shared.markAllAsRead { success, error in
@@ -933,8 +947,8 @@ extension HomeFeedViewController {
             // Log result
             print("DEBUG: Loaded \(folderItems.count) items across all feeds in folder")
             
-            // Get the "Show Read Articles" setting
-            let showReadArticles = UserDefaults.standard.bool(forKey: "showReadArticles")
+            // Get the "Hide Read Articles" setting
+            let hideReadArticles = UserDefaults.standard.bool(forKey: "hideReadArticles")
             
             // Update read status and filter based on read setting
             var readFilteredItems: [RSSItem] = []
@@ -945,8 +959,9 @@ extension HomeFeedViewController {
                 
                 folderItems[i].isRead = isRead
                 
-                // Only include unread items if not showing read articles, otherwise include all
-                if !isRead || showReadArticles {
+                // If setting is enabled (hideReadArticles), only include unread items
+                // If setting is disabled, include all items
+                if !isRead || !hideReadArticles {
                     readFilteredItems.append(folderItems[i])
                 }
             }
@@ -962,10 +977,10 @@ extension HomeFeedViewController {
                 filteredItems = readFilteredItems
             }
             
-            if showReadArticles {
-                print("DEBUG: Showing all \(folderItems.count) items including read articles")
-            } else {
+            if hideReadArticles {
                 print("DEBUG: Filtered \(folderItems.count) total items to \(readFilteredItems.count) unread items")
+            } else {
+                print("DEBUG: Showing all \(folderItems.count) items including read articles")
             }
             
             // Sort the filtered items
@@ -983,6 +998,9 @@ extension HomeFeedViewController {
             self.stopRefreshAnimation()
             self.refreshControl.endRefreshing()
             self.updateFooterVisibility()
+            
+            // Scroll to top safely
+            self.safeScrollToTop()
             
             // Cancel the refresh timeout timer since we're done
             self.refreshTimeoutTimer?.invalidate()
@@ -1268,6 +1286,9 @@ extension HomeFeedViewController {
         // 3) Start refresh button animation
         startRefreshAnimation()
         
+        // Reset the scroll position tracker to ensure we start at the top after refresh
+        previousMinVisibleRow = 0
+        
         // Create a hard timeout to ensure UI is restored no matter what
         refreshTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 12.0, repeats: false) { [weak self] _ in
             guard let self = self else { return }
@@ -1284,6 +1305,9 @@ extension HomeFeedViewController {
                     self.stopRefreshAnimation()
                     self.refreshControl.endRefreshing()
                     self.updateFooterVisibility()
+                    
+                    // Scroll to top safely
+                    self.safeScrollToTop()
                     
                     // Show an error message
                     self.loadingLabel.text = "Refresh timed out. Please try again."
@@ -1472,14 +1496,24 @@ extension HomeFeedViewController {
                 loadingIndicator.startAnimating()
                 startRefreshAnimation() // Start refresh button animation
                 
-                // Apply content filtering if enabled
+                // Step 1: First filter by read status based on settings
+                let hideReadArticles = UserDefaults.standard.bool(forKey: "hideReadArticles")
+                var filteredItems = allItems
+                
+                if hideReadArticles {
+                    // Hide read articles when setting is enabled
+                    filteredItems = allItems.filter { !ReadStatusTracker.shared.isArticleRead(link: $0.link) && !$0.isRead }
+                    print("DEBUG: Read status filtered \(allItems.count) items to \(filteredItems.count) items")
+                }
+                
+                // Step 2: Apply content filtering if enabled
                 if self.isContentFilteringEnabled && !self.filterKeywords.isEmpty {
                     // Filter out articles that match any of the filter keywords
-                    items = allItems.filter { !self.shouldFilterArticle($0) }
-                    print("DEBUG: Keyword filtered \(allItems.count) items to \(items.count) items")
+                    items = filteredItems.filter { !self.shouldFilterArticle($0) }
+                    print("DEBUG: Keyword filtered \(filteredItems.count) items to \(items.count) items")
                 } else {
                     // No keyword filtering
-                    items = allItems
+                    items = filteredItems
                 }
                 tableView.reloadData()
                 
@@ -1513,6 +1547,11 @@ extension HomeFeedViewController {
                 self.loadingLabel.isHidden = true
                 self.stopRefreshAnimation() // Stop refresh button animation
                 self.updateFooterVisibility() // Ensure footer is visible with correct state
+                
+                // Scroll to top of the list
+                if !self.items.isEmpty {
+                    self.tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .top, animated: true)
+                }
             }
         case .heart:
             // For bookmarks and heart feeds, briefly hide the tableView while loading
@@ -1529,6 +1568,11 @@ extension HomeFeedViewController {
                 self.loadingLabel.isHidden = true
                 self.stopRefreshAnimation() // Stop refresh button animation
                 self.updateFooterVisibility() // Ensure footer is visible with correct state
+                
+                // Scroll to top of the list
+                if !self.items.isEmpty {
+                    self.tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .top, animated: true)
+                }
             }
         case .folder(let folderId):
             // For folder feeds, briefly hide the tableView while loading

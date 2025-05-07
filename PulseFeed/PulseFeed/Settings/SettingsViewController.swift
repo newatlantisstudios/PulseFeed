@@ -389,11 +389,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                         UserDefaults.standard.set(isOn, forKey: "showArticleImages")
                         NotificationCenter.default.post(name: Notification.Name("articleViewModeChanged"), object: nil)
                    }),
-            .toggle(title: "Show Read Articles", 
-                   isOn: UserDefaults.standard.bool(forKey: "showReadArticles"),
+            .toggle(title: "Hide Read Articles", 
+                   isOn: UserDefaults.standard.bool(forKey: "hideReadArticles"),
                    action: { isOn in
-                        UserDefaults.standard.set(isOn, forKey: "showReadArticles")
-                        NotificationCenter.default.post(name: Notification.Name("showReadArticlesChanged"), object: nil)
+                        UserDefaults.standard.set(isOn, forKey: "hideReadArticles")
+                        NotificationCenter.default.post(name: Notification.Name("hideReadArticlesChanged"), object: nil)
                    }),
             .navigation(title: "Preview Text Length", 
                    action: { [weak self] in
@@ -414,6 +414,16 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                    action: { isOn in
                         UserDefaults.standard.set(isOn, forKey: "useInAppReader")
                    }),
+            .toggle(title: "Use In-App Browser", 
+                   isOn: UserDefaults.standard.bool(forKey: "useInAppBrowser"),
+                   action: { isOn in
+                        UserDefaults.standard.set(isOn, forKey: "useInAppBrowser")
+                   }),
+            .navigation(title: "Typography Settings", 
+                       action: { [weak self] in
+                           self?.openTypographySettings()
+                       },
+                       icon: UIImage(systemName: "textformat")),
             .slider(title: "Reader Font Size", 
                    value: UserDefaults.standard.float(forKey: "readerFontSize") != 0 ? UserDefaults.standard.float(forKey: "readerFontSize") : 18,
                    range: 12...32,
@@ -446,11 +456,16 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                            self?.openRSSSettings()
                        },
                        icon: UIImage(systemName: "list.bullet")),
-            .navigation(title: "Folder Organization", 
+            .navigation(title: "Folders", 
                        action: { [weak self] in
-                           self?.openFolderManagement()
+                           self?.openHierarchicalFolders()
                        },
-                       icon: UIImage(systemName: "folder")),
+                       icon: UIImage(systemName: "folder.fill")),
+            .navigation(title: "Tags Management", 
+                       action: { [weak self] in
+                           self?.openTagManagement()
+                       },
+                       icon: UIImage(systemName: "tag.fill")),
             .navigation(title: "RSS Feed Loading Speeds", 
                        action: { [weak self] in
                            self?.openRSSLoadingSpeeds()
@@ -524,7 +539,7 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         let dataSection = SettingSection(type: .dataManagement, items: dataItems)
         
         // Advanced Section
-        let advancedSection = SettingSection(type: .advanced, items: [
+        var advancedItems: [SettingItemType] = [
             .toggle(title: "Simulate Offline Mode", 
                    isOn: isSimulatingOfflineMode,
                    action: { [weak self] isOn in
@@ -535,7 +550,20 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                        self?.clearArticleCache()
                    },
                    style: createButtonConfiguration(title: "Clear Article Cache", color: .systemRed, symbolName: "trash"))
-        ])
+        ]
+        
+        #if DEBUG
+        // Add a test button for reading progress in debug builds
+        advancedItems.append(
+            .button(title: "Test Reading Progress", 
+                   action: { [weak self] in
+                       self?.testReadingProgress()
+                   },
+                   style: createButtonConfiguration(title: "Test Reading Progress", color: .systemPurple, symbolName: "book"))
+        )
+        #endif
+        
+        let advancedSection = SettingSection(type: .advanced, items: advancedItems)
         
         // Support Section
         let supportSection = SettingSection(type: .support, items: [
@@ -754,9 +782,16 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         navigationController?.pushViewController(rssSettingsVC, animated: true)
     }
     
-    @objc private func openFolderManagement() {
-        let folderManagementVC = FolderManagementViewController()
-        navigationController?.pushViewController(folderManagementVC, animated: true)
+    // Legacy folder management feature removed
+    
+    @objc private func openHierarchicalFolders() {
+        let hierarchicalFoldersVC = HierarchicalFolderViewController()
+        navigationController?.pushViewController(hierarchicalFoldersVC, animated: true)
+    }
+    
+    @objc private func openTagManagement() {
+        let tagManagementVC = TagManagementViewController()
+        navigationController?.pushViewController(tagManagementVC, animated: true)
     }
     
     @objc private func openRSSLoadingSpeeds() {
@@ -767,6 +802,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     @objc private func openTipJar() {
         let tipJarVC = TipJarViewController()
         navigationController?.pushViewController(tipJarVC, animated: true)
+    }
+    
+    @objc private func openTypographySettings() {
+        let typographyVC = TypographySettingsViewController()
+        navigationController?.pushViewController(typographyVC, animated: true)
     }
     
     // MARK: - Updated Storage Switch Action and Migration Helpers
@@ -1430,6 +1470,52 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                     )
                     resultAlert.addAction(UIAlertAction(title: "OK", style: .default))
                     self.present(resultAlert, animated: true)
+                }
+            }
+        }
+    }
+    
+    private func testReadingProgress() {
+        // Show a message that we're testing reading progress
+        let loadingAlert = UIAlertController(
+            title: "Testing Reading Progress",
+            message: "Testing reading progress functionality...",
+            preferredStyle: .alert
+        )
+        present(loadingAlert, animated: true)
+        
+        // Create and run the test
+        let tester = ReadingProgressTester.shared
+        
+        // Execute on a background thread to avoid freezing the UI
+        DispatchQueue.global(qos: .userInitiated).async {
+            tester.testReadingProgressStorage()
+            
+            // Return to the main thread to update UI
+            DispatchQueue.main.async {
+                // Dismiss the loading alert
+                loadingAlert.dismiss(animated: true) {
+                    // Show the test options
+                    let optionsAlert = UIAlertController(
+                        title: "Reading Progress Test Options",
+                        message: "Choose an action:",
+                        preferredStyle: .alert
+                    )
+                    
+                    // Option to view test results (check console)
+                    optionsAlert.addAction(UIAlertAction(title: "View Results (in Console)", style: .default) { _ in
+                        print("Reading Progress Test Results should be visible in the console logs.")
+                    })
+                    
+                    // Option to clean up test data
+                    optionsAlert.addAction(UIAlertAction(title: "Clean Up Test Data", style: .destructive) { _ in
+                        tester.cleanupTestData()
+                    })
+                    
+                    // Option to dismiss
+                    optionsAlert.addAction(UIAlertAction(title: "Dismiss", style: .cancel))
+                    
+                    self.present(optionsAlert, animated: true)
                 }
             }
         }

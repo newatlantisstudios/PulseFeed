@@ -52,6 +52,10 @@ enum AppColors {
     static var cacheIndicator: UIColor {
         return UIColor(hex: "4CAF50") // Green color for cached article indicators
     }
+    
+    static var success: UIColor {
+        return UIColor(hex: "4CAF50") // Green color for success indicators
+    }
 }
 
 extension UIColor {
