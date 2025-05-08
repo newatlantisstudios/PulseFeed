@@ -112,7 +112,7 @@ class RefreshIntervalViewController: UIViewController, UITableViewDelegate, UITa
                     isOn: RefreshIntervalManager.shared.areCustomIntervalsEnabled
                 )
                 
-                cell.switchToggleHandler = { [weak self] isOn in
+                cell.switchToggleHandler = { [weak self] (isOn: Bool) in
                     RefreshIntervalManager.shared.areCustomIntervalsEnabled = isOn
                     self?.tableView.reloadSections(IndexSet(integer: Section.feeds.rawValue), with: .automatic)
                 }

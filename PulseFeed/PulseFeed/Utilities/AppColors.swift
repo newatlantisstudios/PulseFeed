@@ -135,7 +135,7 @@ extension UIColor {
         getRed(&r, green: &g, blue: &b, alpha: &a)
         
         return String(
-            format: "%02X%02X%02X",
+            format: "#%02X%02X%02X",
             Int(r * 255),
             Int(g * 255),
             Int(b * 255)
@@ -152,5 +152,16 @@ extension UIColor {
         getRed(&r, green: &g, blue: &b, alpha: &a)
         
         return "UIColor(red: \(r), green: \(g), blue: \(b), alpha: \(a))"
+    }
+    
+    var isDarkColor: Bool {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        self.getRed(&r, green: &g, blue: &b, alpha: &a)
+        
+        // Calculate relative luminance
+        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        
+        // Threshold for dark/light determination
+        return luminance < 0.5
     }
 }

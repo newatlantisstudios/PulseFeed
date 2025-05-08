@@ -487,6 +487,10 @@ class ContentExtractor {
     
     /// Wraps the extracted content in a reader-friendly HTML document
     static func wrapInReadableHTML(content: String, fontSize: CGFloat, lineHeight: CGFloat, fontColor: String, backgroundColor: String, accentColor: String) -> String {
+        // The hexString property already includes the # prefix
+        let fontColorHex = fontColor
+        let backgroundColorHex = backgroundColor
+        let accentColorHex = accentColor
         // Enhanced style sheet with better typography and responsive design
         // Get font family from the current settings
         let fontFamily = UserDefaults.standard.string(forKey: "readerFontFamily") ?? "System"
@@ -515,9 +519,9 @@ class ContentExtractor {
             :root {
                 --font-size: \(fontSize)px;
                 --line-height: \(lineHeight);
-                --text-color: \(fontColor);
-                --background-color: \(backgroundColor);
-                --accent-color: \(accentColor);
+                --text-color: \(fontColorHex);
+                --background-color: \(backgroundColorHex);
+                --accent-color: \(accentColorHex);
                 --secondary-color: rgba(127, 127, 127, 0.7);
                 --spacing: 20px;
                 --border-radius: 8px;

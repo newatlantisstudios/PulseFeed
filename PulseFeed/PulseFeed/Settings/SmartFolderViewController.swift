@@ -475,6 +475,8 @@ extension SmartFolderEditorViewController: UITableViewDataSource {
             return "Is Read"
         case .pubDate:
             return "Publication Date"
+        case .regex:
+            return "Regex Pattern"
         }
     }
     
@@ -504,6 +506,10 @@ extension SmartFolderEditorViewController: UITableViewDataSource {
             return "is after"
         case .before:
             return "is before"
+        case .matches:
+            return "matches pattern"
+        case .notMatches:
+            return "does not match pattern"
         }
     }
     
@@ -596,7 +602,7 @@ class RuleEditorViewController: UIViewController, UITableViewDelegate, UITableVi
     private var rule: SmartFolderRule?
     private var tableView: UITableView!
     
-    private var fields: [SmartFolderField] = [.tag, .title, .content, .feedURL, .feedTitle, .isRead, .pubDate]
+    private var fields: [SmartFolderField] = [.tag, .title, .content, .feedURL, .feedTitle, .isRead, .pubDate, .regex]
     private var operations: [SmartFolderOperation] = []
     
     private var selectedField: SmartFolderField = .title
@@ -736,6 +742,8 @@ class RuleEditorViewController: UIViewController, UITableViewDelegate, UITableVi
             operations = [.isTrue, .isFalse]
         case .pubDate:
             operations = [.after, .before]
+        case .regex:
+            operations = [.matches, .notMatches]
         }
         
         // Ensure selected operation is valid for this field
@@ -824,6 +832,8 @@ class RuleEditorViewController: UIViewController, UITableViewDelegate, UITableVi
             return "Is Read"
         case .pubDate:
             return "Publication Date"
+        case .regex:
+            return "Regex Pattern"
         }
     }
     
@@ -853,6 +863,10 @@ class RuleEditorViewController: UIViewController, UITableViewDelegate, UITableVi
             return "is after"
         case .before:
             return "is before"
+        case .matches:
+            return "matches pattern"
+        case .notMatches:
+            return "does not match pattern"
         }
     }
     

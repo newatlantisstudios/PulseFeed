@@ -1,8 +1,9 @@
 import UIKit
 import WebKit
 import SafariServices
+import PDFKit
 
-class ArticleReaderViewController: UIViewController {
+class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
     
     // MARK: - Properties
     
@@ -13,6 +14,14 @@ class ArticleReaderViewController: UIViewController {
     let dateLabel = UILabel()
     let toolbar = UIToolbar()
     let progressView = UIProgressView()
+    
+    // Article summary
+    let summaryView = UIView()
+    let summaryLabel = UILabel()
+    let summaryButton = UIButton(type: .system)
+    var isSummaryExpanded = false
+    private var articleSummary: String?
+    private var isSummarizationInProgress = false
     
     // Reading progress
     let readingProgressBar = ReadingProgressBar(frame: .zero)
@@ -237,6 +246,9 @@ class ArticleReaderViewController: UIViewController {
         dateLabel.textColor = AppColors.secondary
         dateLabel.translatesAutoresizingMaskIntoConstraints = false
         
+        // Setup summary view
+        setupSummaryView()
+        
         // Setup reading time
         estimatedReadingTimeLabel = UILabel()
         estimatedReadingTimeLabel?.font = typographySettings.fontFamily.font(withSize: 14, weight: .regular)
@@ -272,6 +284,7 @@ class ArticleReaderViewController: UIViewController {
         view.addSubview(titleLabel)
         view.addSubview(sourceLabel)
         view.addSubview(dateLabel)
+        view.addSubview(summaryView)
         if let estimatedReadingTimeLabel = estimatedReadingTimeLabel {
             view.addSubview(estimatedReadingTimeLabel)
         }
@@ -295,11 +308,15 @@ class ArticleReaderViewController: UIViewController {
             
             dateLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
             dateLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            
+            summaryView.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 8),
+            summaryView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            summaryView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
         ])
         
         if let readingTimeLabel = estimatedReadingTimeLabel {
             NSLayoutConstraint.activate([
-                readingTimeLabel.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 8),
+                readingTimeLabel.topAnchor.constraint(equalTo: summaryView.bottomAnchor, constant: 8),
                 readingTimeLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
                 readingTimeLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
                 
@@ -307,7 +324,7 @@ class ArticleReaderViewController: UIViewController {
             ])
         } else {
             NSLayoutConstraint.activate([
-                webView.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 16),
+                webView.topAnchor.constraint(equalTo: summaryView.bottomAnchor, constant: 16),
             ])
         }
         
@@ -340,7 +357,13 @@ class ArticleReaderViewController: UIViewController {
         // Create a save for offline reading button
         let cacheButton = UIBarButtonItem(image: UIImage(systemName: "arrow.down.circle"), style: .plain, target: self, action: #selector(toggleOfflineCache))
         
-        navigationItem.rightBarButtonItems = [shareButton, safariButton, cacheButton]
+        // Create an export button
+        let exportButton = UIBarButtonItem(image: UIImage(systemName: "square.and.arrow.up.on.square"), style: .plain, target: self, action: #selector(showExportOptions))
+        
+        // Create a summarize button
+        let summarizeButton = UIBarButtonItem(image: UIImage(systemName: "text.quote"), style: .plain, target: self, action: #selector(toggleSummary))
+        
+        navigationItem.rightBarButtonItems = [shareButton, safariButton, cacheButton, exportButton, summarizeButton]
         
         // Configure the back button with a proper title
         navigationItem.backButtonTitle = "Back"
@@ -663,11 +686,61 @@ class ArticleReaderViewController: UIViewController {
             return
         }
         
+        // Check if we should apply bionic reading
+        let themeManager = ArticleThemeManager.shared
+        let isBionicEnabled = themeManager.isBionicReadingEnabled()
+        
+        var contentToDisplay = html
+        
+        // Apply bionic reading if enabled
+        if isBionicEnabled {
+            // Extract the text content
+            let plainText = html.removingHTMLTags()
+            
+            // Split text into words
+            let words = plainText.components(separatedBy: .whitespacesAndNewlines)
+            
+            // Build HTML with bionic reading formatting
+            var bionicHTML = ""
+            for word in words {
+                if word.isEmpty { continue }
+                
+                // Calculate how many characters to bold
+                let fixationStrength = 0.5
+                let numCharsToBold = calculateCharsToEmbolden(word: word, fixationStrength: fixationStrength)
+                
+                if numCharsToBold > 0 && numCharsToBold < word.count {
+                    // Create bionic formatted word
+                    let boldPart = String(word.prefix(numCharsToBold))
+                    let normalPart = String(word.dropFirst(numCharsToBold))
+                    bionicHTML += "<strong>\(boldPart)</strong>\(normalPart) "
+                } else {
+                    // Don't format very short words
+                    bionicHTML += "\(word) "
+                }
+            }
+            
+            contentToDisplay = bionicHTML
+        }
+        
         // Wrap the content in readable HTML
-        let wrappedHTML = wrapInReadableHTML(content: html)
+        let wrappedHTML = wrapInReadableHTML(content: contentToDisplay)
         
         // Load the content into the web view
         webView.loadHTMLString(wrappedHTML, baseURL: nil)
+    }
+    
+    /// Calculate how many characters should be bolded in a word
+    private func calculateCharsToEmbolden(word: String, fixationStrength: Double) -> Int {
+        let wordLength = word.count
+        if wordLength <= 0 {
+            return 0
+        } else if wordLength <= 3 {
+            return 1
+        } else {
+            // Use the fixation strength parameter to determine how much to bold
+            return max(1, min(wordLength - 1, Int(ceil(Double(wordLength) * fixationStrength))))
+        }
     }
     
     private func updateArticleDetails() {
@@ -787,7 +860,7 @@ class ArticleReaderViewController: UIViewController {
         
         // Get colors from theme manager
         let themeManager = ArticleThemeManager.shared
-        let (textColor, bgColor, _) = themeManager.getCurrentThemeColors(for: traitCollection)
+        let (textColor, bgColor, accentColor) = themeManager.getCurrentThemeColors(for: traitCollection)
         
         // Update color properties
         fontColor = textColor
@@ -798,6 +871,9 @@ class ArticleReaderViewController: UIViewController {
         webView.backgroundColor = backgroundColor
         webView.scrollView.backgroundColor = backgroundColor
         titleLabel.textColor = fontColor
+        summaryLabel.textColor = fontColor
+        summaryButton.tintColor = accentColor
+        summaryView.backgroundColor = bgColor == .black ? .darkGray.withAlphaComponent(0.3) : bgColor.withAlphaComponent(0.1)
     }
     
     @objc private func fontSizeChanged(_ notification: Notification) {
@@ -816,6 +892,7 @@ class ArticleReaderViewController: UIViewController {
         sourceLabel.font = typographySettings.fontFamily.font(withSize: 14, weight: .medium)
         dateLabel.font = typographySettings.fontFamily.font(withSize: 14)
         estimatedReadingTimeLabel?.font = typographySettings.fontFamily.font(withSize: 14, weight: .regular)
+        summaryLabel.font = typographySettings.fontFamily.font(withSize: 16)
         
         // Reload the article content with new typography settings
         if let content = htmlContent {
@@ -872,6 +949,11 @@ class ArticleReaderViewController: UIViewController {
         htmlContent = nil
         currentReadingProgress = 0
         scrollToSavedPosition = false
+        
+        // Reset summary
+        articleSummary = nil
+        summaryView.isHidden = true
+        isSummarizationInProgress = false
         
         // Reset UI
         loadingIndicator.startAnimating()
@@ -932,6 +1014,461 @@ class ArticleReaderViewController: UIViewController {
         }
         
         present(activityVC, animated: true)
+    }
+    
+    @objc private func showExportOptions() {
+        guard let item = item, let htmlContent = htmlContent else {
+            showError("No content available to export")
+            return
+        }
+        
+        // Create an action sheet with export options
+        let actionSheet = UIAlertController(title: "Export Article", message: "Choose export format", preferredStyle: .actionSheet)
+        
+        // PDF export option
+        actionSheet.addAction(UIAlertAction(title: "Export as PDF", style: .default) { [weak self] _ in
+            self?.exportArticle(as: ExportFormat.pdf)
+        })
+        
+        // Markdown export option
+        actionSheet.addAction(UIAlertAction(title: "Export as Markdown", style: .default) { [weak self] _ in
+            self?.exportArticle(as: ExportFormat.markdown)
+        })
+        
+        // Cancel option
+        actionSheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        // Set the source for iPad
+        if let popoverController = actionSheet.popoverPresentationController {
+            if let exportButton = navigationItem.rightBarButtonItems?[3] {
+                popoverController.barButtonItem = exportButton
+            } else {
+                popoverController.barButtonItem = navigationItem.rightBarButtonItems?.first
+            }
+        }
+        
+        present(actionSheet, animated: true)
+    }
+    
+    // Define export format enum for this class
+    private enum ExportFormat {
+        case pdf
+        case markdown
+    }
+    
+    private func exportArticle(as format: ExportFormat) {
+        guard let item = item, let content = htmlContent else {
+            showError("No content available to export")
+            return
+        }
+        
+        // Show loading indicator
+        let loadingVC = UIAlertController(
+            title: "Preparing Export",
+            message: "Please wait...",
+            preferredStyle: .alert
+        )
+        
+        let loadingIndicator = UIActivityIndicatorView(style: .medium)
+        loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
+        loadingIndicator.startAnimating()
+        
+        loadingVC.view.addSubview(loadingIndicator)
+        
+        NSLayoutConstraint.activate([
+            loadingIndicator.centerXAnchor.constraint(equalTo: loadingVC.view.centerXAnchor),
+            loadingIndicator.topAnchor.constraint(equalTo: loadingVC.view.centerYAnchor, constant: 10)
+        ])
+        
+        present(loadingVC, animated: true)
+        
+        switch format {
+        case .pdf:
+            // Export article as PDF
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+                
+                // Generate PDF from web view content
+                let date = DateUtils.parseDate(item.pubDate)
+                let pdfData = self.generatePDF(title: item.title, content: content, date: date, source: item.source)
+                
+                DispatchQueue.main.async {
+                    // Dismiss loading indicator
+                    loadingVC.dismiss(animated: true) {
+                        if let pdfData = pdfData {
+                            // Share the PDF
+                            self.sharePDFData(pdfData, withFilename: self.generateExportFilename(for: item, extension: "pdf"))
+                        } else {
+                            self.showError("Failed to generate PDF")
+                        }
+                    }
+                }
+            }
+            
+        case .markdown:
+            // Export article as Markdown
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+                
+                // Convert HTML to markdown
+                let date = DateUtils.parseDate(item.pubDate)
+                let markdownContent = self.convertToMarkdown(title: item.title, content: content, date: date, source: item.source)
+                
+                DispatchQueue.main.async {
+                    // Dismiss loading indicator
+                    loadingVC.dismiss(animated: true) {
+                        // Share the Markdown content
+                        self.shareMarkdownContent(markdownContent, withFilename: self.generateExportFilename(for: item, extension: "md"))
+                    }
+                }
+            }
+        }
+    }
+    
+    private func sharePDFData(_ pdfData: Data, withFilename filename: String) {
+        do {
+            // Create a temporary file
+            let tempDirectory = FileManager.default.temporaryDirectory
+            let fileURL = tempDirectory.appendingPathComponent(filename)
+            
+            // Write the data to the file
+            try pdfData.write(to: fileURL)
+            
+            // Create the activity view controller on the main thread
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                #if targetEnvironment(macCatalyst)
+                // Mac Catalyst: Use document picker to save the file
+                self.saveFileWithDocumentPicker(fileURL: fileURL)
+                #else
+                // iOS: Use activity view controller for sharing
+                // Share the file
+                let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+                
+                // Set source for iPad
+                if let popoverController = activityVC.popoverPresentationController {
+                    if let exportButton = self.navigationItem.rightBarButtonItems?[3] {
+                        popoverController.barButtonItem = exportButton
+                    } else {
+                        popoverController.barButtonItem = self.navigationItem.rightBarButtonItems?.first
+                    }
+                }
+                
+                self.present(activityVC, animated: true)
+                #endif
+            }
+        } catch {
+            DispatchQueue.main.async { [weak self] in
+                self?.showError("Failed to save PDF file: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    /// Helper method to show save dialog
+    private func saveFileWithDocumentPicker(fileURL: URL) {
+        // Create a document picker for exporting files
+        let documentPicker = UIDocumentPickerViewController(forExporting: [fileURL], asCopy: true)
+        documentPicker.delegate = self
+        
+        // Show the document picker
+        self.present(documentPicker, animated: true, completion: nil)
+    }
+    
+    private func shareMarkdownContent(_ markdownContent: String, withFilename filename: String) {
+        do {
+            // Create a temporary file
+            let tempDirectory = FileManager.default.temporaryDirectory
+            let fileURL = tempDirectory.appendingPathComponent(filename)
+            
+            // Write the content to the file
+            try markdownContent.write(to: fileURL, atomically: true, encoding: .utf8)
+            
+            // Create the activity view controller on the main thread
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                #if targetEnvironment(macCatalyst)
+                // Mac Catalyst: Use document picker to save the file
+                self.saveFileWithDocumentPicker(fileURL: fileURL)
+                #else
+                // iOS: Use activity view controller for sharing
+                // Share the file
+                let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+                
+                // Set source for iPad
+                if let popoverController = activityVC.popoverPresentationController {
+                    if let exportButton = self.navigationItem.rightBarButtonItems?[3] {
+                        popoverController.barButtonItem = exportButton
+                    } else {
+                        popoverController.barButtonItem = self.navigationItem.rightBarButtonItems?.first
+                    }
+                }
+                
+                self.present(activityVC, animated: true)
+                #endif
+            }
+        } catch {
+            DispatchQueue.main.async { [weak self] in
+                self?.showError("Failed to save Markdown file: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    // MARK: - Export Functionality
+    
+    /// Generates a PDF from HTML content
+    private func generatePDF(title: String, content: String, date: Date?, source: String?) -> Data? {
+        // Create HTML content with article metadata
+        var html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                    padding: 20px;
+                    line-height: 1.5;
+                }
+                .article-title {
+                    font-size: 24px;
+                    font-weight: bold;
+                    margin-bottom: 10px;
+                }
+                .article-meta {
+                    font-size: 14px;
+                    color: #666;
+                    margin-bottom: 20px;
+                }
+                .article-content {
+                    font-size: 16px;
+                }
+                img {
+                    max-width: 100%;
+                    height: auto;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="article-title">
+                \(title)
+            </div>
+        """
+        
+        // Add metadata
+        html += "<div class=\"article-meta\">"
+        if let source = source {
+            html += "Source: \(source)<br>"
+        }
+        if let date = date {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .medium
+            html += "Date: \(dateFormatter.string(from: date))"
+        }
+        html += "</div>"
+        
+        // Add the article content
+        html += "<div class=\"article-content\">\(content)</div></body></html>"
+        
+        // Create PDF data using main thread synchronously
+        var resultData: Data?
+        let semaphore = DispatchSemaphore(value: 0)
+        
+        DispatchQueue.main.async {
+            // Create a temporary WKWebView to render the content (must be on main thread)
+            let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 612, height: 792)) // US Letter size
+            
+            // Load the HTML
+            webView.loadHTMLString(html, baseURL: nil)
+            
+            // Give the web view time to render
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                // Generate PDF
+                let pdfRenderer = UIPrintPageRenderer()
+                let printFormatter = webView.viewPrintFormatter()
+                pdfRenderer.addPrintFormatter(printFormatter, startingAtPageAt: 0)
+                
+                // Set page size and margins
+                let pageWidth: CGFloat = 612 // 8.5 inches at 72 DPI
+                let pageHeight: CGFloat = 792 // 11 inches at 72 DPI
+                let margin: CGFloat = 36 // 0.5 inch margins
+                
+                let printableRect = CGRect(x: margin, y: margin, width: pageWidth - (margin * 2), height: pageHeight - (margin * 2))
+                let paperRect = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
+                
+                pdfRenderer.setValue(NSValue(cgRect: paperRect), forKey: "paperRect")
+                pdfRenderer.setValue(NSValue(cgRect: printableRect), forKey: "printableRect")
+                
+                // Create PDF data
+                let pdfData = NSMutableData()
+                UIGraphicsBeginPDFContextToData(pdfData, paperRect, nil)
+                
+                // Draw each page
+                for i in 0..<pdfRenderer.numberOfPages {
+                    UIGraphicsBeginPDFPage()
+                    pdfRenderer.drawPage(at: i, in: UIGraphicsGetPDFContextBounds())
+                }
+                
+                UIGraphicsEndPDFContext()
+                
+                resultData = pdfData as Data
+                semaphore.signal()
+            }
+        }
+        
+        // Wait for PDF generation to complete (with timeout)
+        _ = semaphore.wait(timeout: .now() + 5.0) // 5 second timeout
+        
+        return resultData
+    }
+    
+    /// Converts HTML content to Markdown
+    private func convertToMarkdown(title: String, content: String, date: Date?, source: String?) -> String {
+        // Create a basic Markdown document
+        var markdown = "# \(title)\n\n"
+        
+        // Add metadata
+        if let source = source {
+            markdown += "> **Source:** \(source)  \n"
+        }
+        if let date = date {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .medium
+            markdown += "> **Date:** \(dateFormatter.string(from: date))  \n"
+        }
+        markdown += "\n---\n\n"
+        
+        // Basic HTML to Markdown conversion
+        // This is a simplified version; a more complete solution would be more complex
+        var cleanedContent = content
+        
+        // Remove script and style tags
+        cleanedContent = cleanedContent.replacingOccurrences(of: "<script[^>]*>.*?</script>", with: "", options: .regularExpression)
+        cleanedContent = cleanedContent.replacingOccurrences(of: "<style[^>]*>.*?</style>", with: "", options: .regularExpression)
+        
+        // Convert heading tags
+        for i in 1...6 {
+            let pattern = "<h\(i)[^>]*>(.*?)</h\(i)>"
+            cleanedContent = cleanedContent.replacingOccurrences(
+                of: pattern,
+                with: "\n\(String(repeating: "#", count: i)) $1\n\n",
+                options: .regularExpression
+            )
+        }
+        
+        // Convert paragraph tags
+        cleanedContent = cleanedContent.replacingOccurrences(
+            of: "<p[^>]*>(.*?)</p>",
+            with: "\n$1\n\n",
+            options: .regularExpression
+        )
+        
+        // Convert links
+        cleanedContent = cleanedContent.replacingOccurrences(
+            of: "<a[^>]*href=[\"'](.*?)[\"'][^>]*>(.*?)</a>",
+            with: "[$2]($1)",
+            options: .regularExpression
+        )
+        
+        // Convert images
+        cleanedContent = cleanedContent.replacingOccurrences(
+            of: "<img[^>]*src=[\"'](.*?)[\"'][^>]*>",
+            with: "![]($1)",
+            options: .regularExpression
+        )
+        
+        // Convert bold/strong
+        cleanedContent = cleanedContent.replacingOccurrences(
+            of: "<(strong|b)[^>]*>(.*?)</\\1>",
+            with: "**$2**",
+            options: .regularExpression
+        )
+        
+        // Convert italic/emphasis
+        cleanedContent = cleanedContent.replacingOccurrences(
+            of: "<(em|i)[^>]*>(.*?)</\\1>",
+            with: "*$2*",
+            options: .regularExpression
+        )
+        
+        // Convert list items
+        cleanedContent = cleanedContent.replacingOccurrences(
+            of: "<li[^>]*>(.*?)</li>",
+            with: "- $1\n",
+            options: .regularExpression
+        )
+        
+        // Remove remaining HTML tags
+        cleanedContent = cleanedContent.replacingOccurrences(
+            of: "<[^>]+>",
+            with: "",
+            options: .regularExpression
+        )
+        
+        // Replace HTML entities
+        let htmlEntities = [
+            "&nbsp;": " ",
+            "&amp;": "&",
+            "&lt;": "<",
+            "&gt;": ">",
+            "&quot;": "\"",
+            "&#39;": "'",
+            "&ldquo;": "\"",
+            "&rdquo;": "\"",
+            "&lsquo;": "'",
+            "&rsquo;": "'"
+        ]
+        
+        for (entity, replacement) in htmlEntities {
+            cleanedContent = cleanedContent.replacingOccurrences(of: entity, with: replacement)
+        }
+        
+        // Clean up multiple line breaks
+        cleanedContent = cleanedContent.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+        
+        // Combine with header
+        markdown += cleanedContent
+        
+        return markdown
+    }
+    
+    private func generateExportFilename(for item: RSSItem, extension fileExtension: String) -> String {
+        // Generate a filename from the article title
+        var safeTitle = item.title
+        
+        // Handle empty titles
+        if safeTitle.isEmpty {
+            safeTitle = "article_\(Int(Date().timeIntervalSince1970))"
+        }
+        
+        // Replace spaces with underscores and remove non-alphanumeric characters
+        do {
+            // Replace spaces
+            safeTitle = safeTitle.replacingOccurrences(of: " ", with: "_")
+            
+            // Remove special characters
+            let regex = try NSRegularExpression(pattern: "[^a-zA-Z0-9_]", options: [])
+            let range = NSRange(location: 0, length: safeTitle.count)
+            safeTitle = regex.stringByReplacingMatches(in: safeTitle, options: [], range: range, withTemplate: "")
+        } catch {
+            // Fallback if regex fails
+            safeTitle = "article_\(Int(Date().timeIntervalSince1970))"
+        }
+        
+        // Ensure the title isn't empty after cleaning
+        if safeTitle.isEmpty {
+            safeTitle = "article_\(Int(Date().timeIntervalSince1970))"
+        }
+        
+        // Truncate if too long
+        let maxLength = 50
+        let truncatedTitle = safeTitle.count > maxLength 
+            ? String(safeTitle.prefix(maxLength)) 
+            : safeTitle
+        
+        return "\(truncatedTitle).\(fileExtension)"
     }
     
     @objc private func openInSafari() {
@@ -1123,13 +1660,120 @@ class ArticleReaderViewController: UIViewController {
         }
     }
     
+    private func setupSummaryView() {
+        // Configure summary view
+        summaryView.translatesAutoresizingMaskIntoConstraints = false
+        summaryView.backgroundColor = AppColors.secondary.withAlphaComponent(0.1)
+        summaryView.layer.cornerRadius = 8
+        summaryView.clipsToBounds = true
+        summaryView.isHidden = true
+        
+        // Configure summary label
+        summaryLabel.font = typographySettings.fontFamily.font(withSize: 16)
+        summaryLabel.textColor = fontColor
+        summaryLabel.numberOfLines = 3
+        summaryLabel.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Configure expand/collapse button
+        summaryButton.setTitle("Read more", for: .normal)
+        summaryButton.tintColor = AppColors.accent
+        summaryButton.addTarget(self, action: #selector(toggleSummaryExpansion), for: .touchUpInside)
+        summaryButton.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Add subviews
+        summaryView.addSubview(summaryLabel)
+        summaryView.addSubview(summaryButton)
+        
+        // Setup constraints
+        NSLayoutConstraint.activate([
+            summaryLabel.topAnchor.constraint(equalTo: summaryView.topAnchor, constant: 12),
+            summaryLabel.leadingAnchor.constraint(equalTo: summaryView.leadingAnchor, constant: 12),
+            summaryLabel.trailingAnchor.constraint(equalTo: summaryView.trailingAnchor, constant: -12),
+            
+            summaryButton.topAnchor.constraint(equalTo: summaryLabel.bottomAnchor, constant: 8),
+            summaryButton.trailingAnchor.constraint(equalTo: summaryView.trailingAnchor, constant: -12),
+            summaryButton.bottomAnchor.constraint(equalTo: summaryView.bottomAnchor, constant: -8),
+        ])
+    }
+    
+    @objc private func toggleSummary() {
+        if summaryView.isHidden {
+            // Show summary
+            if articleSummary != nil {
+                // We already have a summary, just show it
+                showSummary()
+            } else if !isSummarizationInProgress {
+                // Need to generate a summary
+                generateSummary()
+            }
+        } else {
+            // Hide summary
+            hideSummary()
+        }
+    }
+    
+    @objc private func toggleSummaryExpansion() {
+        isSummaryExpanded = !isSummaryExpanded
+        summaryLabel.numberOfLines = isSummaryExpanded ? 0 : 3
+        summaryButton.setTitle(isSummaryExpanded ? "Show less" : "Read more", for: .normal)
+    }
+    
+    private func generateSummary() {
+        guard let item = item else { return }
+        
+        // Show loading state
+        isSummarizationInProgress = true
+        summaryView.isHidden = false
+        summaryLabel.text = "Generating summary..."
+        summaryButton.isHidden = true
+        
+        // Request summarization
+        ArticleSummarizer.shared.summarizeArticle(item: item) { [weak self] result in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                self.isSummarizationInProgress = false
+                
+                switch result {
+                case .success(let summary):
+                    // Store and display the summary
+                    self.articleSummary = summary
+                    self.summaryLabel.text = summary
+                    self.summaryButton.isHidden = false
+                case .failure(let error):
+                    // Handle error
+                    self.summaryView.isHidden = true
+                    self.showError("Failed to generate summary: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    private func showSummary() {
+        guard let summary = articleSummary else { return }
+        
+        // Reset expansion state
+        isSummaryExpanded = false
+        summaryLabel.numberOfLines = 3
+        summaryButton.setTitle("Read more", for: .normal)
+        summaryButton.isHidden = false
+        
+        // Update and show the summary view
+        summaryLabel.text = summary
+        summaryView.isHidden = false
+    }
+    
+    private func hideSummary() {
+        summaryView.isHidden = true
+    }
+    
     private func showError(_ message: String) {
         let alert = UIAlertController(title: "Error", message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
     }
     
-    private func showToast(message: String) {
+    func showToast(message: String, duration: TimeInterval = 2.0) {
         let toastContainer = UIView()
         toastContainer.backgroundColor = AppColors.primary.withAlphaComponent(0.9)
         toastContainer.alpha = 0
@@ -1163,7 +1807,7 @@ class ArticleReaderViewController: UIViewController {
         UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseIn, animations: {
             toastContainer.alpha = 1
         }, completion: { _ in
-            UIView.animate(withDuration: 0.2, delay: 2, options: .curveEaseOut, animations: {
+            UIView.animate(withDuration: 0.2, delay: duration, options: .curveEaseOut, animations: {
                 toastContainer.alpha = 0
             }, completion: { _ in
                 toastContainer.removeFromSuperview()
@@ -1338,3 +1982,21 @@ extension ArticleReaderViewController: WKNavigationDelegate {
 // MARK: - UIColor Extension
 
 // UIColor.hexString is already defined in AppColors.swift
+
+// MARK: - UIDocumentPickerDelegate
+
+extension ArticleReaderViewController {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        // Document was saved successfully
+        showToast(message: "File saved successfully")
+    }
+    
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        // User cancelled the document picker
+        showToast(message: "Export cancelled")
+    }
+}
+
+// MARK: - Additional Extensions
+
+// String extension for removingHTMLTags is already defined in ContentExtractor.swift

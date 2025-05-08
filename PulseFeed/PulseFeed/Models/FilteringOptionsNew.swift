@@ -8,6 +8,7 @@ enum FilterFieldOption: String, Codable, CaseIterable {
     case dateRange = "Date Range"
     case author = "Author"
     case content = "Content"
+    case regex = "Regex"
     
     var displayName: String {
         return self.rawValue
@@ -27,6 +28,8 @@ enum FilterOperationType: String, Codable, CaseIterable {
     case between = "Between"
     case isTrue = "Is True"
     case isFalse = "Is False"
+    case matches = "Matches"
+    case notMatches = "Not Matches"
     
     var displayName: String {
         return self.rawValue
@@ -47,6 +50,8 @@ enum FilterOperationType: String, Codable, CaseIterable {
             return [.equals, .notEquals, .contains, .notContains, .beginsWith, .endsWith]
         case .content:
             return [.contains, .notContains]
+        case .regex:
+            return [.matches, .notMatches]
         }
     }
 }
@@ -144,6 +149,8 @@ struct FilterOptionSet: Codable, Equatable {
             return evaluateAuthorRule(rule, for: item)
         case .content:
             return evaluateContentRule(rule, for: item)
+        case .regex:
+            return evaluateRegexRule(rule, for: item)
         }
     }
     
@@ -293,6 +300,36 @@ struct FilterOptionSet: Codable, Equatable {
         case .notContains:
             return !contentTexts.contains { $0.contains(ruleValue) }
         default:
+            return false
+        }
+    }
+    
+    /// Evaluates a regex rule against an RSS item
+    private func evaluateRegexRule(_ rule: FilterRuleOption, for item: RSSItem) -> Bool {
+        // Combine all text fields for regex matching
+        let textsToSearch = [
+            item.title,
+            item.description ?? "",
+            item.content ?? "",
+            item.author ?? "",
+            item.source
+        ].joined(separator: " ")
+        
+        do {
+            let regex = try NSRegularExpression(pattern: rule.value)
+            let range = NSRange(textsToSearch.startIndex..., in: textsToSearch)
+            let matches = regex.matches(in: textsToSearch, range: range)
+            
+            switch rule.operation {
+            case .matches:
+                return !matches.isEmpty
+            case .notMatches:
+                return matches.isEmpty
+            default:
+                return false
+            }
+        } catch {
+            // If regex is invalid, don't match
             return false
         }
     }

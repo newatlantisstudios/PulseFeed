@@ -384,31 +384,31 @@ extension AdvancedSearchViewController: UITableViewDataSource {
             case 0:
                 cell.textLabel?.text = "Search in Title"
                 cell.switchControl.isOn = searchQuery.searchInTitle
-                cell.switchToggleHandler = { [weak self] isOn in
+                cell.switchToggleHandler = { [weak self] (isOn: Bool) in
                     self?.searchQuery.searchInTitle = isOn
                 }
             case 1:
                 cell.textLabel?.text = "Search in Content"
                 cell.switchControl.isOn = searchQuery.searchInContent
-                cell.switchToggleHandler = { [weak self] isOn in
+                cell.switchToggleHandler = { [weak self] (isOn: Bool) in
                     self?.searchQuery.searchInContent = isOn
                 }
             case 2:
                 cell.textLabel?.text = "Search in Author"
                 cell.switchControl.isOn = searchQuery.searchInAuthor
-                cell.switchToggleHandler = { [weak self] isOn in
+                cell.switchToggleHandler = { [weak self] (isOn: Bool) in
                     self?.searchQuery.searchInAuthor = isOn
                 }
             case 3:
                 cell.textLabel?.text = "Search in Feed Title"
                 cell.switchControl.isOn = searchQuery.searchInFeedTitle
-                cell.switchToggleHandler = { [weak self] isOn in
+                cell.switchToggleHandler = { [weak self] (isOn: Bool) in
                     self?.searchQuery.searchInFeedTitle = isOn
                 }
             case 4:
                 cell.textLabel?.text = "Only Unread Articles"
                 cell.switchControl.isOn = searchQuery.filterByReadStatus && !searchQuery.isRead
-                cell.switchToggleHandler = { [weak self] isOn in
+                cell.switchToggleHandler = { [weak self] (isOn: Bool) in
                     guard let self = self else { return }
                     self.searchQuery.filterByReadStatus = isOn
                     self.searchQuery.isRead = !isOn  // Invert logic for clarity in UI
@@ -426,7 +426,7 @@ extension AdvancedSearchViewController: UITableViewDataSource {
             case 0:
                 cell.textLabel?.text = "Only Bookmarked Articles"
                 cell.switchControl.isOn = searchQuery.filterByBookmarked && searchQuery.isBookmarked
-                cell.switchToggleHandler = { [weak self] isOn in
+                cell.switchToggleHandler = { [weak self] (isOn: Bool) in
                     guard let self = self else { return }
                     self.searchQuery.filterByBookmarked = isOn
                     self.searchQuery.isBookmarked = isOn
@@ -434,7 +434,7 @@ extension AdvancedSearchViewController: UITableViewDataSource {
             case 1:
                 cell.textLabel?.text = "Only Favorited Articles"
                 cell.switchControl.isOn = searchQuery.filterByHearted && searchQuery.isHearted
-                cell.switchToggleHandler = { [weak self] isOn in
+                cell.switchToggleHandler = { [weak self] (isOn: Bool) in
                     guard let self = self else { return }
                     self.searchQuery.filterByHearted = isOn
                     self.searchQuery.isHearted = isOn
@@ -479,7 +479,7 @@ extension AdvancedSearchViewController: UITableViewDataSource {
                 let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as! SwitchTableViewCell
                 cell.textLabel?.text = "Filter by Date Range"
                 cell.switchControl.isOn = searchQuery.filterByDate
-                cell.switchToggleHandler = { [weak self] isOn in
+                cell.switchToggleHandler = { [weak self] (isOn: Bool) in
                     self?.searchQuery.filterByDate = isOn
                     self?.tableView.reloadSections(IndexSet(integer: 3), with: .none)
                 }

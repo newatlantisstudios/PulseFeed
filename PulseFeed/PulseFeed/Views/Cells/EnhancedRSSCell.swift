@@ -490,7 +490,7 @@ class EnhancedRSSCell: UITableViewCell {
     }
     
     private func configureImage(item: RSSItem) {
-        let showImages = UserDefaults.standard.bool(forKey: "showArticleImages")
+        // Images are now permanently disabled
         
         // Hide by default
         articleImageView.isHidden = true
@@ -500,36 +500,6 @@ class EnhancedRSSCell: UITableViewCell {
         imageToPreviewConstraint?.isActive = false
         imageWidthConstraint?.isActive = false
         imageHeightConstraint?.isActive = false
-        
-        // If image display is disabled, return early
-        guard showImages else { return }
-        
-        // Extract image URL from the RSS item's description
-        if let description = item.description,
-           let imageUrlString = extractImageUrl(from: description),
-           let imageUrl = URL(string: imageUrlString) {
-            
-            // Clear previous image and background color
-            articleImageView.image = nil
-            articleImageView.backgroundColor = .clear
-            
-            // Create a placeholder image
-            let placeholder = UIImage(systemName: "photo")?.withTintColor(AppColors.accent.withAlphaComponent(0.3), renderingMode: .alwaysOriginal)
-            
-            // Load the image with caching
-            articleImageView.loadImage(from: imageUrl, placeholder: placeholder)
-            articleImageView.isHidden = false
-            
-            // Activate image constraints
-            titleToImageConstraint?.isActive = true
-            imageWidthConstraint?.isActive = true
-            imageHeightConstraint?.isActive = true
-            
-            // If we also have preview text, connect them
-            if !previewTextLabel.isHidden {
-                imageToPreviewConstraint?.isActive = true
-            }
-        }
     }
     
     private func configureTags(item: RSSItem) {

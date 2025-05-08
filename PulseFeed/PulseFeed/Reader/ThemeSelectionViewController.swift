@@ -82,9 +82,9 @@ class ThemeSelectionViewController: UIViewController {
             let currentTheme = self.themeManager.selectedTheme
             let newTheme = ArticleTheme(
                 name: themeName,
-                textColor: currentTheme.textColor,
-                backgroundColor: currentTheme.backgroundColor,
-                accentColor: currentTheme.accentColor,
+                textColor: currentTheme.textColor.replacingOccurrences(of: "#", with: ""),
+                backgroundColor: currentTheme.backgroundColor.replacingOccurrences(of: "#", with: ""),
+                accentColor: currentTheme.accentColor.replacingOccurrences(of: "#", with: ""),
                 isCustom: true
             )
             
@@ -551,9 +551,9 @@ class ThemeEditorViewController: UIViewController {
         // Update theme with new colors
         let updatedTheme = ArticleTheme(
             name: theme.name,
-            textColor: currentTextColor.hexString,
-            backgroundColor: currentBackgroundColor.hexString,
-            accentColor: currentAccentColor.hexString,
+            textColor: currentTextColor.hexString.replacingOccurrences(of: "#", with: ""),
+            backgroundColor: currentBackgroundColor.hexString.replacingOccurrences(of: "#", with: ""),
+            accentColor: currentAccentColor.hexString.replacingOccurrences(of: "#", with: ""),
             isCustom: theme.isCustom,
             supportsDarkMode: theme.supportsDarkMode
         )

@@ -12,6 +12,14 @@ extension ArticleReaderViewController {
         // Add typography button to toolbar
         let typographyButton = UIBarButtonItem(image: UIImage(systemName: "textformat"), style: .plain, target: self, action: #selector(showTypographySettings))
         
+        // Add bionic reading toggle button
+        let bionicButton = UIBarButtonItem(
+            image: UIImage(systemName: "eye.circle"),
+            style: .plain,
+            target: self,
+            action: #selector(toggleBionicReading)
+        )
+        
         // Get current toolbar items
         guard var toolbarItems = toolbar.items else { return }
         
@@ -20,9 +28,9 @@ extension ArticleReaderViewController {
             // Add theme and typography buttons after the text justification button and before the increase font button
             // Format is: [decreaseFontButton, flexSpace, toggleModeButton, flexSpace, justifyButton, flexSpace, increaseFontButton]
             
-            // Insert theme button, typography button and flex space
+            // Insert theme button, typography button, bionic button and flex space
             let themeFlexSpace = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-            toolbarItems.insert(contentsOf: [themeFlexSpace, themeButton, typographyButton], at: 6) // Insert before increase font button
+            toolbarItems.insert(contentsOf: [themeFlexSpace, themeButton, typographyButton, bionicButton], at: 6) // Insert before increase font button
             
             // Update toolbar items
             toolbar.items = toolbarItems
@@ -38,7 +46,7 @@ extension ArticleReaderViewController {
     func applyCurrentTheme() {
         // Get current theme from manager
         let themeManager = ArticleThemeManager.shared
-        let (textColor, bgColor, _) = themeManager.getCurrentThemeColors(for: traitCollection)
+        let (textColor, bgColor, accentColor) = themeManager.getCurrentThemeColors(for: traitCollection)
         
         // Save the colors for use throughout the view controller
         self.fontColor = textColor
@@ -98,6 +106,23 @@ extension ArticleReaderViewController {
         // Apply the updated theme
         applyCurrentTheme()
     }
+    
+    @objc func toggleBionicReading() {
+        // Toggle bionic reading mode in the theme manager
+        ArticleThemeManager.shared.toggleBionicReading()
+        
+        // Update the button icon based on the new state
+        guard let toolbarItems = toolbar.items, toolbarItems.count >= 9 else { return }
+        let bionicButton = toolbarItems[8]
+        
+        let isBionicEnabled = ArticleThemeManager.shared.isBionicReadingEnabled()
+        bionicButton.image = UIImage(systemName: isBionicEnabled ? "eye.circle.fill" : "eye.circle")
+        
+        // Reload the article content to apply bionic reading
+        if let content = htmlContent {
+            displayContent(content)
+        }
+    }
 }
 
 // MARK: - ThemeSelectionDelegate
@@ -131,15 +156,4 @@ extension ArticleReaderViewController: TypographyChangeDelegate {
 
 // MARK: - UIColor Helpers
 
-extension UIColor {
-    var isDarkColor: Bool {
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        self.getRed(&r, green: &g, blue: &b, alpha: &a)
-        
-        // Calculate relative luminance
-        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-        
-        // Threshold for dark/light determination
-        return luminance < 0.5
-    }
-}
+// Use UIColor extensions from AppColors.swift

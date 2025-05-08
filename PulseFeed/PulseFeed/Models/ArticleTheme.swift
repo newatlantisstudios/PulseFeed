@@ -12,6 +12,7 @@ struct ArticleTheme: Codable {
     var accentColor: String // Hex color for links
     var isCustom: Bool
     var supportsDarkMode: Bool
+    var bionicReadingEnabled: Bool
     
     // MARK: - Initialization
     
@@ -20,13 +21,15 @@ struct ArticleTheme: Codable {
          backgroundColor: String, 
          accentColor: String, 
          isCustom: Bool = false, 
-         supportsDarkMode: Bool = true) {
+         supportsDarkMode: Bool = true,
+         bionicReadingEnabled: Bool = false) {
         self.name = name
         self.textColor = textColor
         self.backgroundColor = backgroundColor
         self.accentColor = accentColor
         self.isCustom = isCustom
         self.supportsDarkMode = supportsDarkMode
+        self.bionicReadingEnabled = bionicReadingEnabled
     }
     
     // MARK: - UIColor Conversion
@@ -119,6 +122,12 @@ struct ArticleTheme: Codable {
             return (textColorUI, backgroundColorUI, accentColorUI)
         }
     }
+    
+    func toggleBionicReading() -> ArticleTheme {
+        var updatedTheme = self
+        updatedTheme.bionicReadingEnabled = !bionicReadingEnabled
+        return updatedTheme
+    }
 }
 
 // MARK: - Theme Manager
@@ -152,6 +161,10 @@ class ArticleThemeManager {
         // Load selected theme
         let selectedThemeName = userDefaults.string(forKey: selectedThemeKey) ?? "System"
         selectedTheme = themes.first { $0.name == selectedThemeName } ?? ArticleTheme.systemTheme()
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
     
     // MARK: - Theme Management
@@ -241,5 +254,24 @@ class ArticleThemeManager {
     
     func getCurrentThemeColors(for traitCollection: UITraitCollection) -> (textColor: UIColor, backgroundColor: UIColor, accentColor: UIColor) {
         return selectedTheme.applyToReaderView(traitCollection: traitCollection)
+    }
+    
+    func toggleBionicReading() {
+        let updatedTheme = selectedTheme.toggleBionicReading()
+        // Update selected theme
+        if let index = themes.firstIndex(where: { $0.name == selectedTheme.name }) {
+            themes[index] = updatedTheme
+        }
+        selectedTheme = updatedTheme
+        
+        // Save updated themes
+        saveThemes()
+        
+        // Notify observers of theme change
+        NotificationCenter.default.post(name: Notification.Name("articleThemeChanged"), object: nil)
+    }
+    
+    func isBionicReadingEnabled() -> Bool {
+        return selectedTheme.bionicReadingEnabled
     }
 }

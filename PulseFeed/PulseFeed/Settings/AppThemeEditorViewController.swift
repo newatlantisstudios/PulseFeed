@@ -115,11 +115,11 @@ class AppThemeEditorViewController: UIViewController {
         // Update theme with new colors
         let updatedTheme = AppTheme(
             name: theme.name,
-            primaryColor: currentPrimaryColor.hexString,
-            secondaryColor: currentSecondaryColor.hexString,
-            backgroundColor: currentBackgroundColor.hexString,
-            accentColor: currentAccentColor.hexString,
-            textColor: currentTextColor.hexString,
+            primaryColor: currentPrimaryColor.hexString.replacingOccurrences(of: "#", with: ""),
+            secondaryColor: currentSecondaryColor.hexString.replacingOccurrences(of: "#", with: ""),
+            backgroundColor: currentBackgroundColor.hexString.replacingOccurrences(of: "#", with: ""),
+            accentColor: currentAccentColor.hexString.replacingOccurrences(of: "#", with: ""),
+            textColor: currentTextColor.hexString.replacingOccurrences(of: "#", with: ""),
             isCustom: theme.isCustom,
             supportsDarkMode: theme.supportsDarkMode
         )

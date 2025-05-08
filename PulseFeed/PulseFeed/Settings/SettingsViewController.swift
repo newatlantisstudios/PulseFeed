@@ -388,12 +388,6 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                         UserDefaults.standard.set(isOn, forKey: "compactArticleView")
                         NotificationCenter.default.post(name: Notification.Name("articleViewModeChanged"), object: nil)
                    }),
-            .toggle(title: "Show Article Images", 
-                   isOn: UserDefaults.standard.bool(forKey: "showArticleImages"),
-                   action: { isOn in
-                        UserDefaults.standard.set(isOn, forKey: "showArticleImages")
-                        NotificationCenter.default.post(name: Notification.Name("articleViewModeChanged"), object: nil)
-                   }),
             .toggle(title: "Hide Read Articles", 
                    isOn: UserDefaults.standard.bool(forKey: "hideReadArticles"),
                    action: { isOn in
@@ -423,6 +417,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                    isOn: UserDefaults.standard.bool(forKey: "useInAppBrowser"),
                    action: { isOn in
                         UserDefaults.standard.set(isOn, forKey: "useInAppBrowser")
+                   }),
+            .toggle(title: "Enable Article Summarization", 
+                   isOn: UserDefaults.standard.bool(forKey: "enableArticleSummarization"),
+                   action: { isOn in
+                        UserDefaults.standard.set(isOn, forKey: "enableArticleSummarization")
                    }),
             .navigation(title: "Typography Settings", 
                        action: { [weak self] in
@@ -865,6 +864,7 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         themeVC.delegate = self
         navigationController?.pushViewController(themeVC, animated: true)
     }
+    
     
     // MARK: - Updated Storage Switch Action and Migration Helpers
     @objc private func forceSyncData() {
@@ -1891,3 +1891,4 @@ extension SettingsViewController: AppThemeSelectionDelegate {
         tableView.reloadData()
     }
 }
+

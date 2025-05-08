@@ -45,6 +45,7 @@ enum SmartFolderField: String, Codable {
     case feedTitle = "feedTitle"
     case isRead = "isRead"
     case pubDate = "pubDate"
+    case regex = "regex"
 }
 
 /// Operations that can be used in rules
@@ -61,6 +62,8 @@ enum SmartFolderOperation: String, Codable {
     case isFalse = "isFalse"
     case after = "after"
     case before = "before"
+    case matches = "matches"
+    case notMatches = "notMatches"
 }
 
 /// Enum for the matching mode of a Smart Folder
@@ -219,6 +222,10 @@ extension SmartFolder {
             case .content:
                 let content = article.content ?? article.description ?? ""
                 let result = evaluateStringRule(value: content, rule: rule)
+                ruleResults.append(result)
+                
+            case .regex:
+                let result = evaluateRegexRule(article: article, rule: rule)
                 ruleResults.append(result)
                 
             case .feedTitle, .feedURL:
@@ -526,5 +533,36 @@ extension SmartFolder {
         }
         
         completion(matches)
+    }
+    
+    /// Evaluates a regex rule against an article
+    private func evaluateRegexRule(article: RSSItem, rule: SmartFolderRule) -> Bool {
+        // Combine all text fields for regex matching
+        let textsToSearch = [
+            article.title,
+            article.description ?? "",
+            article.content ?? "",
+            article.author ?? "",
+            article.source
+        ].joined(separator: " ")
+        
+        do {
+            let regex = try NSRegularExpression(pattern: rule.value)
+            let range = NSRange(textsToSearch.startIndex..., in: textsToSearch)
+            let matches = regex.matches(in: textsToSearch, range: range)
+            
+            switch rule.operation {
+            case .matches:
+                return !matches.isEmpty
+            case .notMatches:
+                return matches.isEmpty
+            default:
+                return false
+            }
+        } catch {
+            // If regex is invalid, don't match
+            print("SmartFolder: Invalid regex pattern: \(rule.value)")
+            return false
+        }
     }
 }

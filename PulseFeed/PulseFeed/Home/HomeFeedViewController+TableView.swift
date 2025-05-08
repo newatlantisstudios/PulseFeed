@@ -1283,15 +1283,7 @@ extension HomeFeedViewController {
             _ = normalizeLink(item.link)
             _ = ReadStatusTracker.shared.isArticleRead(link: item.link)
             
-            // If we're using enhanced cells, prepare image loading
-            if useEnhancedStyle, 
-               UserDefaults.standard.bool(forKey: "showArticleImages"),
-               let description = item.description,
-               let imageUrlString = extractImageUrlFromDescription(description),
-               let _ = URL(string: imageUrlString) {
-                // Just prepare the URL, we'll let the cell load it when needed
-                // This reduces unnecessary network requests for cells that might never be seen
-            }
+            // Image loading is now disabled
         }
     }
     
@@ -1300,23 +1292,7 @@ extension HomeFeedViewController {
         // Currently we don't need to do anything here as our prefetching is lightweight
     }
     
-    // Helper method to extract image URL from description
-    private func extractImageUrlFromDescription(_ description: String) -> String? {
-        let pattern = "img\\s+[^>]*src\\s*=\\s*['\"]([^'\"]+)['\"]"
-        
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
-            return nil
-        }
-        
-        let matches = regex.matches(in: description, options: [], range: NSRange(location: 0, length: description.count))
-        
-        guard let match = matches.first,
-              let range = Range(match.range(at: 1), in: description) else {
-            return nil
-        }
-        
-        return String(description[range])
-    }
+    // Image loading is now disabled
 }
 
 // MARK: - Safari View Controller Delegate
