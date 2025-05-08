@@ -1,9 +1,6 @@
 import UIKit
 import Foundation
 
-// Import renamed option types
-import class UIKit.UIColor
-
 protocol SortFilterViewDelegate: AnyObject {
     func sortOptionSelected(_ option: SortOptionConfig)
     func filterOptionSelected(_ option: FilterOptionSet)

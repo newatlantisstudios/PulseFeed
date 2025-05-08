@@ -823,10 +823,10 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             // Update the Select All / Deselect All button
             if selectedItems.count == items.count {
                 navigationItem.rightBarButtonItems?[1].title = "Deselect All"
-                navigationItem.rightBarButtonItems?[1].action = #selector(deselectAllItems)
+                navigationItem.rightBarButtonItems?[1].action = #selector(deselectAllBulkItems)
             } else {
                 navigationItem.rightBarButtonItems?[1].title = "Select All"
-                navigationItem.rightBarButtonItems?[1].action = #selector(selectAllItems)
+                navigationItem.rightBarButtonItems?[1].action = #selector(selectAllBulkItems)
             }
             
             // Update navigation title with selection count

@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.pulsefeed.refreshFeeds</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
@@ -23,6 +27,20 @@
 				</dict>
 			</array>
 		</dict>
+	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>NSUserNotificationsUsageDescription</key>
+	<string>PulseFeed would like to send you notifications when new articles are available.</string>
+	<key>BackgroundRefreshDefaults</key>
+	<dict>
+		<key>Enabled</key>
+		<true/>
+		<key>NotificationsEnabled</key>
+		<true/>
 	</dict>
 </dict>
 </plist>

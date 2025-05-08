@@ -365,6 +365,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     private func configureSettings() {
         // General Section
         let generalSection = SettingSection(type: .general, items: [
+            .navigation(title: "App Theme", 
+                   action: { [weak self] in
+                       self?.openAppThemeSelection()
+                   },
+                   icon: UIImage(systemName: "paintpalette")),
             .slider(title: "Feed Font Size", 
                    value: UserDefaults.standard.float(forKey: "fontSize") != 0 ? UserDefaults.standard.float(forKey: "fontSize") : 16,
                    range: 12...32,
@@ -476,6 +481,16 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                            self?.openRefreshIntervals()
                        },
                        icon: UIImage(systemName: "clock.arrow.circlepath")),
+            .toggle(title: "Background Refresh", 
+                   isOn: BackgroundRefreshManager.shared.isBackgroundRefreshEnabled,
+                   action: { isOn in
+                        BackgroundRefreshManager.shared.setBackgroundRefreshEnabled(isOn)
+                   }),
+            .toggle(title: "Notify for New Articles", 
+                   isOn: UserDefaults.standard.bool(forKey: "enableNewItemNotifications"),
+                   action: { isOn in
+                        UserDefaults.standard.set(isOn, forKey: "enableNewItemNotifications")
+                   }),
             .navigation(title: "RSS Feed Loading Speeds", 
                        action: { [weak self] in
                            self?.openRSSLoadingSpeeds()
@@ -843,6 +858,12 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     @objc private func openTypographySettings() {
         let typographyVC = TypographySettingsViewController()
         navigationController?.pushViewController(typographyVC, animated: true)
+    }
+    
+    @objc private func openAppThemeSelection() {
+        let themeVC = AppThemeSelectionViewController()
+        themeVC.delegate = self
+        navigationController?.pushViewController(themeVC, animated: true)
     }
     
     // MARK: - Updated Storage Switch Action and Migration Helpers
@@ -1855,4 +1876,18 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
 // MARK: - UITableView Protocol Extensions
 extension SettingsViewController: UITableViewDelegate, UITableViewDataSource {
     // These methods are already implemented in the class itself
+}
+
+// MARK: - AppThemeSelectionDelegate
+extension SettingsViewController: AppThemeSelectionDelegate {
+    func themeDidChange() {
+        // Update app appearance based on new theme
+        view.window?.overrideUserInterfaceStyle = .unspecified
+        
+        // Notify about theme change to update UI in other view controllers
+        NotificationCenter.default.post(name: Notification.Name("appThemeChanged"), object: nil)
+        
+        // You may also want to reload table view to apply new theme colors
+        tableView.reloadData()
+    }
 }

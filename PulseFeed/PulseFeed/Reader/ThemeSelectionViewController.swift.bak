@@ -150,21 +150,10 @@ extension ThemeSelectionViewController: UITableViewDataSource {
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        guard let cell = tableView.dequeueReusableCell(withIdentifier: "ThemeSelectionCell", for: indexPath) as? ThemeSelectionCell else {
-            // Fallback to standard cell if custom cell isn't available
-            let standardCell = UITableViewCell(style: .default, reuseIdentifier: "StandardCell")
-            let theme = themes[indexPath.row]
-            standardCell.textLabel?.text = theme.name
-            standardCell.accessoryType = theme.name == selectedThemeName ? .checkmark : .none
-            return standardCell
-        }
+        let cell = tableView.dequeueReusableCell(withIdentifier: "ThemeSelectionCell", for: indexPath) as! ThemeSelectionCell
         
         let theme = themes[indexPath.row]
-        let themeIndex = indexPath.row  // We'll pass the index to use for explicit color selection
-        cell.configure(with: theme, themeIndex: themeIndex, isSelected: theme.name == selectedThemeName)
-        
-        // Debugging
-        print("Configuring cell at index \(indexPath.row) with theme '\(theme.name)'")
+        cell.configure(with: theme, isSelected: theme.name == selectedThemeName)
         
         return cell
     }
@@ -221,26 +210,7 @@ extension ThemeSelectionViewController: UITableViewDelegate {
     }
     
     func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
-        return 80
-    }
-    
-    func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
-        // Force layout and color update immediately when displayed
-        if let themeCell = cell as? ThemeSelectionCell {
-            // CRITICAL: Reconfigure cell to ensure correct colors for this row
-            let theme = themes[indexPath.row]
-            themeCell.configure(with: theme, themeIndex: indexPath.row, isSelected: theme.name == selectedThemeName)
-            
-            // Force layout update
-            themeCell.setNeedsLayout()
-            themeCell.layoutIfNeeded()
-            
-            // Debug the current cell's colors
-            print("DISPLAYING ROW \(indexPath.row): \(theme.name)")
-            print("  BG COLOR: \(themeCell.backgroundColorIndicator.backgroundColor?.debugDescription ?? "nil")")
-            print("  TEXT COLOR: \(themeCell.textColorIndicator.backgroundColor?.debugDescription ?? "nil")")
-            print("  ACCENT COLOR: \(themeCell.accentColorIndicator.backgroundColor?.debugDescription ?? "nil")")
-        }
+        return 70
     }
 }
 
@@ -259,12 +229,9 @@ class ThemeSelectionCell: UITableViewCell {
     
     // MARK: - Properties
     
-    let backgroundLabel = UILabel()
-    let textColorLabel = UILabel() // Renamed to avoid conflict with UITableViewCell's textLabel
-    let accentLabel = UILabel()
-    let backgroundColorIndicator = UIView() // Made public for debugging access
-    let textColorIndicator = UIView() // Made public for debugging access
-    let accentColorIndicator = UIView() // Made public for debugging access
+    private let themeNameLabel = UILabel()
+    private let previewView = UIView()
+    private let textPreviewLabel = UILabel()
     
     // MARK: - Initialization
     
@@ -280,167 +247,52 @@ class ThemeSelectionCell: UITableViewCell {
     // MARK: - UI Setup
     
     private func setupUI() {
-        // Configure background color for the cell
-        backgroundColor = .clear
-        selectionStyle = .none
+        // Setup theme name label
+        themeNameLabel.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        themeNameLabel.translatesAutoresizingMaskIntoConstraints = false
         
-        // Set up background label
-        backgroundLabel.text = "Background"
-        backgroundLabel.font = UIFont.systemFont(ofSize: 14)
-        backgroundLabel.textAlignment = .left
-        backgroundLabel.translatesAutoresizingMaskIntoConstraints = false
+        // Setup preview view
+        previewView.layer.cornerRadius = 8
+        previewView.clipsToBounds = true
+        previewView.translatesAutoresizingMaskIntoConstraints = false
         
-        // Set up text label
-        textColorLabel.text = "Text"
-        textColorLabel.font = UIFont.systemFont(ofSize: 14)
-        textColorLabel.textAlignment = .center
-        textColorLabel.translatesAutoresizingMaskIntoConstraints = false
+        // Setup text preview label
+        textPreviewLabel.text = "Aa"
+        textPreviewLabel.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        textPreviewLabel.textAlignment = .center
+        textPreviewLabel.translatesAutoresizingMaskIntoConstraints = false
         
-        // Set up accent label
-        accentLabel.text = "Accent"
-        accentLabel.font = UIFont.systemFont(ofSize: 14)
-        accentLabel.textAlignment = .center
-        accentLabel.translatesAutoresizingMaskIntoConstraints = false
-        
-        // Set up color indicators
-        configureColorIndicator(backgroundColorIndicator)
-        configureColorIndicator(textColorIndicator)
-        configureColorIndicator(accentColorIndicator)
-        
-        // Add all elements to content view
-        contentView.addSubview(backgroundLabel)
-        contentView.addSubview(textColorLabel)
-        contentView.addSubview(accentLabel)
-        contentView.addSubview(backgroundColorIndicator)
-        contentView.addSubview(textColorIndicator)
-        contentView.addSubview(accentColorIndicator)
+        // Add subviews
+        previewView.addSubview(textPreviewLabel)
+        contentView.addSubview(themeNameLabel)
+        contentView.addSubview(previewView)
         
         // Setup constraints
         NSLayoutConstraint.activate([
-            // Background column
-            backgroundLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            backgroundLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            backgroundLabel.widthAnchor.constraint(equalToConstant: 100),
+            themeNameLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            themeNameLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             
-            backgroundColorIndicator.centerYAnchor.constraint(equalTo: backgroundLabel.centerYAnchor),
-            backgroundColorIndicator.leadingAnchor.constraint(equalTo: backgroundLabel.trailingAnchor, constant: 10),
-            backgroundColorIndicator.widthAnchor.constraint(equalToConstant: 24),
-            backgroundColorIndicator.heightAnchor.constraint(equalToConstant: 24),
+            previewView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            previewView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            previewView.widthAnchor.constraint(equalToConstant: 48),
+            previewView.heightAnchor.constraint(equalToConstant: 48),
             
-            // Text column
-            textColorLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor, constant: -10),
-            textColorLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            textColorLabel.widthAnchor.constraint(equalToConstant: 50),
-            
-            textColorIndicator.centerYAnchor.constraint(equalTo: textColorLabel.centerYAnchor),
-            textColorIndicator.leadingAnchor.constraint(equalTo: textColorLabel.trailingAnchor, constant: 10),
-            textColorIndicator.widthAnchor.constraint(equalToConstant: 24),
-            textColorIndicator.heightAnchor.constraint(equalToConstant: 24),
-            
-            // Accent column
-            accentLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            accentLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -70),
-            accentLabel.widthAnchor.constraint(equalToConstant: 60),
-            
-            accentColorIndicator.centerYAnchor.constraint(equalTo: accentLabel.centerYAnchor),
-            accentColorIndicator.leadingAnchor.constraint(equalTo: accentLabel.trailingAnchor, constant: 10),
-            // Remove the trailing constraint that was causing the oval shape
-            accentColorIndicator.widthAnchor.constraint(equalToConstant: 24),
-            accentColorIndicator.heightAnchor.constraint(equalToConstant: 24)
+            textPreviewLabel.centerXAnchor.constraint(equalTo: previewView.centerXAnchor),
+            textPreviewLabel.centerYAnchor.constraint(equalTo: previewView.centerYAnchor)
         ])
-    }
-    
-    private func configureColorIndicator(_ view: UIView) {
-        view.translatesAutoresizingMaskIntoConstraints = false
-        view.layer.cornerRadius = 12
-        view.layer.borderWidth = 2
-        view.layer.borderColor = UIColor.systemGray3.cgColor
-        
-        // Add shadow to make the color indicator more visible
-        view.layer.shadowColor = UIColor.black.cgColor
-        view.layer.shadowOffset = CGSize(width: 0, height: 1)
-        view.layer.shadowOpacity = 0.3
-        view.layer.shadowRadius = 2
     }
     
     // MARK: - Configuration
     
-    func configure(with theme: ArticleTheme, themeIndex: Int, isSelected: Bool) {
-        // IMPORTANT: Apply each theme's actual colors directly from the model
-        let bgColor = UIColor(hex: theme.backgroundColor)
-        let txtColor = UIColor(hex: theme.textColor)
-        let accColor = UIColor(hex: theme.accentColor)
+    func configure(with theme: ArticleTheme, isSelected: Bool) {
+        themeNameLabel.text = theme.name
         
-        // Set the colors directly
-        backgroundColorIndicator.backgroundColor = bgColor
-        textColorIndicator.backgroundColor = txtColor
-        accentColorIndicator.backgroundColor = accColor
+        // Setup preview colors
+        previewView.backgroundColor = theme.backgroundColorUI
+        textPreviewLabel.textColor = theme.textColorUI
         
-        // Keep text labels consistent
-        backgroundLabel.text = "Background"
-        textColorLabel.text = "Text"
-        accentLabel.text = "Accent"
-        
-        // Debug output to verify correct hex colors
-        print("ROW \(themeIndex): \(theme.name)")
-        print("  BG: \(theme.backgroundColor) -> \(bgColor)")
-        print("  TEXT: \(theme.textColor) -> \(txtColor)")
-        print("  ACCENT: \(theme.accentColor) -> \(accColor)")
-        
-        // Additional color fallbacks if still empty
-        if backgroundColorIndicator.backgroundColor == nil {
-            backgroundColorIndicator.backgroundColor = .systemGray6
-        }
-        if textColorIndicator.backgroundColor == nil {
-            textColorIndicator.backgroundColor = .systemGray
-        }
-        if accentColorIndicator.backgroundColor == nil {
-            accentColorIndicator.backgroundColor = .systemBlue
-        }
-        
-        // Ensure colors have opacity
-        backgroundColorIndicator.alpha = 1.0
-        textColorIndicator.alpha = 1.0
-        accentColorIndicator.alpha = 1.0
-        
-        // Set up selection state
+        // Setup selection state
         accessoryType = isSelected ? .checkmark : .none
-    }
-    
-    // Helper method to try to create a color from a hex string
-    private func tryGetColor(fromHex hex: String) -> UIColor? {
-        // Skip invalid hex strings
-        guard !hex.isEmpty else { return nil }
-        
-        // Use the system hex initializer
-        return UIColor(hex: hex)
-    }
-    
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        
-        // Force refresh of the color views
-        backgroundColorIndicator.setNeedsDisplay()
-        textColorIndicator.setNeedsDisplay()
-        accentColorIndicator.setNeedsDisplay()
-        
-        // Apply clip to bounds to ensure circles are visible
-        backgroundColorIndicator.clipsToBounds = true
-        textColorIndicator.clipsToBounds = true
-        accentColorIndicator.clipsToBounds = true
-        
-        // Add a distinctive border to make colors more visible
-        let borderColor = UIColor.systemGray.cgColor
-        backgroundColorIndicator.layer.borderColor = borderColor
-        textColorIndicator.layer.borderColor = borderColor
-        accentColorIndicator.layer.borderColor = borderColor
-        
-        // Increase border width for better visibility
-        backgroundColorIndicator.layer.borderWidth = 2
-        textColorIndicator.layer.borderWidth = 2
-        accentColorIndicator.layer.borderWidth = 2
-        
-        // IMPORTANT: Do NOT reset colors here - they should be set in configure() only
     }
 }
 
@@ -771,9 +623,6 @@ class ThemePreviewCell: UITableViewCell {
     private let titleLabel = UILabel()
     private let bodyTextLabel = UILabel()
     private let linkTextLabel = UILabel()
-    private let colorPaletteView = UIView()
-    private let colorsStackView = UIStackView()
-    private let colorLabelsStackView = UIStackView()
     
     // MARK: - Initialization
     
@@ -813,14 +662,10 @@ class ThemePreviewCell: UITableViewCell {
         linkTextLabel.font = UIFont.systemFont(ofSize: 16)
         linkTextLabel.translatesAutoresizingMaskIntoConstraints = false
         
-        // Setup color palette view
-        setupColorPaletteView()
-        
         // Add subviews
         previewContainerView.addSubview(titleLabel)
         previewContainerView.addSubview(bodyTextLabel)
         previewContainerView.addSubview(linkTextLabel)
-        previewContainerView.addSubview(colorPaletteView)
         contentView.addSubview(previewContainerView)
         
         // Setup constraints
@@ -841,121 +686,16 @@ class ThemePreviewCell: UITableViewCell {
             linkTextLabel.topAnchor.constraint(equalTo: bodyTextLabel.bottomAnchor, constant: 12),
             linkTextLabel.leadingAnchor.constraint(equalTo: previewContainerView.leadingAnchor, constant: 16),
             linkTextLabel.trailingAnchor.constraint(equalTo: previewContainerView.trailingAnchor, constant: -16),
-            
-            colorPaletteView.topAnchor.constraint(equalTo: linkTextLabel.bottomAnchor, constant: 20),
-            colorPaletteView.leadingAnchor.constraint(equalTo: previewContainerView.leadingAnchor, constant: 16),
-            colorPaletteView.trailingAnchor.constraint(equalTo: previewContainerView.trailingAnchor, constant: -16),
-            colorPaletteView.heightAnchor.constraint(equalToConstant: 60),
-            colorPaletteView.bottomAnchor.constraint(equalTo: previewContainerView.bottomAnchor, constant: -16)
+            linkTextLabel.bottomAnchor.constraint(lessThanOrEqualTo: previewContainerView.bottomAnchor, constant: -16)
         ])
-    }
-    
-    private func setupColorPaletteView() {
-        // Setup color palette container
-        colorPaletteView.translatesAutoresizingMaskIntoConstraints = false
-        colorPaletteView.backgroundColor = .clear
-        
-        // Setup color swatches stack view
-        colorsStackView.axis = .horizontal
-        colorsStackView.distribution = .fillEqually
-        colorsStackView.spacing = 10
-        colorsStackView.translatesAutoresizingMaskIntoConstraints = false
-        
-        // Setup color labels stack view
-        colorLabelsStackView.axis = .horizontal
-        colorLabelsStackView.distribution = .fillEqually
-        colorLabelsStackView.spacing = 10
-        colorLabelsStackView.translatesAutoresizingMaskIntoConstraints = false
-        
-        // Create color swatches
-        let backgroundSwatch = createColorSwatch()
-        let textSwatch = createColorSwatch()
-        let accentSwatch = createColorSwatch()
-        
-        // Create color labels
-        let backgroundLabel = createColorLabel(text: "Background")
-        let textLabel = createColorLabel(text: "Text")
-        let accentLabel = createColorLabel(text: "Accent")
-        
-        // Add swatches to stack
-        colorsStackView.addArrangedSubview(backgroundSwatch)
-        colorsStackView.addArrangedSubview(textSwatch)
-        colorsStackView.addArrangedSubview(accentSwatch)
-        
-        // Tag swatches for configuration
-        backgroundSwatch.tag = 1
-        textSwatch.tag = 2
-        accentSwatch.tag = 3
-        
-        // Add labels to stack
-        colorLabelsStackView.addArrangedSubview(backgroundLabel)
-        colorLabelsStackView.addArrangedSubview(textLabel)
-        colorLabelsStackView.addArrangedSubview(accentLabel)
-        
-        // Add stacks to container
-        colorPaletteView.addSubview(colorsStackView)
-        colorPaletteView.addSubview(colorLabelsStackView)
-        
-        // Setup constraints
-        NSLayoutConstraint.activate([
-            colorsStackView.topAnchor.constraint(equalTo: colorPaletteView.topAnchor),
-            colorsStackView.leadingAnchor.constraint(equalTo: colorPaletteView.leadingAnchor),
-            colorsStackView.trailingAnchor.constraint(equalTo: colorPaletteView.trailingAnchor),
-            colorsStackView.heightAnchor.constraint(equalToConstant: 40),
-            
-            colorLabelsStackView.topAnchor.constraint(equalTo: colorsStackView.bottomAnchor, constant: 4),
-            colorLabelsStackView.leadingAnchor.constraint(equalTo: colorPaletteView.leadingAnchor),
-            colorLabelsStackView.trailingAnchor.constraint(equalTo: colorPaletteView.trailingAnchor),
-            colorLabelsStackView.bottomAnchor.constraint(equalTo: colorPaletteView.bottomAnchor)
-        ])
-    }
-    
-    private func createColorSwatch() -> UIView {
-        let view = UIView()
-        view.layer.cornerRadius = 6
-        view.layer.borderWidth = 0.5
-        view.layer.borderColor = UIColor.systemGray4.cgColor
-        return view
-    }
-    
-    private func createColorLabel(text: String) -> UILabel {
-        let label = UILabel()
-        label.text = text
-        label.font = UIFont.systemFont(ofSize: 12)
-        label.textAlignment = .center
-        return label
     }
     
     // MARK: - Configuration
     
     func configure(backgroundColor: UIColor, textColor: UIColor, accentColor: UIColor) {
-        // Configure preview content
         previewContainerView.backgroundColor = backgroundColor
         titleLabel.textColor = textColor
         bodyTextLabel.textColor = textColor
         linkTextLabel.textColor = accentColor
-        
-        // Configure color swatches
-        for view in colorsStackView.arrangedSubviews {
-            switch view.tag {
-            case 1: // Background swatch
-                view.backgroundColor = backgroundColor
-            case 2: // Text swatch
-                view.backgroundColor = textColor
-            case 3: // Accent swatch
-                view.backgroundColor = accentColor
-            default:
-                break
-            }
-        }
-        
-        // Configure labels color based on background brightness
-        let isDark = backgroundColor.isDarkColor
-        let labelColor = isDark ? UIColor.white : UIColor.black
-        for label in colorLabelsStackView.arrangedSubviews {
-            if let label = label as? UILabel {
-                label.textColor = labelColor
-            }
-        }
     }
 }

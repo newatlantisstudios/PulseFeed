@@ -30,6 +30,39 @@ extension HomeFeedViewController {
         
         // Initially hide the label
         loadingLabel.isHidden = true
+        
+        // Add a failsafe timer to recover from any loading state issues
+        // This is a special recovery mechanism for the background refresh feature
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
+            guard let self = self else { return }
+            
+            // Check if we're still in loading state
+            if self.tableView.isHidden {
+                print("DEBUG: Applying failsafe to recover from loading state")
+                
+                // Force UI to be restored
+                self.tableView.isHidden = false
+                self.loadingIndicator.stopAnimating()
+                self.stopRefreshAnimation()
+                self.refreshControl.endRefreshing()
+                self.updateFooterVisibility()
+                
+                // Show a message
+                self.loadingLabel.text = "Loading timed out. You can tap refresh to try again."
+                self.loadingLabel.isHidden = false
+                
+                // Hide the message after a few seconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    self.loadingLabel.isHidden = true
+                }
+                
+                // If we have no items, try to show something
+                if self.items.isEmpty && !self._allItems.isEmpty {
+                    self.items = self._allItems
+                    self.tableView.reloadData()
+                }
+            }
+        }
     }
     
     func setupRefreshControl() {
@@ -893,40 +926,8 @@ extension HomeFeedViewController {
         navigationItem.rightBarButtonItems = originalRightBarButtonItems
     }
     
-    @objc func selectAllItems() {
-        // Select all items
-        selectedItems.removeAll()
-        for index in 0..<items.count {
-            selectedItems.insert(index)
-        }
-        
-        // Update UI
-        tableView.reloadData()
-        updateNavigationBarTitle()
-        updateBulkToolbarState()
-        
-        // Change button to "Deselect All"
-        if let selectAllButton = navigationItem.rightBarButtonItems?[1] {
-            selectAllButton.title = "Deselect All"
-            selectAllButton.action = #selector(deselectAllItems)
-        }
-    }
-    
-    @objc func deselectAllItems() {
-        // Deselect all items
-        selectedItems.removeAll()
-        
-        // Update UI
-        tableView.reloadData()
-        updateNavigationBarTitle()
-        updateBulkToolbarState()
-        
-        // Change button to "Select All"
-        if let selectAllButton = navigationItem.rightBarButtonItems?[1] {
-            selectAllButton.title = "Select All"
-            selectAllButton.action = #selector(selectAllBulkItems)
-        }
-    }
+    // Methods moved to HomeFeedViewController+BulkEdit.swift
+    // Use @objc func selectAllBulkItems() and @objc func deselectAllBulkItems() instead
     
     func updateBulkToolbarState() {
         // Enable/disable toolbar buttons based on selection
@@ -1973,8 +1974,18 @@ extension HomeFeedViewController {
                 loadingIndicator.startAnimating()
                 startRefreshAnimation() // Start refresh button animation
                 
-                // Apply advanced filtering and sorting
-                items = FeedFilterManagerNew.shared.applySortAndFilter(to: _allItems)
+                // First check if we need to filter out read articles
+                let hideReadArticles = UserDefaults.standard.bool(forKey: "hideReadArticles")
+                
+                // Apply read status filtering if needed
+                var readFilteredItems = _allItems
+                if hideReadArticles {
+                    readFilteredItems = _allItems.filter { !ReadStatusTracker.shared.isArticleRead(link: $0.link) }
+                    print("DEBUG: Read status filtered \(_allItems.count) items to \(readFilteredItems.count) items")
+                }
+                
+                // Then apply advanced filtering and sorting
+                items = FeedFilterManagerNew.shared.applySortAndFilter(to: readFilteredItems)
                 
                 // Update the sort/filter view with the current settings if it exists
                 if let sortFilterView = self.sortFilterView {

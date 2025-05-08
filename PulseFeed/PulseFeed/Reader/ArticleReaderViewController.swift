@@ -1192,6 +1192,36 @@ class ArticleReaderViewController: UIViewController {
             }
         }
     }
+    
+    // MARK: - Keyboard Shortcuts Support
+    
+    override var canBecomeFirstResponder: Bool {
+        return true
+    }
+    
+    override var keyCommands: [UIKeyCommand]? {
+        // Keyboard shortcuts temporarily disabled
+        return []
+    }
+    
+    /// Keyboard shortcut help temporarily disabled
+    @objc func showKeyboardShortcutHelp() {
+        // Keyboard shortcuts disabled
+    }
+    
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        
+        // Become first responder to capture keyboard events
+        becomeFirstResponder()
+    }
+    
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        
+        // Resign first responder when leaving the view
+        resignFirstResponder()
+    }
 }
 
 // MARK: - WKNavigationDelegate
@@ -1307,20 +1337,4 @@ extension ArticleReaderViewController: WKNavigationDelegate {
 
 // MARK: - UIColor Extension
 
-extension UIColor {
-    var hexString: String {
-        var r: CGFloat = 0
-        var g: CGFloat = 0
-        var b: CGFloat = 0
-        var a: CGFloat = 0
-        
-        getRed(&r, green: &g, blue: &b, alpha: &a)
-        
-        return String(
-            format: "#%02X%02X%02X",
-            Int(r * 255),
-            Int(g * 255),
-            Int(b * 255)
-        )
-    }
-}
+// UIColor.hexString is already defined in AppColors.swift

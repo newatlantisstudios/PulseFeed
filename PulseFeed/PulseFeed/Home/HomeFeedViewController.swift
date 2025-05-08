@@ -4,6 +4,22 @@ import UIKit
 // MARK: - HomeFeedViewController
 class HomeFeedViewController: UIViewController, CALayerDelegate {
     
+    // MARK: - Theme Handling
+    
+    @objc func appThemeChanged(_ notification: Notification) {
+        // Update UI elements with new theme colors
+        view.backgroundColor = AppColors.background
+        tableView.backgroundColor = AppColors.background
+        tableView.separatorColor = AppColors.secondary.withAlphaComponent(0.3)
+        
+        // Refresh navigation and UI 
+        setupNavigationBar()
+        tableView.reloadData()
+        
+        // Update loading indicator colors if visible
+        loadingLabel.textColor = AppColors.secondary
+    }
+    
     // MARK: - Feed Refresh
     
     @objc func refreshFeeds() {
@@ -187,8 +203,18 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         
         // Update the currently displayed items if RSS feed is active
         if case .rss = self.currentFeedType {
-            // Apply advanced filtering and sorting
-            self.items = FeedFilterManagerNew.shared.applySortAndFilter(to: self._allItems)
+            // First check if we need to filter out read articles
+            let hideReadArticles = UserDefaults.standard.bool(forKey: "hideReadArticles")
+            
+            // Apply read status filtering if needed
+            var readFilteredItems = self._allItems
+            if hideReadArticles {
+                readFilteredItems = self._allItems.filter { !ReadStatusTracker.shared.isArticleRead(link: $0.link) }
+                print("DEBUG: Read status filtered \(self._allItems.count) items to \(readFilteredItems.count) items")
+            }
+            
+            // Then apply advanced filtering and sorting
+            self.items = FeedFilterManagerNew.shared.applySortAndFilter(to: readFilteredItems)
             
             // Apply duplicate handling according to user settings
             if DuplicateManager.shared.isDuplicateDetectionEnabled {
@@ -252,6 +278,154 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         // Reset the flag after a delay that's longer than the animation duration
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             self.isAutoScrolling = false
+        }
+    }
+    
+    // MARK: - Keyboard Navigation Methods
+    
+    /// Simply call safeScrollToTop for keyboard shortcut compatibility
+    @objc func scrollToTop() {
+        safeScrollToTop()
+    }
+    
+    /// Navigate to the next item in the feed
+    @objc func navigateToNextItem() {
+        guard !items.isEmpty && !tableView.isHidden else { return }
+        
+        // Get the currently visible rows
+        guard let visibleRows = tableView.indexPathsForVisibleRows, let firstVisible = visibleRows.min() else {
+            return
+        }
+        
+        // Calculate the next row, ensuring we don't go beyond the bounds
+        let nextRow = min(firstVisible.row + 1, items.count - 1)
+        let nextIndexPath = IndexPath(row: nextRow, section: 0)
+        
+        // Scroll to the next item
+        isAutoScrolling = true
+        tableView.scrollToRow(at: nextIndexPath, at: .top, animated: true)
+        
+        // Reset the flag after animation completes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.isAutoScrolling = false
+        }
+        
+        // Provide haptic feedback
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.impactOccurred()
+    }
+    
+    /// Navigate to the previous item in the feed
+    @objc func navigateToPreviousItem() {
+        guard !items.isEmpty && !tableView.isHidden else { return }
+        
+        // Get the currently visible rows
+        guard let visibleRows = tableView.indexPathsForVisibleRows, let firstVisible = visibleRows.min() else {
+            return
+        }
+        
+        // Calculate the previous row, ensuring we don't go below zero
+        let prevRow = max(firstVisible.row - 1, 0)
+        let prevIndexPath = IndexPath(row: prevRow, section: 0)
+        
+        // Scroll to the previous item
+        isAutoScrolling = true
+        tableView.scrollToRow(at: prevIndexPath, at: .top, animated: true)
+        
+        // Reset the flag after animation completes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.isAutoScrolling = false
+        }
+        
+        // Provide haptic feedback
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.impactOccurred()
+    }
+    
+    /// Open the currently selected item
+    @objc func openSelectedItem() {
+        guard !items.isEmpty && !tableView.isHidden else { return }
+        
+        // Get the currently visible rows
+        guard let visibleRows = tableView.indexPathsForVisibleRows, let firstVisible = visibleRows.min() else {
+            return
+        }
+        
+        // Simulate a tap on the first visible row
+        tableView(tableView, didSelectRowAt: firstVisible)
+    }
+    
+    /// Toggle bookmark status for the currently visible item
+    @objc func toggleBookmark() {
+        guard !items.isEmpty && !tableView.isHidden else { return }
+        
+        // Get the currently visible rows
+        guard let visibleRows = tableView.indexPathsForVisibleRows, let firstVisible = visibleRows.min() else {
+            return
+        }
+        
+        // Toggle bookmark for the first visible item
+        let item = items[firstVisible.row]
+        toggleBookmark(for: item) {
+            self.tableView.reloadRows(at: [firstVisible], with: .none)
+        }
+        
+        // Provide haptic feedback
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+    }
+    
+    /// Toggle favorite status for the currently visible item
+    @objc func toggleFavorite() {
+        guard !items.isEmpty && !tableView.isHidden else { return }
+        
+        // Get the currently visible rows
+        guard let visibleRows = tableView.indexPathsForVisibleRows, let firstVisible = visibleRows.min() else {
+            return
+        }
+        
+        // Toggle favorite for the first visible item
+        let item = items[firstVisible.row]
+        toggleHeart(for: item) {
+            self.tableView.reloadRows(at: [firstVisible], with: .none)
+        }
+        
+        // Provide haptic feedback
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+    }
+    
+    /// Toggle read status for the currently visible item
+    @objc func toggleReadStatus() {
+        guard !items.isEmpty && !tableView.isHidden else { return }
+        
+        // Get the currently visible rows
+        guard let visibleRows = tableView.indexPathsForVisibleRows, let firstVisible = visibleRows.min() else {
+            return
+        }
+        
+        // Toggle read status for the first visible item
+        let item = items[firstVisible.row]
+        toggleReadStatus(for: item) {
+            self.tableView.reloadRows(at: [firstVisible], with: .none)
+        }
+        
+        // Provide haptic feedback
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+    }
+    
+    /// Show the search interface
+    @objc func showSearch() {
+        // Check if we have a search button in the navigation bar
+        if let searchButton = navigationItem.rightBarButtonItems?.first {
+            // Just trigger the action - likely to be search in this context
+            perform(searchButton.action)
+        } else {
+            // If no search function is available, show toast
+            let toast = UIAlertController(title: "Search", message: "Search functionality will be available soon", preferredStyle: .alert)
+            toast.addAction(UIAlertAction(title: "OK", style: .default))
+            present(toast, animated: true)
         }
     }
     
@@ -363,6 +537,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         super.viewDidLoad()
         
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged(_:)), name: Notification.Name("fontSizeChanged"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appThemeChanged(_:)), name: Notification.Name("appThemeChanged"), object: nil)
         
         // Setup UI elements
         setupLoadingIndicator()
@@ -455,7 +630,10 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         if tableView.isHidden {
             startRefreshAnimation()
         }
-
+        
+        // Become first responder to capture keyboard events
+        becomeFirstResponder()
+        
         // No need to call refreshFeeds() here since we're handling initial loading in viewWillAppear
         // Just ensure the UI is properly updated when returning from another view
         
@@ -1774,8 +1952,9 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         present(alert, animated: true)
     }
     
-    // Changed from private to internal to fix build error in HomeFeedViewController+TableView.swift
-    func markItemsAboveAsRead(_ indexPath: IndexPath) {
+    /// Mark all items above a specific index path as read
+    /// - Parameter indexPath: The index path that was long-pressed
+    internal func markItemsAboveAsRead(_ indexPath: IndexPath) {
         // Collect all links from items above the tapped row
         let linksToMark = (0...indexPath.row).map { items[$0].link }
         
@@ -1999,26 +2178,41 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     }
     
     @objc private func handleHideReadArticlesChanged(_ notification: Notification) {
-        // Reload feeds based on the current view
-        switch currentFeedType {
-        case .rss:
-            // For RSS feeds, we need to refresh the current items shown based on the setting
-            updateTableViewContent()
-        case .folder(let folderId):
-            // For folder views, also refresh
-            if let folder = currentFolder, folder.id == folderId {
-                loadFolderFeeds(folder: folder)
+        // Apply a fade animation to show the user that the list is being filtered
+        UIView.animate(withDuration: 0.3, animations: {
+            self.tableView.alpha = 0.5
+        }) { _ in
+            // Reload feeds based on the current view
+            switch self.currentFeedType {
+            case .rss:
+                // For RSS feeds, we need to refresh the current items shown based on the setting
+                self.updateTableViewContent()
+            case .folder(let folderId):
+                // For folder views, also refresh
+                if let folder = self.currentFolder, folder.id == folderId {
+                    self.loadFolderFeeds(folder: folder)
+                }
+            case .smartFolder(let folderId):
+                // For smart folder views, also refresh
+                if let folder = self.currentSmartFolder, folder.id == folderId {
+                    self.loadSmartFolderContents(folder: folder)
+                }
+            case .bookmarks, .heart, .archive:
+                // For these views, even though we don't typically filter by read status
+                // we'll still refresh in case the user wants this behavior everywhere
+                self.updateTableViewContent()
             }
-        case .smartFolder(let folderId):
-            // For smart folder views, also refresh
-            if let folder = currentSmartFolder, folder.id == folderId {
-                loadSmartFolderContents(folder: folder)
+            
+            // Fade the table view back in
+            UIView.animate(withDuration: 0.3) {
+                self.tableView.alpha = 1.0
             }
-        case .bookmarks, .heart, .archive:
-            // For these views, we don't filter by read status
-            // so no need to refresh
-            break
         }
+        
+        // Show a brief confirmation toast when the setting changes
+        let hideReadArticles = UserDefaults.standard.bool(forKey: "hideReadArticles")
+        let message = hideReadArticles ? "Read articles are now hidden" : "All articles are now shown"
+        self.showToast(message: message)
     }
     
     @objc private func handleTagsUpdated(_ notification: Notification) {
@@ -2189,5 +2383,30 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         NotificationCenter.default.removeObserver(self)
         tableView.removeObserver(self, forKeyPath: "contentSize")
         stopAutoRefreshTimer()
+    }
+    
+    // MARK: - Keyboard Shortcuts Support
+    
+    override var canBecomeFirstResponder: Bool {
+        return true
+    }
+    
+    override var keyCommands: [UIKeyCommand]? {
+        // Keyboard shortcuts temporarily disabled
+        return []
+    }
+    
+    // Keyboard shortcuts handling moved to the main viewDidAppear
+    
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        
+        // Resign first responder when leaving the view
+        resignFirstResponder()
+    }
+    
+    /// Keyboard shortcut help temporarily disabled
+    @objc func showKeyboardShortcutHelp() {
+        // Keyboard shortcuts disabled
     }
 }
