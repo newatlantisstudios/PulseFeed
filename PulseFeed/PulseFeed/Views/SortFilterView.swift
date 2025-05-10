@@ -477,7 +477,7 @@ class SortFilterView: UIView {
             }
         }
         
-        alert.addAction(UIAlertAction(title: "Close", style: .cancel))
+        alert.addAction(UIAlertAction(title: "✕", style: .cancel))
         
         // Present from the window
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,

@@ -49,7 +49,7 @@ class TagsContainerView: UIView {
     }
     
     func setTags(_ tags: [Tag]) {
-        print("DEBUG: TagsContainerView - Setting \(tags.count) tags")
+        //print("DEBUG: TagsContainerView - Setting \(tags.count) tags")
         
         // Remove existing tags
         stackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -63,7 +63,7 @@ class TagsContainerView: UIView {
         
         // Update visibility based on if we have tags
         isHidden = tags.isEmpty
-        print("DEBUG: TagsContainerView - Container hidden: \(isHidden)")
+        //print("DEBUG: TagsContainerView - Container hidden: \(isHidden)")
         
         // Force layout update
         setNeedsLayout()
@@ -103,11 +103,14 @@ class TagsContainerView: UIView {
 
 class EnhancedRSSCell: UITableViewCell {
     static let identifier = "EnhancedRSSCell"
-    
-    // Properties to track bookmarked and hearted status
+
+    // Properties to track item state
     var isBookmarked: Bool = false
     var isHearted: Bool = false
-    
+    var isRead: Bool = false
+    var isArchived: Bool = false
+    var isCached: Bool = false
+
     private let titleLabel: UILabel = {
         let label = UILabel()
         label.numberOfLines = 0
@@ -115,7 +118,7 @@ class EnhancedRSSCell: UITableViewCell {
         label.translatesAutoresizingMaskIntoConstraints = false
         return label
     }()
-    
+
     private let sourceLabel: UILabel = {
         let label = UILabel()
         label.font = UIFont.systemFont(ofSize: 12)
@@ -123,7 +126,7 @@ class EnhancedRSSCell: UITableViewCell {
         label.translatesAutoresizingMaskIntoConstraints = false
         return label
     }()
-    
+
     private let timeAgoLabel: UILabel = {
         let label = UILabel()
         label.font = UIFont.systemFont(ofSize: 12)
@@ -132,7 +135,7 @@ class EnhancedRSSCell: UITableViewCell {
         label.translatesAutoresizingMaskIntoConstraints = false
         return label
     }()
-    
+
     private let previewTextLabel: UILabel = {
         let label = UILabel()
         label.numberOfLines = 0
@@ -142,7 +145,7 @@ class EnhancedRSSCell: UITableViewCell {
         label.isHidden = true
         return label
     }()
-    
+
     private let articleImageView: UIImageView = {
         let imageView = UIImageView()
         imageView.contentMode = .scaleAspectFill
@@ -152,25 +155,14 @@ class EnhancedRSSCell: UITableViewCell {
         imageView.isHidden = true
         return imageView
     }()
-    
+
     private let cardView: UIView = {
         let view = UIView()
         view.translatesAutoresizingMaskIntoConstraints = false
-        view.backgroundColor = UIColor { traitCollection in
-            return traitCollection.userInterfaceStyle == .dark ? 
-                UIColor(hex: "1A1A1A") : UIColor(hex: "FFFFFF")
-        }
-        view.layer.cornerRadius = 8
-        
-        // Add subtle shadow
-        view.layer.shadowColor = UIColor.black.cgColor
-        view.layer.shadowOffset = CGSize(width: 0, height: 1)
-        view.layer.shadowOpacity = 0.1
-        view.layer.shadowRadius = 2
-        
+        view.backgroundColor = .clear // Use clear background for simpler style
         return view
     }()
-    
+
     // Cache indicator - create once and reuse
     private let cacheIndicator: UIView = {
         let indicator = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 12))
@@ -180,36 +172,33 @@ class EnhancedRSSCell: UITableViewCell {
         indicator.isHidden = true // Hide by default
         return indicator
     }()
-    
-    // Duplicate indicator badge
+
+    // Simple duplicate indicator
     private let duplicateBadge: UILabel = {
         let label = UILabel()
-        label.backgroundColor = UIColor(hex: "1E90FF") // Blue color for duplicates
+        label.backgroundColor = UIColor(hex: "1E90FF")
         label.textColor = .white
         label.font = UIFont.systemFont(ofSize: 11, weight: .bold)
         label.textAlignment = .center
-        label.layer.cornerRadius = 10
-        label.layer.masksToBounds = true
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.isHidden = true // Hide by default
+        label.isHidden = true
         return label
     }()
-    
-    // Duplicate indicator border
+
+    // Simple duplicate border
     private let duplicateBorder: UIView = {
         let view = UIView()
         view.layer.borderColor = UIColor(hex: "1E90FF").cgColor
-        view.layer.borderWidth = 2
+        view.layer.borderWidth = 1
         view.backgroundColor = .clear
-        view.layer.cornerRadius = 8
         view.translatesAutoresizingMaskIntoConstraints = false
-        view.isHidden = true // Hide by default
+        view.isHidden = true
         return view
     }()
-    
+
     // Tags container
     private let tagsContainerView = TagsContainerView()
-    
+
     // Constraints that we'll need to modify based on settings
     private var titleToPreviewConstraint: NSLayoutConstraint?
     private var previewToBottomConstraint: NSLayoutConstraint?
@@ -219,99 +208,97 @@ class EnhancedRSSCell: UITableViewCell {
     private var imageHeightConstraint: NSLayoutConstraint?
     private var tagsToBottomConstraint: NSLayoutConstraint?
     private var previewToTagsConstraint: NSLayoutConstraint?
+
+    // Track if we should display action buttons (hide on macOS Catalyst)
+    private var shouldShowActionButtons: Bool {
+        return !PlatformUtils.isMac
+    }
     
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         setupUI()
     }
-    
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
+
     private func setupUI() {
         backgroundColor = AppColors.background
         selectionStyle = .none
-        
-        // Add the duplicate border behind the card to highlight the entire cell
-        contentView.addSubview(duplicateBorder)
-        
+
+        // Simple content hierarchy
         contentView.addSubview(cardView)
         cardView.addSubview(titleLabel)
-        cardView.addSubview(articleImageView)
+        cardView.addSubview(articleImageView) // Kept but hidden
         cardView.addSubview(previewTextLabel)
         cardView.addSubview(tagsContainerView)
         cardView.addSubview(sourceLabel)
         cardView.addSubview(timeAgoLabel)
-        cardView.addSubview(cacheIndicator) // Add cache indicator to card view
+        cardView.addSubview(cacheIndicator)
+
+        // On macOS Catalyst, context menu is used instead of action buttons
+        if PlatformUtils.isMac {
+            // Make sure any action buttons or UI elements that should be hidden are not shown
+            self.accessoryType = .none
+            self.editingAccessoryType = .none
+        }
         
-        // Add duplicate indicator views
+        // Duplicate indicators
         contentView.addSubview(duplicateBorder)
         contentView.addSubview(duplicateBadge)
         
-        // Base constraints that are always active
+        // Basic constraints
         NSLayoutConstraint.activate([
-            // Card view constraints
-            cardView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
-            cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
+            // Content area
+            cardView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 2),
+            cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 6),
+            cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -6),
+            cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -2),
             
-            // Duplicate border constraints (slightly larger than the card view)
-            duplicateBorder.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
-            duplicateBorder.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
-            duplicateBorder.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
-            duplicateBorder.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+            // Duplicate border
+            duplicateBorder.topAnchor.constraint(equalTo: contentView.topAnchor),
+            duplicateBorder.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            duplicateBorder.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            duplicateBorder.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             
-            // Duplicate badge constraints (positioned at the top right)
+            // Duplicate badge
             duplicateBadge.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
-            duplicateBadge.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-            duplicateBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 20),
-            duplicateBadge.heightAnchor.constraint(equalToConstant: 20),
+            duplicateBadge.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
+            duplicateBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 18),
+            duplicateBadge.heightAnchor.constraint(equalToConstant: 18),
             
-            // Title label constraints
-            titleLabel.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 16),
-            titleLabel.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 16),
-            titleLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -16),
+            // Title
+            titleLabel.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 6),
+            titleLabel.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 8),
+            titleLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -8),
             
-            // Image view constraints (will be enabled/disabled based on settings)
-            articleImageView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 16),
-            articleImageView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -16),
+            // Image 
+            articleImageView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 8),
+            articleImageView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -8),
             
-            // Preview text constraints (will be enabled/disabled based on settings)
-            previewTextLabel.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 16),
-            previewTextLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -16),
+            // Preview text
+            previewTextLabel.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 8),
+            previewTextLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -8),
             
-            // Tags container constraints
-            tagsContainerView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 16),
-            tagsContainerView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -16),
+            // Tags
+            tagsContainerView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 8),
+            tagsContainerView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -8),
             
-            // Source label constraints
-            sourceLabel.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 16),
-            sourceLabel.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -16),
+            // Source
+            sourceLabel.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 8),
+            sourceLabel.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -6),
             
-            // Time ago label constraints
+            // Time
             timeAgoLabel.leadingAnchor.constraint(equalTo: sourceLabel.trailingAnchor, constant: 8),
-            timeAgoLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -16),
-            timeAgoLabel.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -16),
+            timeAgoLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -8),
+            timeAgoLabel.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -6),
             
-            // Cache indicator constraints - always positioned but visibility toggled
-            cacheIndicator.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 8),
-            cacheIndicator.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -8),
-            cacheIndicator.widthAnchor.constraint(equalToConstant: 12),
-            cacheIndicator.heightAnchor.constraint(equalToConstant: 12),
-            
-            // Duplicate badge constraints
-            duplicateBadge.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
-            duplicateBadge.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-            duplicateBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 20),
-            duplicateBadge.heightAnchor.constraint(equalToConstant: 20),
-            
-            // Duplicate border constraints (slightly larger than the card view)
-            duplicateBorder.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
-            duplicateBorder.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
-            duplicateBorder.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
-            duplicateBorder.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+            // Cache indicator
+            cacheIndicator.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 6),
+            cacheIndicator.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -6),
+            cacheIndicator.widthAnchor.constraint(equalToConstant: 10),
+            cacheIndicator.heightAnchor.constraint(equalToConstant: 10),
         ])
         
         // Store constraints that will be modified dynamically
@@ -336,39 +323,50 @@ class EnhancedRSSCell: UITableViewCell {
         tagsContainerView.isHidden = true
     }
     
-    // Original configure method with required parameters
-    func configure(with item: RSSItem, fontSize: CGFloat, isRead: Bool, isCached: Bool = false) {
+    // Basic configure method
+    func configure(with item: RSSItem, fontSize: CGFloat, isRead: Bool, isCached: Bool = false,
+                   isBookmarked: Bool = false, isHearted: Bool = false, isArchived: Bool = false) {
+        // Store state
+        self.isRead = isRead
+        self.isCached = isCached
+        self.isBookmarked = isBookmarked
+        self.isHearted = isHearted
+        self.isArchived = isArchived
+
+        // Set basic text content
         titleLabel.text = item.title
         sourceLabel.text = item.source
         timeAgoLabel.text = DateUtils.getTimeAgo(from: item.pubDate)
-        
-        // Apply different styling based on read state
+
+        // Basic styling based on read state
         titleLabel.textColor = isRead ? AppColors.secondary : AppColors.accent
         titleLabel.font = UIFont.systemFont(ofSize: fontSize, weight: isRead ? .regular : .medium)
-        
-        // Update card appearance for read state
-        cardView.alpha = isRead ? 0.85 : 1.0
-        
-        // Reset duplicate indicators
+        backgroundColor = isRead ? AppColors.background.withAlphaComponent(0.95) : AppColors.background
+
+        // Reset all indicators
         resetDuplicateIndicators()
-        
+
         // Set preview text based on user preferences
         configurePreviewText(item: item)
-        
-        // Configure image if available and enabled
-        configureImage(item: item)
-        
+
         // Configure tags
         configureTags(item: item)
-        
-        // Apply compact/expanded mode
-        applyViewMode()
-        
+
         // Set cache indicator visibility
         cacheIndicator.isHidden = !isCached
+
+        // On macOS Catalyst, ensure no action buttons are showing
+        if PlatformUtils.isMac {
+            // Remove any accessory views that might be showing
+            self.accessoryView = nil
+
+            // Remove any secondary actions or swipe actions
+            self.accessoryType = .none
+            self.editingAccessoryType = .none
+        }
     }
     
-    /// Add a duplicate count badge to the cell
+    /// Add a basic duplicate count badge to the cell
     /// - Parameter count: Number of articles in the duplicate group
     func addDuplicateBadge(count: Int) {
         guard count > 1 else {
@@ -376,35 +374,21 @@ class EnhancedRSSCell: UITableViewCell {
             return
         }
         
-        // Configure badge with count
+        // Set badge text and show it
         duplicateBadge.text = "\(count)"
-        
-        // Make badge wide enough to fit the text with padding
-        let badgeWidth = duplicateBadge.intrinsicContentSize.width + 8
-        duplicateBadge.widthAnchor.constraint(equalToConstant: max(20, badgeWidth)).isActive = true
-        
-        // Style the badge
-        duplicateBadge.layer.backgroundColor = UIColor(hex: "1E90FF").cgColor
-        
-        // Show the badge
         duplicateBadge.isHidden = false
-        
-        // Add a subtle blue border to indicate this is the primary article
         duplicateBorder.isHidden = false
-        duplicateBorder.layer.borderColor = UIColor(hex: "1E90FF").withAlphaComponent(0.5).cgColor
     }
     
-    /// Mark this cell as a duplicate article (not the primary version)
+    /// Simple marking for duplicate article
     func markAsDuplicate() {
-        // Style changes to indicate this is a secondary duplicate
-        cardView.alpha = 0.8
+        // Slightly dim the cell
+        backgroundColor = AppColors.background.withAlphaComponent(0.9)
         
-        // Add a dimmed blue border
+        // Show border
         duplicateBorder.isHidden = false
-        duplicateBorder.layer.borderColor = UIColor(hex: "1E90FF").withAlphaComponent(0.3).cgColor
-        duplicateBorder.layer.borderWidth = 1
         
-        // Add a subtle prefix to the title
+        // Add prefix to title
         if !titleLabel.text!.hasPrefix("⤷ ") {
             titleLabel.text = "⤷ " + titleLabel.text!
         }
@@ -420,9 +404,6 @@ class EnhancedRSSCell: UITableViewCell {
     
     override func layoutSubviews() {
         super.layoutSubviews()
-        
-        // Make sure the duplicate badge has rounded corners
-        duplicateBadge.layer.cornerRadius = duplicateBadge.bounds.height / 2
     }
     
     // Overloaded configure method for backward compatibility with SearchResultsViewController
@@ -433,16 +414,17 @@ class EnhancedRSSCell: UITableViewCell {
     }
     
     private func configurePreviewText(item: RSSItem) {
-        let previewMode = UserDefaults.standard.string(forKey: "previewTextLength") ?? "none"
-        
+        // Preview text length feature has been removed, always use "none"
+        let previewMode = "none"
+
         // Hide by default
         previewTextLabel.isHidden = true
-        
+
         // Deactivate constraints
         previewToBottomConstraint?.isActive = false
         titleToPreviewConstraint?.isActive = false
         previewToTagsConstraint?.isActive = false
-        
+
         guard previewMode != "none", let description = item.description else {
             return
         }
@@ -513,8 +495,8 @@ class EnhancedRSSCell: UITableViewCell {
         // Hide tags container initially until we get tags
         tagsContainerView.isHidden = true
         
-        print("DEBUG: EnhancedRSSCell - Fetching tags for item: \(item.title)")
-        print("DEBUG: EnhancedRSSCell - Item link: \(item.link)")
+        //print("DEBUG: EnhancedRSSCell - Fetching tags for item: \(item.title)")
+        //print("DEBUG: EnhancedRSSCell - Item link: \(item.link)")
         
         // Fetch tags for the item
         item.getTags { [weak self] result in
@@ -523,7 +505,7 @@ class EnhancedRSSCell: UITableViewCell {
             DispatchQueue.main.async {
                 switch result {
                 case .success(let tags):
-                    print("DEBUG: EnhancedRSSCell - Got \(tags.count) tags for item: \(item.title)")
+                    //print("DEBUG: EnhancedRSSCell - Got \(tags.count) tags for item: \(item.title)")
                     if !tags.isEmpty {
                         // Log each tag
                         for tag in tags {
@@ -551,7 +533,7 @@ class EnhancedRSSCell: UITableViewCell {
                     } else {
                         // If no tags, hide the container
                         self.tagsContainerView.isHidden = true
-                        print("DEBUG: EnhancedRSSCell - No tags, hiding container")
+                        //print("DEBUG: EnhancedRSSCell - No tags, hiding container")
                     }
                 case .failure(let error):
                     // If tags fetch fails, keep tags hidden
@@ -578,25 +560,5 @@ class EnhancedRSSCell: UITableViewCell {
         }
         
         return String(htmlString[range])
-    }
-    
-    private func applyViewMode() {
-        let isCompact = UserDefaults.standard.bool(forKey: "compactArticleView")
-        
-        if isCompact {
-            // In compact mode, limit title lines
-            titleLabel.numberOfLines = 2
-            previewTextLabel.numberOfLines = 1
-            
-            // Reduce image height in compact mode
-            imageHeightConstraint?.constant = 100
-        } else {
-            // In expanded mode, allow more lines
-            titleLabel.numberOfLines = 0
-            previewTextLabel.numberOfLines = 5
-            
-            // Full height image in expanded mode
-            imageHeightConstraint?.constant = 150
-        }
     }
 }

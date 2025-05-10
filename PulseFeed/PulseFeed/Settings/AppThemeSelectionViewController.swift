@@ -39,9 +39,9 @@ class AppThemeSelectionViewController: UIViewController {
         // Setup navigation bar
         navigationItem.largeTitleDisplayMode = .never
         
-        // Add Done button
-        let doneButton = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(dismissView))
-        navigationItem.leftBarButtonItem = doneButton
+        // Add checkmark button (replacing Done button with icon)
+        let checkmarkButton = UIBarButtonItem(image: UIImage(systemName: "checkmark.circle"), style: .plain, target: self, action: #selector(dismissView))
+        navigationItem.leftBarButtonItem = checkmarkButton
         
         // Add Create New Theme button
         let addButton = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(createNewTheme))

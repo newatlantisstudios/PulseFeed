@@ -18,8 +18,9 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
     // Article summary
     let summaryView = UIView()
     let summaryLabel = UILabel()
-    let summaryButton = UIButton(type: .system)
-    var isSummaryExpanded = false
+    // Removed summaryButton as summaries will always be fully expanded
+    // Always show full summary text
+    var isSummaryExpanded = true
     private var articleSummary: String?
     private var isSummarizationInProgress = false
     
@@ -30,7 +31,8 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
     private var isTrackingProgress = true
     private var scrollObserver: NSKeyValueObservation?
     
-    var typographySettings = TypographySettings.loadFromUserDefaults()
+    // Default reading settings
+    var fontSize: CGFloat = 18
     var fontColor: UIColor = .label
     var backgroundColor: UIColor = .systemBackground
     var estimatedReadingTimeLabel: UILabel?
@@ -62,32 +64,24 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
     private let leftSwipeIndicator = UIView()
     private let rightSwipeIndicator = UIView()
     
-    // This enum is kept for backward compatibility
-    // It will be removed in future versions as we migrate to the theme system
-    @available(*, deprecated, message: "Use ArticleThemeManager instead")
-    enum ReadingMode: String {
-        case regular = "regular"
-        case sepia = "sepia"
-        case dark = "dark"
-    }
-    
     // MARK: - Lifecycle
     
     override func viewDidLoad() {
         super.viewDidLoad()
         
+        // Always enable article summarization
+        UserDefaults.standard.set(true, forKey: "enableArticleSummarization")
+        
         setupUI()
         setupNavigationBar()
-        setupThemeSupport()
         setupReadingProgressTracking()
         setupSwipeGestures()
         setupSwipeIndicators()
         findCurrentItemIndex()
         loadArticleContent()
         
-        // Listen for font size and typography changes
+        // Listen for font size changes
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged(_:)), name: Notification.Name("fontSizeChanged"), object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(typographySettingsChanged(_:)), name: Notification.Name("typographySettingsChanged"), object: nil)
         
         // Set up web view progress tracking
         webViewObservation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] webView, change in
@@ -218,8 +212,12 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
     // MARK: - UI Setup
     
     private func setupUI() {
-        // Load typography settings
-        loadTypographySettings()
+        // Load font size from user defaults
+        fontSize = CGFloat(UserDefaults.standard.float(forKey: "readerFontSize"))
+        if fontSize == 0 {
+            fontSize = 18
+            UserDefaults.standard.set(Float(fontSize), forKey: "readerFontSize")
+        }
         
         view.backgroundColor = backgroundColor
         
@@ -231,18 +229,18 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
         progressView.translatesAutoresizingMaskIntoConstraints = false
         
         // Setup title label
-        titleLabel.font = typographySettings.fontFamily.font(withSize: 22, weight: .bold)
+        titleLabel.font = UIFont.systemFont(ofSize: 22, weight: .bold)
         titleLabel.textColor = fontColor
         titleLabel.numberOfLines = 0
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         
         // Setup source label
-        sourceLabel.font = typographySettings.fontFamily.font(withSize: 14, weight: .medium)
+        sourceLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium)
         sourceLabel.textColor = AppColors.secondary
         sourceLabel.translatesAutoresizingMaskIntoConstraints = false
         
         // Setup date label
-        dateLabel.font = typographySettings.fontFamily.font(withSize: 14)
+        dateLabel.font = UIFont.systemFont(ofSize: 14)
         dateLabel.textColor = AppColors.secondary
         dateLabel.translatesAutoresizingMaskIntoConstraints = false
         
@@ -251,7 +249,7 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
         
         // Setup reading time
         estimatedReadingTimeLabel = UILabel()
-        estimatedReadingTimeLabel?.font = typographySettings.fontFamily.font(withSize: 14, weight: .regular)
+        estimatedReadingTimeLabel?.font = UIFont.systemFont(ofSize: 14, weight: .regular)
         estimatedReadingTimeLabel?.textColor = AppColors.secondary
         estimatedReadingTimeLabel?.textAlignment = .right
         estimatedReadingTimeLabel?.translatesAutoresizingMaskIntoConstraints = false
@@ -360,10 +358,9 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
         // Create an export button
         let exportButton = UIBarButtonItem(image: UIImage(systemName: "square.and.arrow.up.on.square"), style: .plain, target: self, action: #selector(showExportOptions))
         
-        // Create a summarize button
-        let summarizeButton = UIBarButtonItem(image: UIImage(systemName: "text.quote"), style: .plain, target: self, action: #selector(toggleSummary))
+        // Removed summarize button as summaries are now always shown
         
-        navigationItem.rightBarButtonItems = [shareButton, safariButton, cacheButton, exportButton, summarizeButton]
+        navigationItem.rightBarButtonItems = [shareButton, safariButton, cacheButton, exportButton]
         
         // Configure the back button with a proper title
         navigationItem.backButtonTitle = "Back"
@@ -372,36 +369,13 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
     private func setupToolbar() {
         // Create toolbar items
         let decreaseFontButton = UIBarButtonItem(image: UIImage(systemName: "textformat.size.smaller"), style: .plain, target: self, action: #selector(decreaseFontSize))
-        
+
         let increaseFontButton = UIBarButtonItem(image: UIImage(systemName: "textformat.size.larger"), style: .plain, target: self, action: #selector(increaseFontSize))
-        
-        // Create reading mode button based on current theme
-        let themeManager = ArticleThemeManager.shared
-        let currentThemeName = themeManager.selectedTheme.name
-        
-        var modeIcon: UIImage?
-        switch currentThemeName {
-        case "System":
-            modeIcon = UIImage(systemName: "sun.max")
-        case "Light":
-            modeIcon = UIImage(systemName: "sun.max.fill")
-        case "Sepia":
-            modeIcon = UIImage(systemName: "book")
-        case "Dark":
-            modeIcon = UIImage(systemName: "moon")
-        default:
-            modeIcon = UIImage(systemName: "paintpalette")
-        }
-        
-        let toggleModeButton = UIBarButtonItem(image: modeIcon, style: .plain, target: self, action: #selector(toggleReadingMode))
-        
-        // Text justification button
-        let justifyButton = UIBarButtonItem(image: UIImage(systemName: "text.justify"), style: .plain, target: self, action: #selector(toggleTextJustification))
-        
+
         let flexibleSpace = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-        
+
         // Add items to toolbar
-        toolbar.items = [decreaseFontButton, flexibleSpace, toggleModeButton, flexibleSpace, justifyButton, flexibleSpace, increaseFontButton]
+        toolbar.items = [decreaseFontButton, flexibleSpace, increaseFontButton]
         toolbar.tintColor = AppColors.accent
     }
     
@@ -583,6 +557,7 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
             DispatchQueue.main.async {
                 guard let self = self, let rightBarButtonItems = self.navigationItem.rightBarButtonItems, rightBarButtonItems.count >= 3 else { return }
                 
+                // Cache button is now at index 2 (third button from right)
                 let cacheButton = rightBarButtonItems[2]
                 cacheButton.image = UIImage(systemName: isCached ? "arrow.down.circle.fill" : "arrow.down.circle")
             }
@@ -653,27 +628,19 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
     }
     
     func wrapInReadableHTML(content: String) -> String {
-        // Get stored typography settings
-        loadTypographySettings()
-        
-        // Check if we should use justified text
-        let useJustifiedText = UserDefaults.standard.bool(forKey: "readerJustifiedText")
-        let justifiedClass = useJustifiedText ? " justified" : ""
-        
-        // Get accent color from theme manager
-        let themeManager = ArticleThemeManager.shared
-        let (_, _, accentColor) = themeManager.getCurrentThemeColors(for: traitCollection)
-        
+        // Use system colors
+        let accentColor = AppColors.accent
+
         // Use ContentExtractor to wrap content in readable HTML
         let wrappedHTML = ContentExtractor.wrapInReadableHTML(
-            content: "<div class=\"content\(justifiedClass)\">\(content)</div>",
-            fontSize: typographySettings.fontSize,
-            lineHeight: typographySettings.lineHeight,
+            content: "<div class=\"content\">\(content)</div>",
+            fontSize: fontSize,
+            lineHeight: 1.5, // Default line height
             fontColor: fontColor.hexString,
             backgroundColor: backgroundColor.hexString,
             accentColor: accentColor.hexString
         )
-        
+
         return wrappedHTML
     }
     
@@ -686,61 +653,11 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
             return
         }
         
-        // Check if we should apply bionic reading
-        let themeManager = ArticleThemeManager.shared
-        let isBionicEnabled = themeManager.isBionicReadingEnabled()
-        
-        var contentToDisplay = html
-        
-        // Apply bionic reading if enabled
-        if isBionicEnabled {
-            // Extract the text content
-            let plainText = html.removingHTMLTags()
-            
-            // Split text into words
-            let words = plainText.components(separatedBy: .whitespacesAndNewlines)
-            
-            // Build HTML with bionic reading formatting
-            var bionicHTML = ""
-            for word in words {
-                if word.isEmpty { continue }
-                
-                // Calculate how many characters to bold
-                let fixationStrength = 0.5
-                let numCharsToBold = calculateCharsToEmbolden(word: word, fixationStrength: fixationStrength)
-                
-                if numCharsToBold > 0 && numCharsToBold < word.count {
-                    // Create bionic formatted word
-                    let boldPart = String(word.prefix(numCharsToBold))
-                    let normalPart = String(word.dropFirst(numCharsToBold))
-                    bionicHTML += "<strong>\(boldPart)</strong>\(normalPart) "
-                } else {
-                    // Don't format very short words
-                    bionicHTML += "\(word) "
-                }
-            }
-            
-            contentToDisplay = bionicHTML
-        }
-        
         // Wrap the content in readable HTML
-        let wrappedHTML = wrapInReadableHTML(content: contentToDisplay)
+        let wrappedHTML = wrapInReadableHTML(content: html)
         
         // Load the content into the web view
         webView.loadHTMLString(wrappedHTML, baseURL: nil)
-    }
-    
-    /// Calculate how many characters should be bolded in a word
-    private func calculateCharsToEmbolden(word: String, fixationStrength: Double) -> Int {
-        let wordLength = word.count
-        if wordLength <= 0 {
-            return 0
-        } else if wordLength <= 3 {
-            return 1
-        } else {
-            // Use the fixation strength parameter to determine how much to bold
-            return max(1, min(wordLength - 1, Int(ceil(Double(wordLength) * fixationStrength))))
-        }
     }
     
     private func updateArticleDetails() {
@@ -852,49 +769,16 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
     // Variable to track if we need to scroll to saved position
     private var scrollToSavedPosition = false
     
-    // MARK: - Typography Settings
-    
-    func loadTypographySettings() {
-        // Load typography settings
-        typographySettings = TypographySettings.loadFromUserDefaults()
-        
-        // Get colors from theme manager
-        let themeManager = ArticleThemeManager.shared
-        let (textColor, bgColor, accentColor) = themeManager.getCurrentThemeColors(for: traitCollection)
-        
-        // Update color properties
-        fontColor = textColor
-        backgroundColor = bgColor
-        
-        // Update UI with new colors
-        view.backgroundColor = backgroundColor
-        webView.backgroundColor = backgroundColor
-        webView.scrollView.backgroundColor = backgroundColor
-        titleLabel.textColor = fontColor
-        summaryLabel.textColor = fontColor
-        summaryButton.tintColor = accentColor
-        summaryView.backgroundColor = bgColor == .black ? .darkGray.withAlphaComponent(0.3) : bgColor.withAlphaComponent(0.1)
-    }
+    // MARK: - Font Size Change
     
     @objc private func fontSizeChanged(_ notification: Notification) {
-        // Reload the article with new font size
-        if let content = htmlContent {
-            displayContent(content)
+        // Update font size from user defaults
+        fontSize = CGFloat(UserDefaults.standard.float(forKey: "readerFontSize"))
+        if fontSize == 0 {
+            fontSize = 18
         }
-    }
-    
-    @objc private func typographySettingsChanged(_ notification: Notification) {
-        // Reload typography settings and update UI
-        loadTypographySettings()
         
-        // Update title and labels
-        titleLabel.font = typographySettings.fontFamily.font(withSize: 22, weight: .bold)
-        sourceLabel.font = typographySettings.fontFamily.font(withSize: 14, weight: .medium)
-        dateLabel.font = typographySettings.fontFamily.font(withSize: 14)
-        estimatedReadingTimeLabel?.font = typographySettings.fontFamily.font(withSize: 14, weight: .regular)
-        summaryLabel.font = typographySettings.fontFamily.font(withSize: 16)
-        
-        // Reload the article content with new typography settings
+        // Reload the article with new font size
         if let content = htmlContent {
             displayContent(content)
         }
@@ -950,9 +834,10 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
         currentReadingProgress = 0
         scrollToSavedPosition = false
         
-        // Reset summary
+        // Reset summary but keep it visible
         articleSummary = nil
-        summaryView.isHidden = true
+        summaryView.isHidden = false
+        summaryLabel.numberOfLines = 0 // Always show full summary text
         isSummarizationInProgress = false
         
         // Reset UI
@@ -1040,7 +925,8 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
         
         // Set the source for iPad
         if let popoverController = actionSheet.popoverPresentationController {
-            if let exportButton = navigationItem.rightBarButtonItems?[3] {
+            // Export button is now at index 3 (fourth button) after removing summarize button
+            if let exportButton = navigationItem.rightBarButtonItems?.last {
                 popoverController.barButtonItem = exportButton
             } else {
                 popoverController.barButtonItem = navigationItem.rightBarButtonItems?.first
@@ -1148,7 +1034,7 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
                 
                 // Set source for iPad
                 if let popoverController = activityVC.popoverPresentationController {
-                    if let exportButton = self.navigationItem.rightBarButtonItems?[3] {
+                    if let exportButton = self.navigationItem.rightBarButtonItems?.last {
                         popoverController.barButtonItem = exportButton
                     } else {
                         popoverController.barButtonItem = self.navigationItem.rightBarButtonItems?.first
@@ -1198,7 +1084,7 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
                 
                 // Set source for iPad
                 if let popoverController = activityVC.popoverPresentationController {
-                    if let exportButton = self.navigationItem.rightBarButtonItems?[3] {
+                    if let exportButton = self.navigationItem.rightBarButtonItems?.last {
                         popoverController.barButtonItem = exportButton
                     } else {
                         popoverController.barButtonItem = self.navigationItem.rightBarButtonItems?.first
@@ -1484,9 +1370,10 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
     }
     
     @objc private func decreaseFontSize() {
-        if typographySettings.fontSize > 12 {
-            typographySettings.fontSize -= 2
-            typographySettings.saveToUserDefaults()
+        if fontSize > 12 {
+            fontSize -= 2
+            UserDefaults.standard.set(Float(fontSize), forKey: "readerFontSize")
+            NotificationCenter.default.post(name: Notification.Name("readerFontSizeChanged"), object: nil)
             
             if let content = htmlContent {
                 displayContent(content)
@@ -1495,9 +1382,10 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
     }
     
     @objc private func increaseFontSize() {
-        if typographySettings.fontSize < 32 {
-            typographySettings.fontSize += 2
-            typographySettings.saveToUserDefaults()
+        if fontSize < 32 {
+            fontSize += 2
+            UserDefaults.standard.set(Float(fontSize), forKey: "readerFontSize")
+            NotificationCenter.default.post(name: Notification.Name("readerFontSizeChanged"), object: nil)
             
             if let content = htmlContent {
                 displayContent(content)
@@ -1505,62 +1393,6 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
         }
     }
     
-    @objc private func toggleReadingMode() {
-        // Cycle through built-in themes using the theme manager
-        let themeManager = ArticleThemeManager.shared
-        let currentThemeName = themeManager.selectedTheme.name
-        
-        // Define the cycle sequence
-        let themeSequence = ["System", "Light", "Sepia", "Dark"]
-        
-        // Find the current theme in the sequence
-        if let currentIndex = themeSequence.firstIndex(of: currentThemeName) {
-            // Get the next theme in the sequence
-            let nextIndex = (currentIndex + 1) % themeSequence.count
-            let nextThemeName = themeSequence[nextIndex]
-            
-            // Apply the next theme
-            themeManager.selectTheme(named: nextThemeName)
-            
-            // Update the toolbar icon
-            let modeImage: UIImage?
-            switch nextThemeName {
-            case "System":
-                modeImage = UIImage(systemName: "sun.max")
-            case "Light":
-                modeImage = UIImage(systemName: "sun.max.fill")
-            case "Sepia":
-                modeImage = UIImage(systemName: "book")
-            case "Dark":
-                modeImage = UIImage(systemName: "moon")
-            default:
-                modeImage = UIImage(systemName: "paintpalette")
-            }
-            
-            if let toggleModeButton = toolbar.items?[2] {
-                toggleModeButton.image = modeImage
-            }
-        } else {
-            // If current theme is not in the sequence, default to System
-            themeManager.selectTheme(named: "System")
-        }
-    }
-    
-    @objc private func toggleTextJustification() {
-        // Toggle justified text setting
-        let isJustified = UserDefaults.standard.bool(forKey: "readerJustifiedText")
-        UserDefaults.standard.set(!isJustified, forKey: "readerJustifiedText")
-        
-        // Update the toolbar button
-        if let justifyButton = toolbar.items?[4] {
-            justifyButton.image = UIImage(systemName: !isJustified ? "text.justify.leading" : "text.justify")
-        }
-        
-        // Reload content with new justification setting
-        if let content = htmlContent {
-            displayContent(content)
-        }
-    }
     
     @objc private func toggleOfflineCache() {
         guard let item = item else { return }
@@ -1584,7 +1416,7 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
                         StorageManager.shared.removeCachedArticle(link: item.link) { success, error in
                             DispatchQueue.main.async {
                                 if success {
-                                    // Update button
+                                    // Update button - cache button is now at index 2 (third position)
                                     if let rightBarButtonItems = self.navigationItem.rightBarButtonItems, rightBarButtonItems.count >= 3 {
                                         let cacheButton = rightBarButtonItems[2]
                                         cacheButton.image = UIImage(systemName: "arrow.down.circle")
@@ -1636,7 +1468,7 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
                                 // Dismiss loading alert
                                 loadingAlert.dismiss(animated: true) {
                                     if success {
-                                        // Update button
+                                        // Update button - cache button is now at index 2 (third position)
                                         if let rightBarButtonItems = self.navigationItem.rightBarButtonItems, rightBarButtonItems.count >= 3 {
                                             let cacheButton = rightBarButtonItems[2]
                                             cacheButton.image = UIImage(systemName: "arrow.down.circle.fill")
@@ -1668,31 +1500,21 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
         summaryView.clipsToBounds = true
         summaryView.isHidden = true
         
-        // Configure summary label
-        summaryLabel.font = typographySettings.fontFamily.font(withSize: 16)
+        // Configure summary label - set to unlimited lines for full summary
+        summaryLabel.font = UIFont.systemFont(ofSize: 16)
         summaryLabel.textColor = fontColor
-        summaryLabel.numberOfLines = 3
+        summaryLabel.numberOfLines = 0
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
-        
-        // Configure expand/collapse button
-        summaryButton.setTitle("Read more", for: .normal)
-        summaryButton.tintColor = AppColors.accent
-        summaryButton.addTarget(self, action: #selector(toggleSummaryExpansion), for: .touchUpInside)
-        summaryButton.translatesAutoresizingMaskIntoConstraints = false
         
         // Add subviews
         summaryView.addSubview(summaryLabel)
-        summaryView.addSubview(summaryButton)
         
         // Setup constraints
         NSLayoutConstraint.activate([
             summaryLabel.topAnchor.constraint(equalTo: summaryView.topAnchor, constant: 12),
             summaryLabel.leadingAnchor.constraint(equalTo: summaryView.leadingAnchor, constant: 12),
             summaryLabel.trailingAnchor.constraint(equalTo: summaryView.trailingAnchor, constant: -12),
-            
-            summaryButton.topAnchor.constraint(equalTo: summaryLabel.bottomAnchor, constant: 8),
-            summaryButton.trailingAnchor.constraint(equalTo: summaryView.trailingAnchor, constant: -12),
-            summaryButton.bottomAnchor.constraint(equalTo: summaryView.bottomAnchor, constant: -8),
+            summaryLabel.bottomAnchor.constraint(equalTo: summaryView.bottomAnchor, constant: -12)
         ])
     }
     
@@ -1712,11 +1534,7 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
         }
     }
     
-    @objc private func toggleSummaryExpansion() {
-        isSummaryExpanded = !isSummaryExpanded
-        summaryLabel.numberOfLines = isSummaryExpanded ? 0 : 3
-        summaryButton.setTitle(isSummaryExpanded ? "Show less" : "Read more", for: .normal)
-    }
+    // toggleSummaryExpansion method removed as summaries are always fully expanded
     
     private func generateSummary() {
         guard let item = item else { return }
@@ -1725,7 +1543,6 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
         isSummarizationInProgress = true
         summaryView.isHidden = false
         summaryLabel.text = "Generating summary..."
-        summaryButton.isHidden = true
         
         // Request summarization
         ArticleSummarizer.shared.summarizeArticle(item: item) { [weak self] result in
@@ -1739,11 +1556,13 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
                     // Store and display the summary
                     self.articleSummary = summary
                     self.summaryLabel.text = summary
-                    self.summaryButton.isHidden = false
+                    // Always make sure the summary is visible
+                    self.summaryView.isHidden = false
                 case .failure(let error):
-                    // Handle error
-                    self.summaryView.isHidden = true
-                    self.showError("Failed to generate summary: \(error.localizedDescription)")
+                    // Create a fallback summary message instead of hiding it
+                    self.summaryLabel.text = "This article doesn't have a summary available."
+                    self.summaryView.isHidden = false
+                    print("Failed to generate summary: \(error.localizedDescription)")
                 }
             }
         }
@@ -1752,11 +1571,8 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
     private func showSummary() {
         guard let summary = articleSummary else { return }
         
-        // Reset expansion state
-        isSummaryExpanded = false
-        summaryLabel.numberOfLines = 3
-        summaryButton.setTitle("Read more", for: .normal)
-        summaryButton.isHidden = false
+        // Always show full summary text
+        summaryLabel.numberOfLines = 0
         
         // Update and show the summary view
         summaryLabel.text = summary
@@ -1821,18 +1637,25 @@ class ArticleReaderViewController: UIViewController, UIDocumentPickerDelegate {
         super.traitCollectionDidChange(previousTraitCollection)
         
         if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
-            // Get current theme
-            let themeManager = ArticleThemeManager.shared
-            let currentThemeName = themeManager.selectedTheme.name
+            // Update colors when dark mode changes
+            if traitCollection.userInterfaceStyle == .dark {
+                backgroundColor = .black
+                fontColor = .white
+            } else {
+                backgroundColor = .white
+                fontColor = .black
+            }
             
-            // Only update if we're using the system theme that adapts to dark mode
-            if currentThemeName == "System" {
-                loadTypographySettings()
-                
-                // Reload the article to update colors
-                if let content = htmlContent {
-                    displayContent(content)
-                }
+            // Update UI with new colors
+            view.backgroundColor = backgroundColor
+            webView.backgroundColor = backgroundColor
+            webView.scrollView.backgroundColor = backgroundColor
+            titleLabel.textColor = fontColor
+            summaryLabel.textColor = fontColor
+            
+            // Reload the article to update colors
+            if let content = htmlContent {
+                displayContent(content)
             }
         }
     }
@@ -1910,6 +1733,11 @@ extension ArticleReaderViewController: WKNavigationDelegate {
             if let error = error {
                 print("Error executing image caching script: \(error)")
             }
+        }
+        
+        // Automatically generate summary if not already done
+        if articleSummary == nil && !isSummarizationInProgress {
+            generateSummary()
         }
         
         // If we have a saved reading position, scroll to it after a short delay

@@ -8,7 +8,7 @@ extension NSNotification.Name {
 }
 
 enum StorageMethod {
-    case userDefaults, cloudKit
+    case userDefaults, cloudKit, iCloudKeyValue
 }
 
 enum StorageError: Error {
@@ -82,6 +82,105 @@ struct UserDefaultsStorage: ArticleStorage {
                 completion(.success([] as! T))
             } else {
                 completion(.failure(StorageError.notFound))
+            }
+        }
+    }
+}
+
+/// Uses iCloud Key-Value Store for storage of small data and settings.
+struct UbiquitousKeyValueStorage: ArticleStorage {
+    let store = UbiquitousKeyValueStore.shared
+    
+    // A list of key prefixes that are appropriate for iCloud Key-Value storage (small data)
+    private let appropriateKeys = [
+        "compactArticleView",
+        "hideReadArticles",
+        "useInAppReader",
+        "useInAppBrowser",
+        "autoEnableReaderMode",
+        "fontSize",
+        "previewTextLength",
+        "articleSortAscending",
+        "enableContentFiltering",
+        "feedSlowThreshold",
+        "enableNewItemNotifications"
+    ]
+    
+    // Keys that store larger amounts of data and should be synced carefully
+    private let largeDataKeys = [
+        "readItems",
+        "bookmarkedItems",
+        "heartedItems",
+        "filterKeywords"
+    ]
+    
+    func save<T: Encodable>(_ value: T, forKey key: String, completion: @escaping (Error?) -> Void) {
+        // If this is a key that's appropriate for iCloud Key-Value storage
+        if isAppropriateForKeyValueStore(key) {
+            store.save(value, forKey: key, completion: completion)
+        } else {
+            // For larger data, we'll fall back to UserDefaultsStorage
+            UserDefaultsStorage().save(value, forKey: key, completion: completion)
+        }
+    }
+    
+    func load<T: Decodable>(forKey key: String, completion: @escaping (Result<T, Error>) -> Void) {
+        // If this is a key that's appropriate for iCloud Key-Value storage
+        if isAppropriateForKeyValueStore(key) {
+            store.load(forKey: key, completion: completion)
+        } else {
+            // For larger data, we'll fall back to UserDefaultsStorage
+            UserDefaultsStorage().load(forKey: key, completion: completion)
+        }
+    }
+    
+    // Check if a key is appropriate for iCloud Key-Value storage
+    private func isAppropriateForKeyValueStore(_ key: String) -> Bool {
+        // Check for direct matches
+        if appropriateKeys.contains(key) {
+            return true
+        }
+        
+        // Check for key prefixes
+        for prefix in appropriateKeys {
+            if key.hasPrefix(prefix) {
+                return true
+            }
+        }
+        
+        // Also include small data with special handling
+        if largeDataKeys.contains(key) {
+            return true
+        }
+        
+        return false
+    }
+    
+    // Sync a specific key from iCloud to UserDefaults
+    func syncFromCloud(key: String) {
+        store.syncFromCloud(key: key)
+    }
+    
+    // Sync a specific large data key between UserDefaults and iCloud KV store
+    func syncLargeDataKey(_ key: String, completion: @escaping (Error?) -> Void) {
+        guard largeDataKeys.contains(key) else {
+            completion(nil)
+            return
+        }
+        
+        // Read from UserDefaults first
+        if let data = UserDefaults.standard.data(forKey: key) {
+            // Save to iCloud KV store
+            store.set(data, forKey: key)
+            completion(nil)
+        } else {
+            // Try to read from iCloud KV store
+            if let data = store.data(forKey: key) {
+                // Save to UserDefaults
+                UserDefaults.standard.set(data, forKey: key)
+                completion(nil)
+            } else {
+                completion(nil) // No data to sync
             }
         }
     }
@@ -366,6 +465,10 @@ class StorageManager {
             if method == .cloudKit && !hasSetupSubscriptions {
                 setupCloudKitSubscriptions()
             }
+            
+            if method == .iCloudKeyValue {
+                UbiquitousKeyValueStore.shared.synchronize()
+            }
         }
     }
 
@@ -373,6 +476,7 @@ class StorageManager {
         switch method {
         case .userDefaults: return UserDefaultsStorage()
         case .cloudKit: return CloudKitStorage()
+        case .iCloudKeyValue: return UbiquitousKeyValueStorage()
         }
     }
     
@@ -402,8 +506,19 @@ class StorageManager {
             object: nil
         )
         
+        // Observe iCloud Key-Value store changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleKeyValueStoreChanged(_:)),
+            name: UbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: nil
+        )
+        
         // Initialize network status
         checkNetworkConnectivity()
+        
+        // Register common keys for iCloud Key-Value sync
+        registerCommonKeysForSync()
     }
     
     deinit {
@@ -489,8 +604,142 @@ class StorageManager {
     }
     
     @objc private func handleAppBecameActive() {
-        if method == .cloudKit {
+        switch method {
+        case .cloudKit:
             syncFromCloudKit()
+        case .iCloudKeyValue:
+            syncFromKeyValueStore()
+        default:
+            break
+        }
+    }
+    
+    @objc private func handleKeyValueStoreChanged(_ notification: Notification) {
+        guard method == .iCloudKeyValue,
+              let userInfo = notification.userInfo,
+              let key = userInfo["key"] as? String else {
+            return
+        }
+        
+        // Post notification about the changed data
+        NotificationCenter.default.post(
+            name: Notification.Name("\(key)Updated"),
+            object: nil
+        )
+    }
+    
+    // Register common keys used throughout the app for iCloud Key-Value syncing
+    private func registerCommonKeysForSync() {
+        let kvStore = UbiquitousKeyValueStore.shared
+        
+        // App settings
+        let appSettingsKeys = [
+            "enhancedArticleStyle",
+            "compactArticleView",
+            "hideReadArticles",
+            "useInAppReader",
+            "useInAppBrowser",
+            "readerFontSize",
+            "readerLineHeight",
+            "autoEnableReaderMode",
+            "fontSize",
+            "previewTextLength",
+            "articleSortAscending",
+            "enableContentFiltering",
+            "feedSlowThreshold",
+            "enableNewItemNotifications"
+        ]
+        
+        // User data keys (these are larger, but still appropriate for KV store)
+        let userDataKeys = [
+            "readItems",
+            "bookmarkedItems",
+            "heartedItems",
+            "filterKeywords"
+        ]
+        
+        kvStore.registerKeysForSync(appSettingsKeys)
+        kvStore.registerKeysForSync(userDataKeys)
+    }
+    
+    // MARK: - Sync Methods
+    
+    // Sync from iCloud Key-Value Store
+    func syncFromKeyValueStore(completion: ((Bool) -> Void)? = nil) {
+        guard method == .iCloudKeyValue else {
+            completion?(false)
+            return
+        }
+        
+        // Always ensure article summarization is enabled, regardless of synced value
+        UserDefaults.standard.set(true, forKey: "enableArticleSummarization")
+        
+        let syncGroup = DispatchGroup()
+        var syncSuccess = true
+        let kvStore = UbiquitousKeyValueStore.shared
+        
+        // Force a sync first to ensure we have the latest data
+        let syncResult = kvStore.synchronize()
+        if !syncResult {
+            print("WARNING: Failed to synchronize iCloud Key-Value store")
+        }
+        
+        // Sync app settings (these are typically small and can be synced quickly)
+        let appSettingsKeys = [
+            "enhancedArticleStyle",
+            "compactArticleView",
+            "hideReadArticles",
+            "useInAppReader",
+            "useInAppBrowser",
+            "enableArticleSummarization",
+            "readerFontSize",
+            "readerLineHeight",
+            "autoEnableReaderMode",
+            "fontSize",
+            "previewTextLength",
+            "articleSortAscending",
+            "enableContentFiltering",
+            "feedSlowThreshold",
+            "enableNewItemNotifications"
+        ]
+        
+        for key in appSettingsKeys {
+            syncGroup.enter()
+            if let kvStorage = storage as? UbiquitousKeyValueStorage {
+                kvStorage.syncFromCloud(key: key)
+                syncGroup.leave()
+            } else {
+                syncGroup.leave()
+                syncSuccess = false
+            }
+        }
+        
+        // Sync user data (these might be larger and require special handling)
+        let userDataKeys = [
+            "readItems",
+            "bookmarkedItems",
+            "heartedItems",
+            "filterKeywords"
+        ]
+        
+        for key in userDataKeys {
+            syncGroup.enter()
+            if let kvStorage = storage as? UbiquitousKeyValueStorage {
+                kvStorage.syncLargeDataKey(key) { error in
+                    if error != nil {
+                        syncSuccess = false
+                    }
+                    syncGroup.leave()
+                }
+            } else {
+                syncGroup.leave()
+                syncSuccess = false
+            }
+        }
+        
+        // Final callback after all syncs complete
+        syncGroup.notify(queue: .main) {
+            completion?(syncSuccess)
         }
     }
     
@@ -501,6 +750,9 @@ class StorageManager {
             completion?(false)
             return
         }
+        
+        // Always ensure article summarization is enabled, regardless of synced value
+        UserDefaults.standard.set(true, forKey: "enableArticleSummarization")
         
         let syncGroup = DispatchGroup()
         var syncSuccess = true
@@ -533,34 +785,136 @@ class StorageManager {
     }
     
     // Sync hierarchical folders from CloudKit
-    private func syncHierarchicalFolders(completion: @escaping (Bool) -> Void) {
-        print("DEBUG: Syncing hierarchical folders from CloudKit")
-        
+    func syncHierarchicalFolders(completion: @escaping (Bool) -> Void) {
+        print("DEBUG-PERSIST: Syncing hierarchical folders from CloudKit")
+
         // Fetch folders from CloudKit
         CloudKitStorage().load(forKey: "hierarchicalFolders") { (result: Result<[HierarchicalFolder], Error>) in
             switch result {
             case .success(let cloudFolders):
-                print("DEBUG: Successfully loaded \(cloudFolders.count) hierarchical folders from CloudKit")
-                // Save the folders directly to UserDefaults for local access
-                if let encodedData = try? JSONEncoder().encode(cloudFolders) {
-                    UserDefaults.standard.set(encodedData, forKey: "hierarchicalFolders")
-                    
-                    // Notify that folders were updated
-                    NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
-                    completion(true)
+                print("DEBUG-PERSIST: Successfully loaded \(cloudFolders.count) hierarchical folders from CloudKit")
+
+                // Check if we need to merge with local folders
+                if let data = UserDefaults.standard.data(forKey: "hierarchicalFolders") {
+                    do {
+                        let localFolders = try JSONDecoder().decode([HierarchicalFolder].self, from: data)
+                        print("DEBUG-PERSIST: Found \(localFolders.count) local folders in UserDefaults")
+
+                        // Create a dictionary for easy lookup and merging
+                        var folderDict: [String: HierarchicalFolder] = [:]
+
+                        // Add all local folders to dictionary first
+                        for folder in localFolders {
+                            folderDict[folder.id] = folder
+                        }
+
+                        // If cloud has folders, merge them with local folders (local takes precedence to preserve existing folders)
+                        if !cloudFolders.isEmpty {
+                            print("DEBUG-PERSIST: Merging cloud and local folders...")
+
+                            // Merge with cloud folders (but don't overwrite local folders)
+                            for cloudFolder in cloudFolders {
+                                // Only add cloud folder if it doesn't exist locally
+                                if folderDict[cloudFolder.id] == nil {
+                                    folderDict[cloudFolder.id] = cloudFolder
+                                }
+                            }
+                        }
+
+                        // Convert back to array
+                        let mergedFolders = Array(folderDict.values)
+                        print("DEBUG-PERSIST: Merged to \(mergedFolders.count) folders")
+
+                        // Always save back to CloudKit to ensure cloud is up-to-date
+                        self.saveToCloudKit(mergedFolders, forKey: "hierarchicalFolders", retryCount: 3) { error in
+                            if let error = error {
+                                print("DEBUG-PERSIST: Error saving merged folders to CloudKit: \(error.localizedDescription)")
+                            } else {
+                                print("DEBUG-PERSIST: Successfully saved merged folders to CloudKit")
+                            }
+                        }
+
+                        // Save merged folders to UserDefaults
+                        if let encodedData = try? JSONEncoder().encode(mergedFolders) {
+                            UserDefaults.standard.set(encodedData, forKey: "hierarchicalFolders")
+                            UserDefaults.standard.synchronize()
+
+                            // Notify that folders were updated
+                            NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                            completion(true)
+                            return
+                        }
+                    } catch {
+                        print("DEBUG-PERSIST: Error decoding local folders: \(error)")
+                    }
+                } else if !cloudFolders.isEmpty {
+                    // No local folders but we have cloud folders, save cloud folders to UserDefaults
+                    print("DEBUG-PERSIST: No local folders found, saving cloud folders to UserDefaults")
+                    if let encodedData = try? JSONEncoder().encode(cloudFolders) {
+                        UserDefaults.standard.set(encodedData, forKey: "hierarchicalFolders")
+                        UserDefaults.standard.synchronize()
+
+                        // Notify that folders were updated
+                        NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                        completion(true)
+                    } else {
+                        print("ERROR: Failed to encode hierarchical folders")
+                        completion(false)
+                    }
                 } else {
-                    print("ERROR: Failed to encode hierarchical folders")
-                    completion(false)
-                }
-                
-            case .failure(let error):
-                // If error is "not found", this might be normal for first run
-                if case StorageError.notFound = error {
-                    print("DEBUG: No hierarchical folders found in CloudKit (normal for first run)")
+                    // No folders anywhere
+                    print("DEBUG-PERSIST: No folders found locally or in CloudKit")
                     completion(true)
+                }
+
+            case .failure(let error):
+                // If error is "not found", try to load from UserDefaults only
+                if case StorageError.notFound = error {
+                    print("DEBUG-PERSIST: No hierarchical folders found in CloudKit (normal for first run)")
+
+                    // Check if we have local folders
+                    if let data = UserDefaults.standard.data(forKey: "hierarchicalFolders") {
+                        do {
+                            let localFolders = try JSONDecoder().decode([HierarchicalFolder].self, from: data)
+                            print("DEBUG-PERSIST: Using \(localFolders.count) local folders from UserDefaults")
+
+                            // Sync local folders to CloudKit if we have any
+                            if !localFolders.isEmpty {
+                                self.saveToCloudKit(localFolders, forKey: "hierarchicalFolders", retryCount: 3) { error in
+                                    if let error = error {
+                                        print("DEBUG-PERSIST: Error saving local folders to CloudKit: \(error.localizedDescription)")
+                                    } else {
+                                        print("DEBUG-PERSIST: Successfully saved local folders to CloudKit")
+                                    }
+                                }
+                            }
+
+                            completion(true)
+                        } catch {
+                            print("DEBUG-PERSIST: Error decoding local folders: \(error)")
+                            completion(false)
+                        }
+                    } else {
+                        // No folders anywhere
+                        print("DEBUG-PERSIST: No folders found locally or in CloudKit")
+                        completion(true)
+                    }
                 } else {
                     print("ERROR: Failed to load hierarchical folders from CloudKit: \(error.localizedDescription)")
-                    completion(false)
+
+                    // If CloudKit fails, try to use local folders only
+                    if let data = UserDefaults.standard.data(forKey: "hierarchicalFolders") {
+                        do {
+                            let localFolders = try JSONDecoder().decode([HierarchicalFolder].self, from: data)
+                            print("DEBUG-PERSIST: Using \(localFolders.count) local folders from UserDefaults despite CloudKit error")
+                            completion(true)
+                        } catch {
+                            print("DEBUG-PERSIST: Error decoding local folders: \(error)")
+                            completion(false)
+                        }
+                    } else {
+                        completion(false)
+                    }
                 }
             }
         }
@@ -1037,6 +1391,19 @@ class StorageManager {
                 }
                 self.saveToCloudKit(normalizedNewItems, forKey: key, retryCount: 3, completion: completion)
             }
+        }
+    }
+    
+    // Force a sync of all data with the appropriate storage method
+    func forceSync(completion: @escaping (Bool) -> Void) {
+        switch method {
+        case .cloudKit:
+            syncFromCloudKit(completion: completion)
+        case .iCloudKeyValue:
+            syncFromKeyValueStore(completion: completion)
+        case .userDefaults:
+            // Nothing to sync for local-only storage
+            completion(true)
         }
     }
     
@@ -1604,7 +1971,956 @@ class StorageManager {
             }
         }
     }
-    
+
+    // MARK: - Hierarchical Folder Management
+
+    /// Get all hierarchical folders from storage
+    func getHierarchicalFolders(completion: @escaping (Result<[HierarchicalFolder], Error>) -> Void) {
+        print("DEBUG: Getting hierarchical folders from storage")
+
+        // Try to load directly from UserDefaults first
+        if let data = UserDefaults.standard.data(forKey: "hierarchicalFolders") {
+            do {
+                let folders = try JSONDecoder().decode([HierarchicalFolder].self, from: data)
+                print("DEBUG: Successfully loaded \(folders.count) folders from UserDefaults")
+                if !folders.isEmpty {
+                    print("DEBUG: First folder: \(folders.first?.name ?? "unknown"), Root folders: \(folders.filter { $0.parentId == nil }.count)")
+                }
+                DispatchQueue.main.async {
+                    completion(.success(folders))
+                }
+                return
+            } catch {
+                print("DEBUG: Error decoding folders from UserDefaults: \(error.localizedDescription)")
+                // Continue to try loading from the storage system if UserDefaults fails
+            }
+        }
+
+        // If UserDefaults doesn't have folders, try the storage system
+        load(forKey: "hierarchicalFolders") { (result: Result<[HierarchicalFolder], Error>) in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let folders):
+                    print("DEBUG: Successfully loaded \(folders.count) folders from storage")
+                    if !folders.isEmpty {
+                        print("DEBUG: First folder: \(folders.first?.name ?? "unknown"), Root folders: \(folders.filter { $0.parentId == nil }.count)")
+                    }
+                    completion(.success(folders))
+                case .failure(let error):
+                    if case StorageError.notFound = error {
+                        // If no folders are found, return an empty array
+                        print("DEBUG: No folders found in storage (normal for first run)")
+                        completion(.success([]))
+                    } else {
+                        print("DEBUG: Error loading folders: \(error.localizedDescription)")
+                        completion(.failure(error))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Create a new hierarchical folder
+    func createHierarchicalFolder(name: String, parentId: String? = nil, completion: @escaping (Result<HierarchicalFolder, Error>) -> Void) {
+        print("DEBUG: Creating hierarchical folder: '\(name)', parentId: \(parentId ?? "root")")
+
+        // Always create folder directly without relying on existing folders
+        var mutableFolders: [HierarchicalFolder] = []
+
+        // Try to load existing folders from UserDefaults first
+        if let data = UserDefaults.standard.data(forKey: "hierarchicalFolders") {
+            do {
+                mutableFolders = try JSONDecoder().decode([HierarchicalFolder].self, from: data)
+                print("DEBUG-FOLDER: Loaded \(mutableFolders.count) existing folders from UserDefaults")
+            } catch {
+                print("DEBUG-FOLDER: Error decoding folders from UserDefaults: \(error.localizedDescription)")
+                // Continue with empty array
+            }
+        }
+
+        // Determine the sort index for the new folder
+        var sortIndex = 0
+        if let parentId = parentId {
+            // For a subfolder, find the highest sort index of siblings and add 1
+            let siblings = mutableFolders.filter { $0.parentId == parentId }
+            print("DEBUG-FOLDER: Found \(siblings.count) sibling folders for parent \(parentId)")
+
+            if let highestIndex = siblings.map({ $0.sortIndex }).max() {
+                sortIndex = highestIndex + 1
+                print("DEBUG-FOLDER: Using sort index \(sortIndex) based on siblings")
+            } else {
+                print("DEBUG-FOLDER: No siblings found, using sort index 0")
+            }
+
+            // Verify parent exists
+            if !mutableFolders.contains(where: { $0.id == parentId }) {
+                print("DEBUG-FOLDER: WARNING - Parent folder \(parentId) does not exist!")
+            }
+        } else {
+            // For a root folder, find the highest sort index of root folders and add 1
+            let rootFolders = mutableFolders.filter { $0.parentId == nil }
+            print("DEBUG-FOLDER: Found \(rootFolders.count) root folders")
+
+            if let highestIndex = rootFolders.map({ $0.sortIndex }).max() {
+                sortIndex = highestIndex + 1
+                print("DEBUG-FOLDER: Using sort index \(sortIndex) based on root folders")
+            } else {
+                print("DEBUG-FOLDER: No root folders found, using sort index 0")
+            }
+        }
+
+        // Create new folder
+        let newFolder = HierarchicalFolder(name: name, parentId: parentId, sortIndex: sortIndex)
+        print("DEBUG-FOLDER: Created new folder with ID: \(newFolder.id)")
+        mutableFolders.append(newFolder)
+
+        // Log folders before saving
+        print("DEBUG-FOLDER: Saving new folder \(newFolder.name) to storage. Total folders: \(mutableFolders.count)")
+
+        // Save directly to UserDefaults for immediate local access
+        if let encodedData = try? JSONEncoder().encode(mutableFolders) {
+            print("DEBUG-FOLDER: Directly saving to UserDefaults")
+            UserDefaults.standard.set(encodedData, forKey: "hierarchicalFolders")
+            UserDefaults.standard.synchronize()
+            print("DEBUG-FOLDER: UserDefaults synchronized")
+        } else {
+            print("DEBUG-FOLDER: Failed to encode folders for UserDefaults")
+            completion(.failure(NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode folders"])))
+            return
+        }
+
+        // Verify folder was saved in UserDefaults
+        if let data = UserDefaults.standard.data(forKey: "hierarchicalFolders") {
+            do {
+                let savedFolders = try JSONDecoder().decode([HierarchicalFolder].self, from: data)
+                let folderExists = savedFolders.contains(where: { $0.id == newFolder.id })
+                print("DEBUG-FOLDER: Folder exists in UserDefaults after direct save: \(folderExists ? "YES" : "NO")")
+
+                if !folderExists {
+                    print("DEBUG-FOLDER: ERROR - Folder not found in UserDefaults after save!")
+                    completion(.failure(NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Folder not found after save"])))
+                    return
+                }
+            } catch {
+                print("DEBUG-FOLDER: Error verifying folder in UserDefaults: \(error)")
+            }
+        }
+
+        // Post notification immediately after successful UserDefaults save
+        NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+
+        // Also save to CloudKit if available
+        if self.method == .cloudKit {
+            print("DEBUG-FOLDER: Also saving to CloudKit")
+            self.saveToCloudKit(mutableFolders, forKey: "hierarchicalFolders", retryCount: 3) { error in
+                if let error = error {
+                    print("DEBUG-FOLDER: Error saving folder to CloudKit: \(error.localizedDescription)")
+                } else {
+                    print("DEBUG-FOLDER: Successfully saved folder to CloudKit")
+                }
+            }
+        }
+
+        // Save to the storage system as well (redundant backup)
+        print("DEBUG-FOLDER: Saving to storage system")
+        self.save(mutableFolders, forKey: "hierarchicalFolders") { [weak self] error in
+            guard let self = self else { return }
+
+            if let error = error {
+                print("DEBUG-FOLDER: Error saving to storage system: \(error.localizedDescription)")
+                // We already saved to UserDefaults, so we can still report success
+                completion(.success(newFolder))
+            } else {
+                print("DEBUG-FOLDER: Successfully saved folder to storage system")
+
+                // Double-check the folder is really there
+                self.verifyFolderWasSaved(newFolder.id) { exists in
+                    print("DEBUG-FOLDER: Final verification of saved folder: \(exists ? "EXISTS" : "NOT FOUND")")
+
+                    // Even if verification fails, we know we saved to UserDefaults
+                    completion(.success(newFolder))
+                }
+            }
+        }
+    }
+
+    /// Verify a folder was successfully saved
+    private func verifyFolderWasSaved(_ folderId: String, completion: @escaping (Bool) -> Void) {
+        print("DEBUG: Verifying folder was saved: \(folderId)")
+
+        // Check UserDefaults first
+        if let data = UserDefaults.standard.data(forKey: "hierarchicalFolders") {
+            do {
+                let folders = try JSONDecoder().decode([HierarchicalFolder].self, from: data)
+                if folders.contains(where: { $0.id == folderId }) {
+                    print("DEBUG: Folder found in UserDefaults verification")
+                    completion(true)
+                    return
+                } else {
+                    print("DEBUG: Folder NOT found in UserDefaults verification")
+                }
+            } catch {
+                print("DEBUG: Error decoding folders during verification: \(error)")
+            }
+        } else {
+            print("DEBUG: No folder data in UserDefaults during verification")
+        }
+
+        // Check StorageManager as backup
+        self.getHierarchicalFolders { result in
+            switch result {
+            case .success(let folders):
+                let exists = folders.contains(where: { $0.id == folderId })
+                print("DEBUG: Folder exists in StorageManager verification: \(exists)")
+                completion(exists)
+            case .failure(let error):
+                print("DEBUG: Error verifying folder in StorageManager: \(error.localizedDescription)")
+                completion(false)
+            }
+        }
+    }
+
+    /// Update an existing hierarchical folder
+    func updateHierarchicalFolder(_ folder: HierarchicalFolder, completion: @escaping (Result<Bool, Error>) -> Void) {
+        getHierarchicalFolders { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(var folders):
+                // Find and update the folder
+                if let index = folders.firstIndex(where: { $0.id == folder.id }) {
+                    // Normalize feed URLs in the updated folder
+                    var normalizedFolder = folder
+                    normalizedFolder.feedURLs = folder.feedURLs.map { self.normalizeLink($0) }
+
+                    // Prevent circular hierarchies by checking if the new parent is itself or one of its descendants
+                    if let newParentId = normalizedFolder.parentId {
+                        if newParentId == folder.id {
+                            completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                                      userInfo: [NSLocalizedDescriptionKey: "A folder cannot be its own parent"])))
+                            return
+                        }
+
+                        // Check if new parent is a descendant of this folder
+                        let descendants = FolderManager.getAllDescendantFolders(from: folders, forFolderId: folder.id)
+                        if descendants.contains(where: { $0.id == newParentId }) {
+                            completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                                      userInfo: [NSLocalizedDescriptionKey: "Cannot create circular folder references"])))
+                            return
+                        }
+                    }
+
+                    folders[index] = normalizedFolder
+
+                    // Save updated folders list
+                    self.save(folders, forKey: "hierarchicalFolders") { error in
+                        DispatchQueue.main.async {
+                            if let error = error {
+                                completion(.failure(error))
+                            } else {
+                                completion(.success(true))
+
+                                // Post notification that folders have been updated
+                                NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                            }
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                                  userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                    }
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    /// Delete a hierarchical folder
+    func deleteHierarchicalFolder(id: String, deleteSubfolders: Bool = false, completion: @escaping (Result<Bool, Error>) -> Void) {
+        print("DEBUG: Deleting folder with ID: \(id), deleteSubfolders: \(deleteSubfolders)")
+
+        getHierarchicalFolders { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(var folders):
+                print("DEBUG: Found \(folders.count) folders before deletion")
+                print("DEBUG: Current folders: \(folders.map { "\($0.name) (ID: \($0.id))" })")
+
+                // Get descendants of this folder
+                let descendants = FolderManager.getAllDescendantFolders(from: folders, forFolderId: id)
+                print("DEBUG: Found \(descendants.count) descendants for folder ID: \(id)")
+
+                if !deleteSubfolders && !descendants.isEmpty {
+                    // If we're not deleting subfolders and there are descendants, return an error
+                    print("DEBUG: Cannot delete folder with subfolders unless deleteSubfolders is true")
+                    completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                              userInfo: [NSLocalizedDescriptionKey: "Folder has subfolders. Set deleteSubfolders to true to delete them or move them first."])))
+                    return
+                }
+
+                let foldersCountBefore = folders.count
+
+                // Remove the folder and its descendants if requested
+                if deleteSubfolders {
+                    // Delete folder and all descendants
+                    let folderIdsToDelete = [id] + descendants.map { $0.id }
+                    print("DEBUG: Deleting folder IDs: \(folderIdsToDelete)")
+                    folders.removeAll { folderIdsToDelete.contains($0.id) }
+                } else {
+                    // Just delete the folder
+                    print("DEBUG: Deleting just folder ID: \(id)")
+                    folders.removeAll { $0.id == id }
+                }
+
+                let foldersCountAfter = folders.count
+                print("DEBUG: Deleted \(foldersCountBefore - foldersCountAfter) folders")
+                print("DEBUG: Remaining folders: \(folders.map { "\($0.name) (ID: \($0.id))" })")
+
+                // Save directly to UserDefaults for immediate local access
+                if let encodedData = try? JSONEncoder().encode(folders) {
+                    print("DEBUG: Directly saving updated folders to UserDefaults after deletion")
+                    UserDefaults.standard.set(encodedData, forKey: "hierarchicalFolders")
+                    UserDefaults.standard.synchronize()
+                }
+
+                // Save updated folders list
+                self.save(folders, forKey: "hierarchicalFolders") { error in
+                    DispatchQueue.main.async {
+                        if let error = error {
+                            print("DEBUG: Error saving updated folders after deletion: \(error.localizedDescription)")
+                            completion(.failure(error))
+                        } else {
+                            print("DEBUG: Successfully saved updated folders after deletion")
+
+                            // Verify the deletion in UserDefaults
+                            if let data = UserDefaults.standard.data(forKey: "hierarchicalFolders") {
+                                do {
+                                    let savedFolders = try JSONDecoder().decode([HierarchicalFolder].self, from: data)
+                                    let folderStillExists = savedFolders.contains(where: { $0.id == id })
+                                    print("DEBUG: After deletion, folder still exists in UserDefaults: \(folderStillExists)")
+
+                                    if folderStillExists {
+                                        print("DEBUG: WARNING - UserDefaults deletion failed, trying again")
+                                        // If folder still exists, try saving to UserDefaults again
+                                        if let encodedData = try? JSONEncoder().encode(folders) {
+                                            UserDefaults.standard.set(encodedData, forKey: "hierarchicalFolders")
+                                            UserDefaults.standard.synchronize()
+                                        }
+                                    }
+                                } catch {
+                                    print("DEBUG: Error checking UserDefaults after deletion: \(error)")
+                                }
+                            }
+
+                            completion(.success(true))
+
+                            // Post notification that folders have been updated
+                            print("DEBUG: Posting hierarchicalFoldersUpdated notification after deletion")
+                            NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                        }
+                    }
+                }
+            case .failure(let error):
+                print("DEBUG: Error getting folders for deletion: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    /// Add a feed to a hierarchical folder
+    func addFeedToHierarchicalFolder(feedURL: String, folderId: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+        print("DEBUG: Adding feed URL: \(feedURL) to folder: \(folderId)")
+        getHierarchicalFolders { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(var folders):
+                // Find the folder
+                if let index = folders.firstIndex(where: { $0.id == folderId }) {
+                    print("DEBUG: Found folder at index \(index): \(folders[index].name)")
+
+                    // Add feed to folder if it's not already there
+                    let normalizedURL = self.normalizeLink(feedURL)
+                    print("DEBUG: Normalized feed URL: \(normalizedURL)")
+
+                    // Check if the feed is already in the folder (using normalized URLs)
+                    let normalizedFolderURLs = folders[index].feedURLs.map { self.normalizeLink($0) }
+                    print("DEBUG: Current folder has \(normalizedFolderURLs.count) feeds")
+
+                    if !normalizedFolderURLs.contains(normalizedURL) {
+                        print("DEBUG: Adding feed to folder")
+                        folders[index].feedURLs.append(normalizedURL)
+
+                        // Save directly to UserDefaults for immediate local access
+                        if let encodedData = try? JSONEncoder().encode(folders) {
+                            print("DEBUG: Directly saving updated folders to UserDefaults")
+                            UserDefaults.standard.set(encodedData, forKey: "hierarchicalFolders")
+                            UserDefaults.standard.synchronize()
+                        }
+
+                        // Save updated folders list
+                        self.save(folders, forKey: "hierarchicalFolders") { error in
+                            DispatchQueue.main.async {
+                                if let error = error {
+                                    print("DEBUG: Error saving updated folders: \(error.localizedDescription)")
+                                    completion(.failure(error))
+                                } else {
+                                    print("DEBUG: Successfully saved updated folders")
+                                    completion(.success(true))
+
+                                    // Post notification that folders have been updated
+                                    print("DEBUG: Posting hierarchicalFoldersUpdated notification")
+                                    NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                                }
+                            }
+                        }
+                    } else {
+                        // Feed already in folder
+                        print("DEBUG: Feed already in folder")
+                        DispatchQueue.main.async {
+                            completion(.success(true))
+                        }
+                    }
+                } else {
+                    print("DEBUG: Folder not found")
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                                  userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                    }
+                }
+            case .failure(let error):
+                print("DEBUG: Error loading folders: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    /// Remove a feed from a hierarchical folder
+    func removeFeedFromHierarchicalFolder(feedURL: String, folderId: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+        getHierarchicalFolders { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(var folders):
+                // Find the folder
+                if let index = folders.firstIndex(where: { $0.id == folderId }) {
+                    // Remove feed from folder using normalized URLs for comparison
+                    let normalizedURL = self.normalizeLink(feedURL)
+                    folders[index].feedURLs.removeAll { self.normalizeLink($0) == normalizedURL }
+
+                    // Save updated folders list
+                    self.save(folders, forKey: "hierarchicalFolders") { error in
+                        DispatchQueue.main.async {
+                            if let error = error {
+                                completion(.failure(error))
+                            } else {
+                                completion(.success(true))
+
+                                // Post notification that folders have been updated
+                                NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                            }
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                                  userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                    }
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    /// Remove multiple feeds from a hierarchical folder at once
+    func bulkRemoveFeedsFromHierarchicalFolder(feedURLs: [String], folderId: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+        print("DEBUG: Bulk removing \(feedURLs.count) feeds from folder ID: \(folderId)")
+
+        getHierarchicalFolders { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(var folders):
+                // Find the folder
+                if let index = folders.firstIndex(where: { $0.id == folderId }) {
+                    print("DEBUG: Found folder at index \(index): \(folders[index].name)")
+                    print("DEBUG: Current feed count: \(folders[index].feedURLs.count)")
+
+                    // Normalize URLs for consistent comparison
+                    let normalizedURLsToRemove = Set(feedURLs.map { self.normalizeLink($0) })
+                    print("DEBUG: Removing normalized URLs: \(normalizedURLsToRemove)")
+
+                    // Filter out the feeds to be removed
+                    let originalCount = folders[index].feedURLs.count
+                    folders[index].feedURLs.removeAll { normalizedURLsToRemove.contains(self.normalizeLink($0)) }
+                    let newCount = folders[index].feedURLs.count
+                    let removedCount = originalCount - newCount
+
+                    print("DEBUG: Removed \(removedCount) feeds, new count: \(newCount)")
+
+                    // Save directly to UserDefaults for immediate local access
+                    if let encodedData = try? JSONEncoder().encode(folders) {
+                        print("DEBUG: Directly saving updated folders to UserDefaults")
+                        UserDefaults.standard.set(encodedData, forKey: "hierarchicalFolders")
+                        UserDefaults.standard.synchronize()
+                    }
+
+                    // Save updated folders list
+                    self.save(folders, forKey: "hierarchicalFolders") { error in
+                        DispatchQueue.main.async {
+                            if let error = error {
+                                print("DEBUG: Error saving updated folders: \(error.localizedDescription)")
+                                completion(.failure(error))
+                            } else {
+                                print("DEBUG: Successfully saved updated folders")
+                                completion(.success(true))
+
+                                // Post notification that folders have been updated
+                                print("DEBUG: Posting hierarchicalFoldersUpdated notification")
+                                NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                            }
+                        }
+                    }
+                } else {
+                    print("DEBUG: Folder not found")
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                                  userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                    }
+                }
+            case .failure(let error):
+                print("DEBUG: Error loading folders: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    /// Add multiple feeds to a hierarchical folder at once
+    func bulkAddFeedsToHierarchicalFolder(feedURLs: [String], folderId: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+        print("DEBUG: Bulk adding \(feedURLs.count) feeds to folder ID: \(folderId)")
+
+        getHierarchicalFolders { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(var folders):
+                // Find the folder
+                if let index = folders.firstIndex(where: { $0.id == folderId }) {
+                    print("DEBUG: Found folder at index \(index): \(folders[index].name)")
+                    print("DEBUG: Current feed count: \(folders[index].feedURLs.count)")
+
+                    // Normalize all URLs for consistent comparison
+                    let normalizedURLs = feedURLs.map { self.normalizeLink($0) }
+                    print("DEBUG: Normalized feed URLs: \(normalizedURLs)")
+
+                    // Filter out already existing feeds
+                    let existingURLs = Set(folders[index].feedURLs.map { self.normalizeLink($0) })
+                    let newURLs = normalizedURLs.filter { !existingURLs.contains($0) }
+
+                    print("DEBUG: New URLs to add: \(newURLs.count) of \(normalizedURLs.count)")
+
+                    // Add new URLs to folder
+                    folders[index].feedURLs.append(contentsOf: newURLs)
+
+                    // Save directly to UserDefaults for immediate local access
+                    if let encodedData = try? JSONEncoder().encode(folders) {
+                        print("DEBUG: Directly saving updated folders to UserDefaults")
+                        UserDefaults.standard.set(encodedData, forKey: "hierarchicalFolders")
+                        UserDefaults.standard.synchronize()
+                    }
+
+                    // Save updated folders list
+                    self.save(folders, forKey: "hierarchicalFolders") { error in
+                        DispatchQueue.main.async {
+                            if let error = error {
+                                print("DEBUG: Error saving updated folders: \(error.localizedDescription)")
+                                completion(.failure(error))
+                            } else {
+                                print("DEBUG: Successfully saved updated folders")
+                                completion(.success(true))
+
+                                // Post notification that folders have been updated
+                                print("DEBUG: Posting hierarchicalFoldersUpdated notification")
+                                NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                            }
+                        }
+                    }
+                } else {
+                    print("DEBUG: Folder not found")
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                                  userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                    }
+                }
+            case .failure(let error):
+                print("DEBUG: Error loading folders: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    /// Get all feeds in a specific hierarchical folder and optionally its subfolders
+    func getFeedsInHierarchicalFolder(folderId: String, includeSubfolders: Bool = false, completion: @escaping (Result<[RSSFeed], Error>) -> Void) {
+        print("DEBUG: Getting feeds in hierarchical folder: \(folderId), includeSubfolders: \(includeSubfolders)")
+
+        // Try to get folders directly from UserDefaults first for faster access
+        var folder: HierarchicalFolder?
+        var folders: [HierarchicalFolder] = []
+
+        if let data = UserDefaults.standard.data(forKey: "hierarchicalFolders") {
+            do {
+                folders = try JSONDecoder().decode([HierarchicalFolder].self, from: data)
+                print("DEBUG: Decoded \(folders.count) folders from UserDefaults")
+                print("DEBUG: All folder IDs: \(folders.map { $0.id })")
+
+                folder = folders.first(where: { $0.id == folderId })
+                print("DEBUG: Found folder from UserDefaults: \(folder?.name ?? "not found")")
+
+                if let f = folder {
+                    print("DEBUG: Folder contains \(f.feedURLs.count) feeds")
+                    print("DEBUG: Feed URLs: \(f.feedURLs)")
+
+                    // Check if feeds are normalized
+                    let normalizedURLs = f.feedURLs.map { normalizeLink($0) }
+                    print("DEBUG: Normalized Feed URLs: \(normalizedURLs)")
+
+                    // Check for differences after normalization
+                    if Set(f.feedURLs) != Set(normalizedURLs) {
+                        print("DEBUG: WARNING - Some feed URLs are not normalized")
+                        let differences = Set(f.feedURLs).symmetricDifference(Set(normalizedURLs))
+                        print("DEBUG: Differences: \(differences)")
+                    }
+                }
+            } catch {
+                print("DEBUG: Error decoding folders from UserDefaults: \(error)")
+            }
+        } else {
+            print("DEBUG: No hierarchical folders data found in UserDefaults")
+        }
+
+        if folder == nil {
+            // If not found in UserDefaults, try getting from the storage system
+            print("DEBUG: Folder not found in UserDefaults, trying StorageManager")
+            getHierarchicalFolders { [weak self] foldersResult in
+                guard let self = self else { return }
+
+                switch foldersResult {
+                case .success(let loadedFolders):
+                    print("DEBUG: Loaded \(loadedFolders.count) folders from StorageManager")
+                    print("DEBUG: All folder IDs from StorageManager: \(loadedFolders.map { $0.id })")
+
+                    // Find the folder
+                    if let folder = loadedFolders.first(where: { $0.id == folderId }) {
+                        print("DEBUG: Found folder in StorageManager: \(folder.name) with \(folder.feedURLs.count) feeds")
+                        self.getFeedsForFolder(folder, folders: loadedFolders, includeSubfolders: includeSubfolders, completion: completion)
+                    } else {
+                        print("DEBUG: Folder not found in StorageManager")
+                        DispatchQueue.main.async {
+                            completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                                      userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                        }
+                    }
+                case .failure(let error):
+                    print("DEBUG: Error loading folders from StorageManager: \(error)")
+                    DispatchQueue.main.async {
+                        completion(.failure(error))
+                    }
+                }
+            }
+        } else {
+            // Found in UserDefaults, proceed with loaded folder
+            print("DEBUG: Using folder from UserDefaults")
+            getFeedsForFolder(folder!, folders: folders, includeSubfolders: includeSubfolders, completion: completion)
+        }
+    }
+
+    private func getFeedsForFolder(_ folder: HierarchicalFolder, folders: [HierarchicalFolder], includeSubfolders: Bool, completion: @escaping (Result<[RSSFeed], Error>) -> Void) {
+        print("DEBUG: Getting feeds for folder: \(folder.name) (ID: \(folder.id))")
+
+        // Get feed URLs in this folder and, if requested, its subfolders
+        var feedURLs: [String] = folder.feedURLs
+
+        print("DEBUG: Initial feed URLs in folder: \(feedURLs)")
+
+        if includeSubfolders {
+            print("DEBUG: Including subfolders")
+
+            // Find direct subfolders first for debugging
+            let directSubfolders = folders.filter { $0.parentId == folder.id }
+            print("DEBUG: Direct subfolder count: \(directSubfolders.count)")
+            if !directSubfolders.isEmpty {
+                print("DEBUG: Direct subfolder names: \(directSubfolders.map { $0.name })")
+                for subFolder in directSubfolders {
+                    print("DEBUG: Subfolder \(subFolder.name) has \(subFolder.feedURLs.count) feeds")
+                }
+            }
+
+            // Add feeds from subfolders
+            let subfolderFeeds = FolderManager.getAllFeeds(from: folders, forFolderId: folder.id)
+            print("DEBUG: Found \(subfolderFeeds.count) feeds in subfolders")
+            feedURLs.append(contentsOf: subfolderFeeds)
+
+            // Ensure URLs are unique
+            let beforeDeduplication = feedURLs.count
+            feedURLs = Array(Set(feedURLs))
+            let afterDeduplication = feedURLs.count
+
+            if beforeDeduplication != afterDeduplication {
+                print("DEBUG: Removed \(beforeDeduplication - afterDeduplication) duplicate feed URLs")
+            }
+        }
+
+        print("DEBUG: Total feed URLs to load: \(feedURLs.count)")
+        print("DEBUG: Feed URLs: \(feedURLs)")
+
+        // Normalize all URLs for consistency
+        let normalizedFeedURLs = feedURLs.map { normalizeLink($0) }
+        print("DEBUG: Normalized feed URLs: \(normalizedFeedURLs)")
+
+        // Load all feeds
+        self.load(forKey: "rssFeeds") { [weak self] (result: Result<[RSSFeed], Error>) in
+            guard let self = self else { return }
+
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let allFeeds):
+                    print("DEBUG: Loaded \(allFeeds.count) feeds from system")
+
+                    // Filter feeds that are in the folder or its subfolders
+                    let folderFeeds = allFeeds.filter { feed in
+                        let normalizedFeedURL = self.normalizeLink(feed.url)
+                        let isInFolder = normalizedFeedURLs.contains(normalizedFeedURL)
+                        if isInFolder {
+                            print("DEBUG: Found matching feed: \(feed.title) - \(feed.url)")
+                        }
+                        return isInFolder
+                    }
+
+                    print("DEBUG: Filtered to \(folderFeeds.count) feeds in folder")
+
+                    // Print missing feeds for debugging
+                    if folderFeeds.count < feedURLs.count {
+                        print("DEBUG: Some feeds in folder were not found in the system")
+                        let foundURLs = folderFeeds.map { self.normalizeLink($0.url) }
+                        let missingURLs = normalizedFeedURLs.filter { !foundURLs.contains($0) }
+                        print("DEBUG: Missing feed URLs: \(missingURLs)")
+
+                        // Check if all feeds in system's database
+                        let allFeedURLs = allFeeds.map { self.normalizeLink($0.url) }
+                        for missingURL in missingURLs {
+                            let isInSystem = allFeedURLs.contains(missingURL)
+                            print("DEBUG: Missing URL '\(missingURL)' exists in system database: \(isInSystem ? "YES" : "NO")")
+                        }
+                    }
+
+                    completion(.success(folderFeeds))
+                case .failure(let error):
+                    print("DEBUG: Error loading RSS feeds: \(error)")
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    /// Move a hierarchical folder to a new parent
+    func moveHierarchicalFolder(folderId: String, toParentId: String?, completion: @escaping (Result<Bool, Error>) -> Void) {
+        getHierarchicalFolders { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(var folders):
+                // Find the folder to move
+                guard let folderIndex = folders.firstIndex(where: { $0.id == folderId }) else {
+                    completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                              userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                    return
+                }
+
+                var folder = folders[folderIndex]
+
+                // Ensure we're not creating a circular hierarchy
+                if let newParentId = toParentId {
+                    // Can't move to itself
+                    if newParentId == folderId {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                                  userInfo: [NSLocalizedDescriptionKey: "A folder cannot be its own parent"])))
+                        return
+                    }
+
+                    // Check if new parent exists
+                    guard folders.contains(where: { $0.id == newParentId }) else {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                                  userInfo: [NSLocalizedDescriptionKey: "Parent folder not found"])))
+                        return
+                    }
+
+                    // Check if new parent is a descendant of this folder
+                    let descendants = FolderManager.getAllDescendantFolders(from: folders, forFolderId: folderId)
+                    if descendants.contains(where: { $0.id == newParentId }) {
+                        completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                                  userInfo: [NSLocalizedDescriptionKey: "Cannot create circular folder references"])))
+                        return
+                    }
+                }
+
+                // Update the folder's parent
+                folder.parentId = toParentId
+
+                // Determine the new sort index
+                var sortIndex = 0
+                if let parentId = toParentId {
+                    // For a subfolder, find the highest sort index of siblings and add 1
+                    let siblings = folders.filter { $0.parentId == parentId }
+                    if let highestIndex = siblings.map({ $0.sortIndex }).max() {
+                        sortIndex = highestIndex + 1
+                    }
+                } else {
+                    // For a root folder, find the highest sort index of root folders and add 1
+                    let rootFolders = folders.filter { $0.parentId == nil }
+                    if let highestIndex = rootFolders.map({ $0.sortIndex }).max() {
+                        sortIndex = highestIndex + 1
+                    }
+                }
+
+                folder.sortIndex = sortIndex
+                folders[folderIndex] = folder
+
+                // Save updated folders list
+                self.save(folders, forKey: "hierarchicalFolders") { error in
+                    DispatchQueue.main.async {
+                        if let error = error {
+                            completion(.failure(error))
+                        } else {
+                            completion(.success(true))
+
+                            // Post notification that folders have been updated
+                            NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                        }
+                    }
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    /// Reorder a hierarchical folder
+    func reorderHierarchicalFolder(folderId: String, newSortIndex: Int, completion: @escaping (Result<Bool, Error>) -> Void) {
+        getHierarchicalFolders { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(var folders):
+                // Find the folder to reorder
+                guard let folderIndex = folders.firstIndex(where: { $0.id == folderId }) else {
+                    completion(.failure(NSError(domain: "StorageManager", code: -1,
+                                              userInfo: [NSLocalizedDescriptionKey: "Folder not found"])))
+                    return
+                }
+
+                var folder = folders[folderIndex]
+
+                // Update the sort index
+                folder.sortIndex = newSortIndex
+                folders[folderIndex] = folder
+
+                // Save updated folders list
+                self.save(folders, forKey: "hierarchicalFolders") { error in
+                    DispatchQueue.main.async {
+                        if let error = error {
+                            completion(.failure(error))
+                        } else {
+                            completion(.success(true))
+
+                            // Post notification that folders have been updated
+                            NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                        }
+                    }
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    /// Import existing flat folders into the hierarchical structure
+    func importFlatFoldersToHierarchical(completion: @escaping (Result<Bool, Error>) -> Void) {
+        // Get existing flat folders
+        getFolders { [weak self] flatFoldersResult in
+            guard let self = self else { return }
+
+            switch flatFoldersResult {
+            case .success(let flatFolders):
+                if flatFolders.isEmpty {
+                    completion(.success(true)) // No folders to import
+                    return
+                }
+
+                // Get existing hierarchical folders
+                self.getHierarchicalFolders { hierarchicalFoldersResult in
+                    switch hierarchicalFoldersResult {
+                    case .success(var hierarchicalFolders):
+                        // Convert each flat folder to a hierarchical one
+                        for (index, flatFolder) in flatFolders.enumerated() {
+                            // Skip if a folder with this name already exists
+                            if hierarchicalFolders.contains(where: { $0.name == flatFolder.name }) {
+                                continue
+                            }
+
+                            // Create a new hierarchical folder
+                            let newFolder = HierarchicalFolder(
+                                name: flatFolder.name,
+                                parentId: nil,
+                                feedURLs: flatFolder.feedURLs,
+                                sortIndex: index
+                            )
+
+                            hierarchicalFolders.append(newFolder)
+                        }
+
+                        // Save the updated hierarchical folders
+                        self.save(hierarchicalFolders, forKey: "hierarchicalFolders") { error in
+                            if let error = error {
+                                completion(.failure(error))
+                            } else {
+                                NotificationCenter.default.post(name: Notification.Name("hierarchicalFoldersUpdated"), object: nil)
+                                completion(.success(true))
+                            }
+                        }
+
+                    case .failure(let error):
+                        completion(.failure(error))
+                    }
+                }
+
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    // Sync hierarchical folders from CloudKit
+
     // MARK: - Reading Progress Management
     
     /// Save reading progress for an article

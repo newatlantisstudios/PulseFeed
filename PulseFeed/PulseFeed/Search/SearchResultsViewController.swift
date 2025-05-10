@@ -192,41 +192,17 @@ extension SearchResultsViewController: UITableViewDataSource {
         // Get the article for this row
         let article = searchResults[indexPath.row]
         
-        // Determine if we should use the enhanced cell style
-        let useEnhancedStyle = UserDefaults.standard.bool(forKey: "enhancedArticleStyle")
+        // Always use enhanced cell style
+        let cell = tableView.dequeueReusableCell(withIdentifier: "EnhancedResultCell", for: indexPath) as! EnhancedRSSCell
         
-        if useEnhancedStyle {
-            let cell = tableView.dequeueReusableCell(withIdentifier: "EnhancedResultCell", for: indexPath) as! EnhancedRSSCell
-            
-            // Configure the cell with the article
-            cell.configure(with: article)
-            
-            // Set bookmarked and hearted status
-            cell.isBookmarked = bookmarkedItems.contains(article.link)
-            cell.isHearted = heartedItems.contains(article.link)
-            
-            return cell
-        } else {
-            let cell = tableView.dequeueReusableCell(withIdentifier: "ResultCell", for: indexPath)
-            
-            // Configure basic cell
-            cell.textLabel?.text = article.title
-            cell.textLabel?.numberOfLines = 2
-            cell.textLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
-            
-            // Show source as subtitle
-            cell.detailTextLabel?.text = article.source
-            cell.detailTextLabel?.textColor = .secondaryLabel
-            
-            // Show indicator for read/unread status
-            if article.isRead {
-                cell.textLabel?.textColor = .secondaryLabel
-            } else {
-                cell.textLabel?.textColor = .label
-            }
-            
-            return cell
-        }
+        // Configure the cell with the article
+        cell.configure(with: article)
+        
+        // Set bookmarked and hearted status
+        cell.isBookmarked = bookmarkedItems.contains(article.link)
+        cell.isHearted = heartedItems.contains(article.link)
+        
+        return cell
     }
 }
 
@@ -241,9 +217,8 @@ extension SearchResultsViewController: UITableViewDelegate {
     }
     
     func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
-        // Use different heights based on cell style
-        let useEnhancedStyle = UserDefaults.standard.bool(forKey: "enhancedArticleStyle")
-        return useEnhancedStyle ? 120 : 70
+        // Always use enhanced cell height
+        return 120
     }
     
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {

@@ -361,45 +361,28 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     }
     
     // MARK: - Configure Settings
-    
+
     private func configureSettings() {
-        // General Section
+        // General Section - removed Compact View option and Preview Text Length options
         let generalSection = SettingSection(type: .general, items: [
-            .navigation(title: "App Theme", 
+            .navigation(title: "App Theme",
                    action: { [weak self] in
                        self?.openAppThemeSelection()
                    },
                    icon: UIImage(systemName: "paintpalette")),
-            .slider(title: "Feed Font Size", 
+            .slider(title: "Feed Font Size",
                    value: UserDefaults.standard.float(forKey: "fontSize") != 0 ? UserDefaults.standard.float(forKey: "fontSize") : 16,
                    range: 12...32,
                    action: { [weak self] value in
                         self?.fontSizeSliderChanged(value)
                    }),
-            .toggle(title: "Enhanced Article Style", 
-                   isOn: UserDefaults.standard.bool(forKey: "enhancedArticleStyle"),
-                   action: { isOn in
-                        UserDefaults.standard.set(isOn, forKey: "enhancedArticleStyle")
-                        NotificationCenter.default.post(name: Notification.Name("articleStyleChanged"), object: nil)
-                   }),
-            .toggle(title: "Compact View", 
-                   isOn: UserDefaults.standard.bool(forKey: "compactArticleView"),
-                   action: { isOn in
-                        UserDefaults.standard.set(isOn, forKey: "compactArticleView")
-                        NotificationCenter.default.post(name: Notification.Name("articleViewModeChanged"), object: nil)
-                   }),
-            .toggle(title: "Hide Read Articles", 
+            .toggle(title: "Hide Read Articles",
                    isOn: UserDefaults.standard.bool(forKey: "hideReadArticles"),
                    action: { isOn in
                         UserDefaults.standard.set(isOn, forKey: "hideReadArticles")
                         NotificationCenter.default.post(name: Notification.Name("hideReadArticlesChanged"), object: nil)
                    }),
-            .navigation(title: "Preview Text Length", 
-                   action: { [weak self] in
-                       self?.showPreviewLengthOptions()
-                   },
-                   icon: UIImage(systemName: "text.alignleft")),
-            .navigation(title: "Article Sort Order", 
+            .navigation(title: "Article Sort Order",
                    action: { [weak self] in
                        self?.showSortOptions()
                    },
@@ -408,45 +391,23 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         
         // Reader Settings Section
         let readerSection = SettingSection(type: .reader, items: [
-            .toggle(title: "Use In-App Reader", 
+            .toggle(title: "Use In-App Reader",
                    isOn: UserDefaults.standard.bool(forKey: "useInAppReader"),
                    action: { isOn in
                         UserDefaults.standard.set(isOn, forKey: "useInAppReader")
                    }),
-            .toggle(title: "Use In-App Browser", 
+            .toggle(title: "Use In-App Browser",
                    isOn: UserDefaults.standard.bool(forKey: "useInAppBrowser"),
                    action: { isOn in
                         UserDefaults.standard.set(isOn, forKey: "useInAppBrowser")
                    }),
-            .toggle(title: "Enable Article Summarization", 
-                   isOn: UserDefaults.standard.bool(forKey: "enableArticleSummarization"),
-                   action: { isOn in
-                        UserDefaults.standard.set(isOn, forKey: "enableArticleSummarization")
-                   }),
-            .navigation(title: "Typography Settings", 
-                       action: { [weak self] in
-                           self?.openTypographySettings()
-                       },
-                       icon: UIImage(systemName: "textformat")),
-            .slider(title: "Reader Font Size", 
+            .slider(title: "Reader Font Size",
                    value: UserDefaults.standard.float(forKey: "readerFontSize") != 0 ? UserDefaults.standard.float(forKey: "readerFontSize") : 18,
                    range: 12...32,
                    action: { [weak self] value in
                         self?.readerFontSizeChanged(value)
                    }),
-            .slider(title: "Line Spacing", 
-                   value: UserDefaults.standard.float(forKey: "readerLineHeight") != 0 ? UserDefaults.standard.float(forKey: "readerLineHeight") * 10 : 15,
-                   range: 10...30,
-                   action: { [weak self] value in
-                        self?.lineHeightChanged(value)
-                   }),
-            .toggle(title: "Sepia Mode", 
-                   isOn: UserDefaults.standard.bool(forKey: "readerSepiaMode"),
-                   action: { isOn in
-                        UserDefaults.standard.set(isOn, forKey: "readerSepiaMode")
-                        NotificationCenter.default.post(name: Notification.Name("readerAppearanceChanged"), object: nil)
-                   }),
-            .toggle(title: "Auto-Enable Reader Mode in Safari", 
+            .toggle(title: "Auto-Enable Reader Mode in Safari",
                    isOn: UserDefaults.standard.bool(forKey: "autoEnableReaderMode"),
                    action: { isOn in
                         UserDefaults.standard.set(isOn, forKey: "autoEnableReaderMode")
@@ -537,11 +498,11 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         
         // Data Management Section
         var dataItems: [SettingItemType] = [
-            .toggle(title: "iCloud Syncing", 
-                   isOn: UserDefaults.standard.bool(forKey: "useICloud"),
-                   action: { [weak self] isOn in
-                       self?.handleStorageToggle(isOn)
-                   }),
+            .navigation(title: "iCloud Sync Options", 
+                       action: { [weak self] in
+                           self?.showICloudSyncOptions()
+                       },
+                       icon: UIImage(systemName: "icloud")),
             .button(title: "Force Sync", 
                    action: { [weak self] in
                        self?.forceSyncData()
@@ -562,6 +523,15 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                        self?.testFolderCloudSync()
                    },
                    style: createButtonConfiguration(title: "Test Folder Sync", color: .systemPurple, symbolName: "folder.badge.gearshape"))
+        )
+        
+        // Add a test button for iCloud Key-Value sync
+        dataItems.append(
+            .button(title: "Test iCloud KV Sync", 
+                   action: { [weak self] in
+                       self?.testKeyValueSync()
+                   },
+                   style: createButtonConfiguration(title: "Test iCloud KV Sync", color: .systemPurple, symbolName: "icloud"))
         )
         #endif
         
@@ -718,14 +688,6 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
             name: Notification.Name("readerFontSizeChanged"), object: nil)
     }
     
-    private func lineHeightChanged(_ value: Float) {
-        // We store line height as a decimal (1.0 - 3.0) but display it as 10-30
-        let lineHeight = value / 10.0
-        UserDefaults.standard.set(lineHeight, forKey: "readerLineHeight")
-        NotificationCenter.default.post(
-            name: Notification.Name("readerLineHeightChanged"), object: nil)
-    }
-    
     private func handleStorageToggle(_ isOn: Bool) {
         if isOn {
             showEnableICloudAlert()
@@ -854,11 +816,6 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         navigationController?.pushViewController(tipJarVC, animated: true)
     }
     
-    @objc private func openTypographySettings() {
-        let typographyVC = TypographySettingsViewController()
-        navigationController?.pushViewController(typographyVC, animated: true)
-    }
-    
     @objc private func openAppThemeSelection() {
         let themeVC = AppThemeSelectionViewController()
         themeVC.delegate = self
@@ -867,11 +824,229 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     
     
     // MARK: - Updated Storage Switch Action and Migration Helpers
+    private func showICloudSyncOptions() {
+        let alert = UIAlertController(
+            title: "iCloud Sync Options",
+            message: "Choose how you want to sync your data across devices:",
+            preferredStyle: .actionSheet
+        )
+        
+        // Current sync state
+        let isCloudKitEnabled = UserDefaults.standard.bool(forKey: "useICloud")
+        let isKeyValueStoreEnabled = UserDefaults.standard.bool(forKey: "useICloudKeyValue")
+        let currentMethod: StorageMethod = isCloudKitEnabled ? .cloudKit : (isKeyValueStoreEnabled ? .iCloudKeyValue : .userDefaults)
+        
+        // No sync option
+        let noSyncAction = UIAlertAction(title: "No Sync (Local Only)", style: .default) { [weak self] _ in
+            // Disable all iCloud options
+            self?.disableAllICloudSync()
+        }
+        
+        if currentMethod == .userDefaults {
+            noSyncAction.setValue(true, forKey: "checked")
+        }
+        
+        // iCloud CloudKit option (full sync)
+        let cloudKitAction = UIAlertAction(title: "Full iCloud Sync (CloudKit)", style: .default) { [weak self] _ in
+            // Enable CloudKit, disable Key-Value store
+            self?.enableCloudKitSync()
+        }
+        
+        if currentMethod == .cloudKit {
+            cloudKitAction.setValue(true, forKey: "checked")
+        }
+        
+        // iCloud Key-Value Store option (lightweight sync)
+        let keyValueAction = UIAlertAction(title: "Lightweight iCloud Sync (Key-Value Store)", style: .default) { [weak self] _ in
+            // Enable Key-Value store, disable CloudKit
+            self?.enableKeyValueSync()
+        }
+        
+        if currentMethod == .iCloudKeyValue {
+            keyValueAction.setValue(true, forKey: "checked")
+        }
+        
+        // Info button to explain the differences
+        let infoAction = UIAlertAction(title: "What's the Difference?", style: .default) { [weak self] _ in
+            self?.showSyncOptionExplanation()
+        }
+        
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        
+        alert.addAction(noSyncAction)
+        alert.addAction(cloudKitAction)
+        alert.addAction(keyValueAction)
+        alert.addAction(infoAction)
+        alert.addAction(cancelAction)
+        
+        // For iPad compatibility
+        if let popoverController = alert.popoverPresentationController {
+            popoverController.sourceView = view
+            popoverController.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            popoverController.permittedArrowDirections = []
+        }
+        
+        present(alert, animated: true)
+    }
+    
+    private func showSyncOptionExplanation() {
+        let alert = UIAlertController(
+            title: "Sync Options Explained",
+            message: """
+                • No Sync: Data stays on this device only
+                
+                • Full iCloud Sync (CloudKit):
+                  - Syncs all data including articles and feeds
+                  - Best for a complete sync experience
+                  - Uses more iCloud storage
+                  - May be slower for some operations
+                
+                • Lightweight iCloud Sync (Key-Value Store):
+                  - Fast sync for settings and basic user data
+                  - Uses minimal iCloud storage
+                  - Faster sync performance
+                  - Limited to 1MB total data size
+                  - Perfect for syncing read status and settings
+                """,
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+    
+    private func disableAllICloudSync() {
+        // Show confirmation
+        let alert = UIAlertController(
+            title: "Disable All iCloud Sync?",
+            message: "This will stop syncing all data across your devices. Your data will remain only on this device.",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Disable All Sync", style: .destructive) { [weak self] _ in
+            // Disable both sync options
+            UserDefaults.standard.set(false, forKey: "useICloud")
+            UserDefaults.standard.set(false, forKey: "useICloudKeyValue")
+            
+            // Update storage method
+            StorageManager.shared.method = .userDefaults
+            
+            // Show confirmation
+            let confirmation = UIAlertController(
+                title: "Sync Disabled",
+                message: "All iCloud syncing has been disabled. Your data will remain only on this device.",
+                preferredStyle: .alert
+            )
+            confirmation.addAction(UIAlertAction(title: "OK", style: .default))
+            self?.present(confirmation, animated: true)
+        })
+        
+        present(alert, animated: true)
+    }
+    
+    private func enableCloudKitSync() {
+        // Show confirmation
+        let alert = UIAlertController(
+            title: "Enable Full iCloud Sync?",
+            message: """
+                Full iCloud Sync will:
+                
+                • Merge current data with any existing iCloud data
+                • Sync all feeds, favorites, read status across devices
+                • Use CloudKit for comprehensive data sync
+                • May consume more iCloud storage space
+                
+                Do you want to enable Full iCloud Sync?
+                """,
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Enable", style: .default) { [weak self] _ in
+            // Enable CloudKit, disable Key-Value Store
+            UserDefaults.standard.set(true, forKey: "useICloud")
+            UserDefaults.standard.set(false, forKey: "useICloudKeyValue")
+            
+            // Update storage method
+            StorageManager.shared.method = .cloudKit
+            
+            // Perform force sync
+            self?.performForceSync()
+        })
+        
+        present(alert, animated: true)
+    }
+    
+    private func enableKeyValueSync() {
+        // Show confirmation
+        let alert = UIAlertController(
+            title: "Enable Lightweight iCloud Sync?",
+            message: """
+                Lightweight iCloud Sync will:
+                
+                • Use iCloud Key-Value Storage for fast syncing
+                • Sync your settings, reading progress, and status across devices
+                • Consume minimal iCloud storage
+                • Provide better performance for day-to-day use
+                
+                Do you want to enable Lightweight iCloud Sync?
+                """,
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Enable", style: .default) { [weak self] _ in
+            // Enable Key-Value Store, disable CloudKit
+            UserDefaults.standard.set(false, forKey: "useICloud")
+            UserDefaults.standard.set(true, forKey: "useICloudKeyValue")
+            
+            // Update storage method
+            StorageManager.shared.method = .iCloudKeyValue
+            
+            // Perform force sync
+            self?.performKeyValueForceSync()
+        })
+        
+        present(alert, animated: true)
+    }
+    
+    private func performKeyValueForceSync() {
+        let loadingAlert = UIAlertController(
+            title: "Syncing with iCloud",
+            message: "Syncing your data with iCloud Key-Value Storage...",
+            preferredStyle: .alert
+        )
+        
+        present(loadingAlert, animated: true)
+        
+        // Perform the sync
+        StorageManager.shared.syncFromKeyValueStore { success in
+            DispatchQueue.main.async {
+                loadingAlert.dismiss(animated: true) {
+                    // Show result
+                    let resultAlert = UIAlertController(
+                        title: success ? "Sync Complete" : "Sync Completed with Warnings",
+                        message: success ? 
+                            "Your data has been successfully synced with iCloud." :
+                            "Your data has been synced, but there may have been some issues. Please check your data.",
+                        preferredStyle: .alert
+                    )
+                    resultAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(resultAlert, animated: true)
+                }
+            }
+        }
+    }
+    
     @objc private func forceSyncData() {
-        let iCloudEnabled = UserDefaults.standard.bool(forKey: "useICloud")
-        guard iCloudEnabled else {
+        // Check which sync method is enabled
+        let isCloudKitEnabled = UserDefaults.standard.bool(forKey: "useICloud")
+        let isKeyValueStoreEnabled = UserDefaults.standard.bool(forKey: "useICloudKeyValue")
+        
+        guard isCloudKitEnabled || isKeyValueStoreEnabled else {
             let alert = UIAlertController(
-                title: "iCloud Disabled",
+                title: "iCloud Sync Disabled",
                 message: "Force Sync is only available when iCloud syncing is enabled.",
                 preferredStyle: .alert
             )
@@ -907,184 +1082,29 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
 
 
     private func performForceSync() {
-        // Use a dispatch group to load all data concurrently.
-        let dispatchGroup = DispatchGroup()
-
-        // Load RSS Feeds from CloudKit and local storage.
-        var cloudRSSFeeds: [RSSFeed] = []
-        var localRSSFeeds: [RSSFeed] = []
-        dispatchGroup.enter()
-        CloudKitStorage().load(forKey: "rssFeeds") {
-            (result: Result<[RSSFeed], Error>) in
-            if case .success(let feeds) = result {
-                cloudRSSFeeds = feeds
-            }
-            dispatchGroup.leave()
-        }
-        dispatchGroup.enter()
-        UserDefaultsStorage().load(forKey: "rssFeeds") {
-            (result: Result<[RSSFeed], Error>) in
-            if case .success(let feeds) = result {
-                localRSSFeeds = feeds
-            }
-            dispatchGroup.leave()
-        }
-
-        // Load Hearted Items.
-        var cloudHearted: [String] = []
-        var localHearted: [String] = []
-        dispatchGroup.enter()
-        CloudKitStorage().load(forKey: "heartedItems") {
-            (result: Result<[String], Error>) in
-            if case .success(let items) = result {
-                cloudHearted = items
-            }
-            dispatchGroup.leave()
-        }
-        dispatchGroup.enter()
-        UserDefaultsStorage().load(forKey: "heartedItems") {
-            (result: Result<[String], Error>) in
-            if case .success(let items) = result {
-                localHearted = items
-            }
-            dispatchGroup.leave()
-        }
-
-        // Load Bookmarked Items.
-        var cloudBookmarks: [String] = []
-        var localBookmarks: [String] = []
-        dispatchGroup.enter()
-        CloudKitStorage().load(forKey: "bookmarkedItems") {
-            (result: Result<[String], Error>) in
-            if case .success(let items) = result {
-                cloudBookmarks = items
-            }
-            dispatchGroup.leave()
-        }
-        dispatchGroup.enter()
-        UserDefaultsStorage().load(forKey: "bookmarkedItems") {
-            (result: Result<[String], Error>) in
-            if case .success(let items) = result {
-                localBookmarks = items
-            }
-            dispatchGroup.leave()
-        }
-
-        // Load Read Items.
-        var cloudReadItems: [String] = []
-        var localReadItems: [String] = []
-        dispatchGroup.enter()
-        CloudKitStorage().load(forKey: "readItems") {
-            (result: Result<[String], Error>) in
-            if case .success(let items) = result {
-                cloudReadItems = items
-            }
-            dispatchGroup.leave()
-        }
-        dispatchGroup.enter()
-        UserDefaultsStorage().load(forKey: "readItems") {
-            (result: Result<[String], Error>) in
-            if case .success(let items) = result {
-                localReadItems = items
-            }
-            dispatchGroup.leave()
-        }
-
-        dispatchGroup.notify(queue: .main) {
-            // Merge the data from CloudKit and local storage.
-            let mergedRSSFeeds = self.mergeRSSFeeds(
-                cloudFeeds: cloudRSSFeeds, localFeeds: localRSSFeeds)
-            let mergedHearted = Array(
-                Set(cloudHearted).union(Set(localHearted)))
-            let mergedBookmarks = Array(
-                Set(cloudBookmarks).union(Set(localBookmarks)))
-            let mergedReadItems = Array(
-                Set(cloudReadItems).union(Set(localReadItems)))
-
-            let saveGroup = DispatchGroup()
-            var migrationSuccess = true
-
-            // Consolidate all CloudKit updates into a single update call.
-            let updates: [String: Data] = [
-                "rssFeeds": (try? JSONEncoder().encode(mergedRSSFeeds))
-                    ?? Data(),
-                "heartedItems": (try? JSONEncoder().encode(mergedHearted))
-                    ?? Data(),
-                "bookmarkedItems": (try? JSONEncoder().encode(mergedBookmarks))
-                    ?? Data(),
-                "readItems": (try? JSONEncoder().encode(mergedReadItems))
-                    ?? Data(),
-            ]
-            saveGroup.enter()
-            CloudKitStorage().updateRecord(with: updates) { error in
-                if let error = error {
-                    print(
-                        "Error saving merged data to CloudKit: \(error.localizedDescription)"
+        let loadingAlert = UIAlertController(
+            title: "Syncing with iCloud",
+            message: "Syncing your data with iCloud...",
+            preferredStyle: .alert
+        )
+        
+        present(loadingAlert, animated: true)
+        
+        // Use the centralized forceSync method in StorageManager
+        StorageManager.shared.forceSync { success in
+            DispatchQueue.main.async {
+                loadingAlert.dismiss(animated: true) {
+                    // Show result
+                    let alertTitle = success ? "Force Sync Succeeded" : "Force Sync Completed with Warnings"
+                    let alertMessage = "Data has been merged and synchronized."
+                    let finalAlert = UIAlertController(
+                        title: alertTitle, 
+                        message: alertMessage,
+                        preferredStyle: .alert
                     )
-                    migrationSuccess = false
+                    finalAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(finalAlert, animated: true)
                 }
-                saveGroup.leave()
-            }
-
-            // Also save merged data to local storage.
-            saveGroup.enter()
-            UserDefaultsStorage().save(mergedRSSFeeds, forKey: "rssFeeds") {
-                error in
-                if let error = error {
-                    print(
-                        "Error saving merged RSS feeds locally: \(error.localizedDescription)"
-                    )
-                    migrationSuccess = false
-                }
-                saveGroup.leave()
-            }
-            saveGroup.enter()
-            UserDefaultsStorage().save(mergedHearted, forKey: "heartedItems") {
-                error in
-                if let error = error {
-                    print(
-                        "Error saving merged hearted items locally: \(error.localizedDescription)"
-                    )
-                    migrationSuccess = false
-                }
-                saveGroup.leave()
-            }
-            saveGroup.enter()
-            UserDefaultsStorage().save(
-                mergedBookmarks, forKey: "bookmarkedItems"
-            ) { error in
-                if let error = error {
-                    print(
-                        "Error saving merged bookmarks locally: \(error.localizedDescription)"
-                    )
-                    migrationSuccess = false
-                }
-                saveGroup.leave()
-            }
-            saveGroup.enter()
-            UserDefaultsStorage().save(mergedReadItems, forKey: "readItems") {
-                error in
-                if let error = error {
-                    print(
-                        "Error saving merged read items locally: \(error.localizedDescription)"
-                    )
-                    migrationSuccess = false
-                }
-                saveGroup.leave()
-            }
-
-            saveGroup.notify(queue: .main) {
-                let alertTitle =
-                    migrationSuccess
-                    ? "Force Sync Succeeded"
-                    : "Force Sync Completed with Errors"
-                let alertMessage = "Data has been merged and synchronized."
-                let finalAlert = UIAlertController(
-                    title: alertTitle, message: alertMessage,
-                    preferredStyle: .alert)
-                finalAlert.addAction(
-                    UIAlertAction(title: "OK", style: .default))
-                self.present(finalAlert, animated: true)
             }
         }
     }
@@ -1436,48 +1456,6 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         present(alert, animated: true)
     }
     
-    @objc private func showPreviewLengthOptions() {
-        let alert = UIAlertController(
-            title: "Preview Text Length",
-            message: "Choose the length of preview text to display",
-            preferredStyle: .actionSheet)
-        
-        let currentPreviewLength = UserDefaults.standard.string(forKey: "previewTextLength") ?? "none"
-        
-        let previewOptions = [
-            ("None", "none"),
-            ("Short", "short"),
-            ("Medium", "medium"),
-            ("Full", "full")
-        ]
-        
-        for (title, value) in previewOptions {
-            let action = UIAlertAction(title: title, style: .default) { _ in
-                UserDefaults.standard.set(value, forKey: "previewTextLength")
-                // Notify other parts of the app about the change
-                NotificationCenter.default.post(name: Notification.Name("articleViewModeChanged"), object: nil)
-            }
-            
-            // Add a checkmark if this is the current option
-            if currentPreviewLength == value {
-                action.setValue(true, forKey: "checked")
-            }
-            
-            alert.addAction(action)
-        }
-        
-        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
-        alert.addAction(cancelAction)
-        
-        // For iPad compatibility
-        if let popoverController = alert.popoverPresentationController {
-            popoverController.sourceView = view
-            popoverController.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
-            popoverController.permittedArrowDirections = []
-        }
-        
-        present(alert, animated: true)
-    }
     
     private func updateSlowFeedThreshold(_ value: Float) {
         // Save the threshold in seconds
@@ -1530,6 +1508,187 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                 }
             }
         }
+    }
+    
+    private func testKeyValueSync() {
+        // Show options for testing
+        let actionSheet = UIAlertController(
+            title: "Test iCloud Key-Value Store",
+            message: "Choose a test to run:",
+            preferredStyle: .actionSheet
+        )
+        
+        // Option to switch to Key-Value Storage
+        actionSheet.addAction(UIAlertAction(title: "Switch to Key-Value Storage", style: .default) { [weak self] _ in
+            UserDefaults.standard.set(false, forKey: "useICloud")
+            UserDefaults.standard.set(true, forKey: "useICloudKeyValue")
+            StorageManager.shared.method = .iCloudKeyValue
+            
+            let alert = UIAlertController(
+                title: "Storage Method Changed",
+                message: "Storage method has been changed to iCloud Key-Value Store.",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            self?.present(alert, animated: true)
+        })
+        
+        // Option to save test data
+        actionSheet.addAction(UIAlertAction(title: "Save Test Data", style: .default) { [weak self] _ in
+            self?.saveTestDataToKeyValueStore()
+        })
+        
+        // Option to load test data
+        actionSheet.addAction(UIAlertAction(title: "Load Test Data", style: .default) { [weak self] _ in
+            self?.loadTestDataFromKeyValueStore()
+        })
+        
+        // Option to view debug info
+        actionSheet.addAction(UIAlertAction(title: "Show Debug Info", style: .default) { [weak self] _ in
+            self?.showKeyValueStoreDebugInfo()
+        })
+        
+        // Cancel option
+        actionSheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        // For iPad compatibility
+        if let popoverController = actionSheet.popoverPresentationController {
+            popoverController.sourceView = view
+            popoverController.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            popoverController.permittedArrowDirections = []
+        }
+        
+        present(actionSheet, animated: true)
+    }
+    
+    private func saveTestDataToKeyValueStore() {
+        // Save a test value to iCloud Key-Value Store
+        let testReadItems = ["https://test1.com/article1", "https://test2.com/article2"]
+        let testData = try? JSONEncoder().encode(testReadItems)
+        
+        let loadingAlert = UIAlertController(
+            title: "Saving Test Data",
+            message: "Saving test data to iCloud Key-Value Store...",
+            preferredStyle: .alert
+        )
+        present(loadingAlert, animated: true)
+        
+        if let data = testData {
+            UbiquitousKeyValueStore.shared.set(data, forKey: "readItems")
+            UbiquitousKeyValueStore.shared.synchronize()
+            
+            // Also save to UserDefaults for comparison
+            UserDefaults.standard.set(data, forKey: "readItems")
+            
+            // Save a simple test setting
+            UbiquitousKeyValueStore.shared.set(true, forKey: "testSetting")
+            UserDefaults.standard.set(true, forKey: "testSetting")
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                loadingAlert.dismiss(animated: true) {
+                    let resultAlert = UIAlertController(
+                        title: "Test Data Saved",
+                        message: "Test data has been saved to both iCloud Key-Value Store and UserDefaults.",
+                        preferredStyle: .alert
+                    )
+                    resultAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(resultAlert, animated: true)
+                }
+            }
+        } else {
+            loadingAlert.dismiss(animated: true) {
+                let resultAlert = UIAlertController(
+                    title: "Test Failed",
+                    message: "Failed to encode test data.",
+                    preferredStyle: .alert
+                )
+                resultAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(resultAlert, animated: true)
+            }
+        }
+    }
+    
+    private func loadTestDataFromKeyValueStore() {
+        let loadingAlert = UIAlertController(
+            title: "Loading Test Data",
+            message: "Loading test data from iCloud Key-Value Store...",
+            preferredStyle: .alert
+        )
+        present(loadingAlert, animated: true)
+        
+        // Force a sync first
+        UbiquitousKeyValueStore.shared.synchronize()
+        
+        // Load the test data
+        let kvData = UbiquitousKeyValueStore.shared.data(forKey: "readItems")
+        let udData = UserDefaults.standard.data(forKey: "readItems")
+        
+        var kvItems: [String] = []
+        var udItems: [String] = []
+        
+        if let data = kvData {
+            kvItems = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+        }
+        
+        if let data = udData {
+            udItems = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            loadingAlert.dismiss(animated: true) {
+                let resultAlert = UIAlertController(
+                    title: "Test Data Loaded",
+                    message: """
+                        iCloud Key-Value Store items: \(kvItems.joined(separator: ", "))
+                        
+                        UserDefaults items: \(udItems.joined(separator: ", "))
+                        
+                        Test setting (KV): \(UbiquitousKeyValueStore.shared.bool(forKey: "testSetting"))
+                        Test setting (UD): \(UserDefaults.standard.bool(forKey: "testSetting"))
+                        """,
+                    preferredStyle: .alert
+                )
+                resultAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(resultAlert, animated: true)
+            }
+        }
+    }
+    
+    private func showKeyValueStoreDebugInfo() {
+        // Get information about the Key-Value Store
+        let kvStore = UbiquitousKeyValueStore.shared
+        let isKVStoreEnabled = UserDefaults.standard.bool(forKey: "useICloudKeyValue")
+        let storageMethod = StorageManager.shared.method
+        
+        // Get storage usage
+        let readItemsSize = kvStore.data(forKey: "readItems")?.count ?? 0
+        let testSettingExists = kvStore.bool(forKey: "testSetting")
+        
+        let debugInfo = """
+            iCloud Key-Value Store Debug Info:
+            
+            Enabled in UserDefaults: \(isKVStoreEnabled)
+            Current StorageMethod: \(storageMethod)
+            
+            Test Data:
+            - readItems size: \(readItemsSize) bytes
+            - testSetting exists: \(testSettingExists)
+            
+            Sync Status:
+            - Last synchronize() result: \(kvStore.synchronize())
+            
+            UserDefaults:
+            - useICloud: \(UserDefaults.standard.bool(forKey: "useICloud"))
+            - useICloudKeyValue: \(UserDefaults.standard.bool(forKey: "useICloudKeyValue"))
+            """
+        
+        let infoAlert = UIAlertController(
+            title: "Debug Info",
+            message: debugInfo,
+            preferredStyle: .alert
+        )
+        infoAlert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(infoAlert, animated: true)
     }
     
     private func testReadingProgress() {

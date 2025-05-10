@@ -18,9 +18,13 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         // Find the minimum row index among visible rows
         let currentMinVisibleRow = visibleRows.map { $0.row }.min() ?? 0
 
+        // Only track scrolling if it's user-initiated (not auto-scrolling)
+        // AND if the scroll distance is significant (more than 1 row)
+        let isSignificantScroll = abs(currentMinVisibleRow - previousMinVisibleRow) > 1
+
         // Check if the user scrolled down past the previously tracked top row
         // Only mark items as read if this is NOT an auto-scroll
-        if currentMinVisibleRow > previousMinVisibleRow && !isAutoScrolling {
+        if currentMinVisibleRow > previousMinVisibleRow && !isAutoScrolling && isSignificantScroll {
             // Collect rows that should be marked as read
             for index in previousMinVisibleRow..<currentMinVisibleRow {
                 // Ensure the index is valid
@@ -34,23 +38,19 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                     }
                 }
             }
-        }
 
-        // Update the tracker for the next scroll event, but only if not auto-scrolling
-        if !isAutoScrolling {
+            // Update the tracker for the next scroll event, but only for significant user scrolling
             previousMinVisibleRow = currentMinVisibleRow
-        }
-        
-        // Cancel any existing timer
-        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(processReadItemsAfterScrolling), object: nil)
-        
-        // Set a new timer to process the read items after scrolling stops, but only if not auto-scrolling
-        if !isAutoScrolling {
+
+            // Cancel any existing timer
+            NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(processReadItemsAfterScrolling), object: nil)
+
+            // Set a new timer to process the read items after scrolling stops
             perform(#selector(processReadItemsAfterScrolling), with: nil, afterDelay: 0.3)
         }
     }
     
-    @objc private func processReadItemsAfterScrolling() {
+    @objc internal func processReadItemsAfterScrolling() {
         guard !pendingReadRows.isEmpty else { return }
         
         var indexPathsToUpdate: [IndexPath] = []
@@ -75,16 +75,18 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
     
     // Add a scrollViewDidEndDragging method to handle when user manually stops scrolling
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        if !decelerate {
-            // Scrolling stopped immediately, process read items now
+        if !decelerate && !pendingReadRows.isEmpty {
+            // Scrolling stopped immediately, only process read items if there are pending rows
             processReadItemsAfterScrolling()
         }
     }
-    
+
     // Add a scrollViewDidEndDecelerating method to handle when scroll view stops moving
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        // Scrolling has completely stopped, process read items now
-        processReadItemsAfterScrolling()
+        // Scrolling has completely stopped, only process read items if there are pending rows
+        if !pendingReadRows.isEmpty {
+            processReadItemsAfterScrolling()
+        }
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int)
@@ -109,8 +111,13 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
     }
     
     // MARK: - Leading Swipe Actions (New)
-    
+
     func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        // Don't show swipe actions on macOS Catalyst - use context menu instead
+        if PlatformUtils.isMac {
+            return nil
+        }
+
         // Check if this is our special "All Articles Read" footer cell
         let isRssFeed: Bool
         if case .rss = currentFeedType {
@@ -118,27 +125,27 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         } else {
             isRssFeed = false
         }
-        
+
         let allArticlesRead = !items.isEmpty && !items.contains(where: { !$0.isRead }) && isRssFeed
         if allArticlesRead && indexPath.row == items.count {
             // No swipe actions for our special footer cell
             return nil
         }
-        
+
         let item = items[indexPath.row]
-        
+
         // Configure Share Action
         let shareAction = UIContextualAction(style: .normal, title: nil) { [weak self] (action, view, completion) in
             guard let self = self, let url = URL(string: item.link) else {
                 completion(false)
                 return
             }
-            
+
             let activityViewController = UIActivityViewController(
-                activityItems: [url], 
+                activityItems: [url],
                 applicationActivities: nil
             )
-            
+
             // Present from the cell for iPad compatibility
             if let popoverController = activityViewController.popoverPresentationController {
                 if let cell = tableView.cellForRow(at: indexPath) {
@@ -146,15 +153,15 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                     popoverController.sourceRect = cell.bounds
                 }
             }
-            
+
             self.present(activityViewController, animated: true)
             completion(true)
         }
-        
+
         // Use system icon for sharing
         shareAction.image = UIImage(systemName: "square.and.arrow.up")
         shareAction.backgroundColor = AppColors.accent
-        
+
         // Configure Save Offline Action
         let isArticleCached = cachedArticleLinks.contains(normalizeLink(item.link))
         let cacheAction = UIContextualAction(style: .normal, title: nil) { [weak self] (action, view, completion) in
@@ -162,7 +169,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                 completion(false)
                 return
             }
-            
+
             if isArticleCached {
                 // Remove from offline cache
                 StorageManager.shared.removeCachedArticle(link: item.link) { success, error in
@@ -193,11 +200,11 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                 }
             }
         }
-        
+
         // Use different icons based on cache status
         cacheAction.image = UIImage(systemName: isArticleCached ? "xmark.icloud" : "arrow.down.circle")
         cacheAction.backgroundColor = isArticleCached ? AppColors.warning : AppColors.success
-        
+
         return UISwipeActionsConfiguration(actions: [shareAction, cacheAction])
     }
 
@@ -205,6 +212,11 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
+        // Don't show swipe actions on macOS Catalyst - use context menu instead
+        if PlatformUtils.isMac {
+            return nil
+        }
+
         // Check if this is our special "All Articles Read" footer cell
         let isRssFeed: Bool
         if case .rss = currentFeedType {
@@ -212,13 +224,13 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         } else {
             isRssFeed = false
         }
-        
+
         let allArticlesRead = !items.isEmpty && !items.contains(where: { !$0.isRead }) && isRssFeed
         if allArticlesRead && indexPath.row == items.count {
             // No swipe actions for our special footer cell
             return nil
         }
-        
+
         let item = items[indexPath.row]
         let normalizedLink = normalizeLink(item.link)
 
@@ -248,7 +260,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             systemName: isBookmarked ? "bookmark.fill" : "bookmark")?
             .withRenderingMode(.alwaysTemplate)
         bookmarkAction.backgroundColor = AppColors.primary
-        
+
         // Configure Archive Action
         let isArchived = archivedItems.contains { normalizeLink($0) == normalizedLink }
         let archiveAction = UIContextualAction(style: .normal, title: nil) {
@@ -261,7 +273,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         // Use system icons for archive status
         archiveAction.image = UIImage(systemName: isArchived ? "archivebox.fill" : "archivebox")
         archiveAction.backgroundColor = AppColors.primary
-        
+
         // Configure Read/Unread Action
         let isItemRead = ReadStatusTracker.shared.isArticleRead(link: item.link)
         let readAction = UIContextualAction(style: .normal, title: nil) {
@@ -336,8 +348,24 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             let cell = tableView.dequeueReusableCell(
                 withIdentifier: EnhancedRSSCell.identifier, for: indexPath) as! EnhancedRSSCell
             
-            // Configure with item data including cached state
-            cell.configure(with: item, fontSize: storedFontSize, isRead: isItemRead, isCached: isArticleCached)
+            // Check various states for the item
+            let normalizedLink = normalizeLink(item.link)
+            let isBookmarked = bookmarkedItems.contains { normalizeLink($0) == normalizedLink }
+            let isHearted = heartedItems.contains { normalizeLink($0) == normalizedLink }
+            let isArchived = archivedItems.contains { normalizeLink($0) == normalizedLink }
+            
+            // Configure with item data including all states
+            cell.configure(
+                with: item, 
+                fontSize: storedFontSize, 
+                isRead: isItemRead, 
+                isCached: isArticleCached,
+                isBookmarked: isBookmarked,
+                isHearted: isHearted,
+                isArchived: isArchived
+            )
+            
+            // Context menu is already implemented for all items, so no need for visible action buttons on macOS
             
             // Add duplicate information if applicable
             if isPartOfDuplicateGroup && DuplicateManager.shared.handlingMode == .groupAndShow {
@@ -489,8 +517,14 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             guard let self = self else { return UIMenu() }
             
-            // Create menu actions for all swipe actions
+            // Create menu actions for all available actions
             var menuActions: [UIMenuElement] = []
+            
+            // Create action sections for macOS
+            var readingActions: [UIMenuElement] = []
+            var organizingActions: [UIMenuElement] = []
+            var sharingActions: [UIMenuElement] = []
+            var advancedActions: [UIMenuElement] = []
             
             // BOOKMARK ACTION
             let isBookmarked = self.bookmarkedItems.contains { self.normalizeLink($0) == normalizedLink }
@@ -503,7 +537,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                     self?.tableView.reloadData()
                 }
             }
-            menuActions.append(bookmarkAction)
+            organizingActions.append(bookmarkAction)
             
             // HEART/FAVORITE ACTION
             let isHearted = self.heartedItems.contains { self.normalizeLink($0) == normalizedLink }
@@ -516,7 +550,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                     self?.tableView.reloadData()
                 }
             }
-            menuActions.append(heartAction)
+            organizingActions.append(heartAction)
             
             // ARCHIVE ACTION
             let isArchived = self.archivedItems.contains { self.normalizeLink($0) == normalizedLink }
@@ -529,7 +563,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                     self?.tableView.reloadData()
                 }
             }
-            menuActions.append(archiveAction)
+            organizingActions.append(archiveAction)
             
             // READ/UNREAD ACTION
             let isItemRead = ReadStatusTracker.shared.isArticleRead(link: item.link)
@@ -542,7 +576,27 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                     self?.tableView.reloadData()
                 }
             }
-            menuActions.append(readAction)
+            readingActions.append(readAction)
+            
+            // OPEN ACTION
+            let openAction = UIAction(
+                title: "Open Article",
+                image: UIImage(systemName: "doc.text")
+            ) { [weak self] _ in
+                guard let self = self else { return }
+                self.tableView(tableView, didSelectRowAt: indexPath)
+            }
+            readingActions.append(openAction)
+            
+            // OPEN IN BROWSER ACTION
+            let openInBrowserAction = UIAction(
+                title: "Open in Browser",
+                image: UIImage(systemName: "safari")
+            ) { [weak self] _ in
+                guard let self = self else { return }
+                self.openInSafari(item)
+            }
+            readingActions.append(openInBrowserAction)
             
             // SHARE ACTION
             let shareAction = UIAction(
@@ -572,7 +626,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                 
                 self.present(activityViewController, animated: true)
             }
-            menuActions.append(shareAction)
+            sharingActions.append(shareAction)
             
             // CACHE OFFLINE ACTION
             let isArticleCached = self.cachedArticleLinks.contains(self.normalizeLink(item.link))
@@ -606,17 +660,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                     }
                 }
             }
-            menuActions.append(cacheAction)
-            
-            // OPEN IN BROWSER ACTION
-            let openAction = UIAction(
-                title: "Open in Browser",
-                image: UIImage(systemName: "safari")
-            ) { [weak self] _ in
-                guard let self = self else { return }
-                self.openInSafari(item)
-            }
-            menuActions.append(openAction)
+            readingActions.append(cacheAction)
             
             // MANAGE TAGS ACTION
             let tagsAction = UIAction(
@@ -625,7 +669,7 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             ) { [weak self] _ in
                 self?.showTagManager(for: item)
             }
-            menuActions.append(tagsAction)
+            organizingActions.append(tagsAction)
             
             // MARK ABOVE AS READ ACTION
             if indexPath.row > 0 {
@@ -635,11 +679,30 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                 ) { [weak self] _ in
                     self?.markItemsAboveAsRead(indexPath)
                 }
-                menuActions.append(markAboveAction)
+                advancedActions.append(markAboveAction)
+            }
+            
+            // If on macOS, create submenus to organize the actions better
+            if PlatformUtils.shouldEnhanceContextMenu {
+                // Add all submenu sections
+                menuActions.append(UIMenu(title: "Reading", image: UIImage(systemName: "doc.text"), children: readingActions))
+                menuActions.append(UIMenu(title: "Organize", image: UIImage(systemName: "folder"), children: organizingActions))
+                menuActions.append(UIMenu(title: "Share", image: UIImage(systemName: "square.and.arrow.up"), children: sharingActions))
+                
+                // Only add advanced section if there are actions in it
+                if !advancedActions.isEmpty {
+                    menuActions.append(UIMenu(title: "Advanced", image: UIImage(systemName: "gear"), children: advancedActions))
+                }
+            } else {
+                // On iOS, use a flatter structure
+                menuActions.append(contentsOf: readingActions)
+                menuActions.append(contentsOf: organizingActions)
+                menuActions.append(contentsOf: sharingActions) 
+                menuActions.append(contentsOf: advancedActions)
             }
             
             // Create and return the menu with all actions
-            return UIMenu(title: "", children: menuActions)
+            return UIMenu(title: item.title, children: menuActions)
         }
     }
     
@@ -1070,8 +1133,22 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         let storedFontSize = CGFloat(UserDefaults.standard.float(forKey: "fontSize") != 0 ? UserDefaults.standard.float(forKey: "fontSize") : 16)
         
         if let enhancedCell = cell as? EnhancedRSSCell {
-            // Configure the enhanced cell with cached state
-            enhancedCell.configure(with: item, fontSize: storedFontSize, isRead: isItemRead, isCached: isArticleCached)
+            // Get various states for the item
+            let normalizedLink = normalizeLink(item.link)
+            let isBookmarked = bookmarkedItems.contains { normalizeLink($0) == normalizedLink }
+            let isHearted = heartedItems.contains { normalizeLink($0) == normalizedLink }
+            let isArchived = archivedItems.contains { normalizeLink($0) == normalizedLink }
+            
+            // Configure the enhanced cell with all states
+            enhancedCell.configure(
+                with: item,
+                fontSize: storedFontSize,
+                isRead: isItemRead,
+                isCached: isArticleCached,
+                isBookmarked: isBookmarked,
+                isHearted: isHearted,
+                isArchived: isArchived
+            )
         } else {
             // Configure the default cell
             var config = cell.defaultContentConfiguration()

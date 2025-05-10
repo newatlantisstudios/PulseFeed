@@ -324,8 +324,8 @@ extension HomeFeedViewController {
         tableView.register(
             EnhancedRSSCell.self, forCellReuseIdentifier: EnhancedRSSCell.identifier)
         
-        // Set appropriate row height depending on the style
-        tableView.estimatedRowHeight = useEnhancedStyle ? 120 : 60
+        // Set row height for enhanced cell style
+        tableView.estimatedRowHeight = 120
         tableView.rowHeight = UITableView.automaticDimension
         
         // Add prefetching to improve scroll performance
@@ -808,10 +808,10 @@ extension HomeFeedViewController {
         // Store original bar button items so we can restore them later
         originalRightBarButtonItems = navigationItem.rightBarButtonItems
         
-        // Create a "Done" button for exiting bulk edit mode
+        // Create a checkmark button for exiting bulk edit mode (replacing "Done" text button)
         let doneButton = UIBarButtonItem(
-            title: "Done",
-            style: .done,
+            image: UIImage(systemName: "checkmark.circle"),
+            style: .plain,
             target: self,
             action: #selector(bulkEditButtonTapped)
         )
@@ -1876,7 +1876,7 @@ extension HomeFeedViewController {
     
     @objc func handleStyleChanged() {
         // Update table row height estimates
-        tableView.estimatedRowHeight = useEnhancedStyle ? 120 : 60
+        tableView.estimatedRowHeight = 120
         
         // Reload the table to apply new style
         tableView.reloadData()

@@ -94,11 +94,22 @@ class SmartFolderViewController: UIViewController {
         tableView.setEditing(isEditMode, animated: true)
         
         // Update bar button item
-        navigationItem.rightBarButtonItems?[1] = UIBarButtonItem(
-            barButtonSystemItem: isEditMode ? .done : .edit,
-            target: self,
-            action: #selector(toggleEditMode)
-        )
+        if isEditMode {
+            // Use checkmark.circle icon for Done state
+            navigationItem.rightBarButtonItems?[1] = UIBarButtonItem(
+                image: UIImage(systemName: "checkmark.circle"),
+                style: .plain,
+                target: self,
+                action: #selector(toggleEditMode)
+            )
+        } else {
+            // Use the edit system item for Edit state
+            navigationItem.rightBarButtonItems?[1] = UIBarButtonItem(
+                barButtonSystemItem: .edit,
+                target: self,
+                action: #selector(toggleEditMode)
+            )
+        }
     }
     
     // MARK: - Helper Methods

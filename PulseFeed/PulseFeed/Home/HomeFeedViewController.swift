@@ -179,6 +179,13 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
                 self.items = []
                 self.duplicateGroups = []
                 self.duplicateArticleLinks = []
+
+                // Reset read tracking state to prevent unwanted auto-marking
+                self.pendingReadRows.removeAll()
+                self.isAutoScrolling = true
+                self.previousMinVisibleRow = 0
+                NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(self.processReadItemsAfterScrolling), object: nil)
+
                 self.tableView.reloadData()
                 self.refreshControl.endRefreshing()
                 self.loadingIndicator.stopAnimating()
@@ -186,60 +193,71 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
                 self.loadingLabel.isHidden = false
                 self.tableView.isHidden = false
                 self.stopRefreshAnimation()
+
+                // Reset auto-scrolling flag after a delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.isAutoScrolling = false
+                }
             }
             return
         }
-        
+
         // Update our data source
         self._allItems = filteredItems
-        
+
         // Set read status for all items
         for i in 0..<self._allItems.count {
             self._allItems[i].isRead = ReadStatusTracker.shared.isArticleRead(link: self._allItems[i].link)
         }
-        
+
         // Detect duplicates if enabled
         self.detectDuplicates()
-        
+
         // Update the currently displayed items if RSS feed is active
         if case .rss = self.currentFeedType {
             // First check if we need to filter out read articles
             let hideReadArticles = UserDefaults.standard.bool(forKey: "hideReadArticles")
-            
+
             // Apply read status filtering if needed
             var readFilteredItems = self._allItems
             if hideReadArticles {
                 readFilteredItems = self._allItems.filter { !ReadStatusTracker.shared.isArticleRead(link: $0.link) }
                 print("DEBUG: Read status filtered \(self._allItems.count) items to \(readFilteredItems.count) items")
             }
-            
+
             // Then apply advanced filtering and sorting
             self.items = FeedFilterManagerNew.shared.applySortAndFilter(to: readFilteredItems)
-            
+
             // Apply duplicate handling according to user settings
             if DuplicateManager.shared.isDuplicateDetectionEnabled {
                 self.items = DuplicateManager.shared.processItems(self.items)
             }
-            
+
             // Update the sort/filter view with the current settings if it exists
             if let sortFilterView = self.sortFilterView {
                 sortFilterView.setSortOption(FeedFilterManagerNew.shared.getSortOption())
                 sortFilterView.setFilterOption(FeedFilterManagerNew.shared.getFilterOption())
             }
-            
+
             // Log counts for debugging
             print("DEBUG: Applied sorting and filtering: \(self._allItems.count) items to \(self.items.count) items")
             print("DEBUG: Found \(self.duplicateGroups.count) duplicate groups with \(self.duplicateArticleLinks.count) articles")
         }
-        
-        // First, reload the table while it's still hidden
+
+        // Reset read tracking state to prevent unwanted auto-marking
+        self.pendingReadRows.removeAll()
+        self.isAutoScrolling = true
+        self.previousMinVisibleRow = 0
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(self.processReadItemsAfterScrolling), object: nil)
+
+        // Reload the table while it's still hidden
         self.tableView.reloadData()
-        
+
         // Update state and show the tableView
         self.refreshControl.endRefreshing()
         self.hasLoadedRSSFeeds = true
         self.updateFooterVisibility()
-        
+
         // Show the tableView after everything is ready
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.stopRefreshAnimation()
@@ -247,9 +265,14 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             self.loadingLabel.isHidden = true
             self.tableView.isHidden = false
             self.updateFooterVisibility()
-            
-            // Scroll to top of the list safely
+
+            // Scroll to top of the list safely and reset auto-scrolling flag after a delay
             self.safeScrollToTop()
+
+            // Reset auto-scrolling flag after a delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.isAutoScrolling = false
+            }
         }
     }
     
@@ -268,13 +291,22 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     internal func safeScrollToTop() {
         // Only proceed if there are items and the table is visible
         guard !items.isEmpty && !tableView.isHidden else { return }
-        
+
         // Set the auto-scrolling flag to prevent marking articles as read
         isAutoScrolling = true
-        
+
+        // Reset any pending read operations
+        pendingReadRows.removeAll()
+
+        // Reset the previous min visible row to prevent issues when auto-scrolling is disabled
+        previousMinVisibleRow = 0
+
+        // Cancel any scheduled process read operations
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(processReadItemsAfterScrolling), object: nil)
+
         // Perform the scroll
         tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .top, animated: true)
-        
+
         // Reset the flag after a delay that's longer than the animation duration
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             self.isAutoScrolling = false
@@ -291,52 +323,70 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     /// Navigate to the next item in the feed
     @objc func navigateToNextItem() {
         guard !items.isEmpty && !tableView.isHidden else { return }
-        
+
         // Get the currently visible rows
         guard let visibleRows = tableView.indexPathsForVisibleRows, let firstVisible = visibleRows.min() else {
             return
         }
-        
+
         // Calculate the next row, ensuring we don't go beyond the bounds
         let nextRow = min(firstVisible.row + 1, items.count - 1)
         let nextIndexPath = IndexPath(row: nextRow, section: 0)
-        
+
+        // Reset any pending read operations
+        pendingReadRows.removeAll()
+
+        // Cancel any scheduled process read operations
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(processReadItemsAfterScrolling), object: nil)
+
         // Scroll to the next item
         isAutoScrolling = true
         tableView.scrollToRow(at: nextIndexPath, at: .top, animated: true)
-        
+
+        // Update tracker to prevent any pending item marking
+        previousMinVisibleRow = nextRow
+
         // Reset the flag after animation completes
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             self.isAutoScrolling = false
         }
-        
+
         // Provide haptic feedback
         let generator = UIImpactFeedbackGenerator(style: .light)
         generator.impactOccurred()
     }
-    
+
     /// Navigate to the previous item in the feed
     @objc func navigateToPreviousItem() {
         guard !items.isEmpty && !tableView.isHidden else { return }
-        
+
         // Get the currently visible rows
         guard let visibleRows = tableView.indexPathsForVisibleRows, let firstVisible = visibleRows.min() else {
             return
         }
-        
+
         // Calculate the previous row, ensuring we don't go below zero
         let prevRow = max(firstVisible.row - 1, 0)
         let prevIndexPath = IndexPath(row: prevRow, section: 0)
-        
+
+        // Reset any pending read operations
+        pendingReadRows.removeAll()
+
+        // Cancel any scheduled process read operations
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(processReadItemsAfterScrolling), object: nil)
+
         // Scroll to the previous item
         isAutoScrolling = true
         tableView.scrollToRow(at: prevIndexPath, at: .top, animated: true)
-        
+
+        // Update tracker to prevent any pending item marking
+        previousMinVisibleRow = prevRow
+
         // Reset the flag after animation completes
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             self.isAutoScrolling = false
         }
-        
+
         // Provide haptic feedback
         let generator = UIImpactFeedbackGenerator(style: .light)
         generator.impactOccurred()
@@ -486,9 +536,9 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     // Timer for automatic refresh based on intervals
     internal var autoRefreshTimer: Timer?
     
-    // Configuration
+    // Configuration - always use enhanced style
     internal var useEnhancedStyle: Bool {
-        return UserDefaults.standard.bool(forKey: "enhancedArticleStyle")
+        return true
     }
     
     // Feed types

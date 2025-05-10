@@ -136,9 +136,15 @@ class AppThemeEditorViewController: UIViewController {
     }
     
     private func showColorPicker(for row: ColorRow) {
+        #if targetEnvironment(macCatalyst)
+        // For Mac, use a custom dialog approach
+        showMacColorPickerAlert(for: row)
+        #else
+        // Standard iOS implementation
         let colorPickerVC = UIColorPickerViewController()
         colorPickerVC.delegate = self
-        
+
+        // Select the appropriate color based on the row
         switch row {
         case .primary:
             colorPickerVC.selectedColor = currentPrimaryColor
@@ -156,12 +162,96 @@ class AppThemeEditorViewController: UIViewController {
             colorPickerVC.selectedColor = currentTextColor
             colorPickerVC.title = "Text Color"
         }
-        
-        // Store the row being edited
+
+        // Store the row being edited in the tag
         colorPickerVC.view.tag = row.rawValue
         
+        // Present the color picker
         present(colorPickerVC, animated: true)
+        #endif
     }
+    
+    #if targetEnvironment(macCatalyst)
+    private func showMacColorPickerAlert(for row: ColorRow) {
+        // Get the current color
+        let currentColor: UIColor
+        let colorName: String
+        
+        switch row {
+        case .primary:
+            currentColor = currentPrimaryColor
+            colorName = "Primary Color"
+        case .secondary:
+            currentColor = currentSecondaryColor
+            colorName = "Secondary Color"
+        case .background:
+            currentColor = currentBackgroundColor
+            colorName = "Background Color"
+        case .accent:
+            currentColor = currentAccentColor
+            colorName = "Accent Color"
+        case .text:
+            currentColor = currentTextColor
+            colorName = "Text Color"
+        }
+        
+        // Create alert with color options
+        let alert = UIAlertController(
+            title: "Select \(colorName)",
+            message: "Choose a color", 
+            preferredStyle: .actionSheet
+        )
+        
+        // Add standard color options
+        let colorOptions: [(String, UIColor)] = [
+            ("Red", .systemRed),
+            ("Orange", .systemOrange),
+            ("Yellow", .systemYellow),
+            ("Green", .systemGreen),
+            ("Mint", .systemMint),
+            ("Teal", .systemTeal),
+            ("Cyan", .systemCyan),
+            ("Blue", .systemBlue),
+            ("Indigo", .systemIndigo),
+            ("Purple", .systemPurple),
+            ("Pink", .systemPink),
+            ("Black", .black),
+            ("Dark Gray", .darkGray),
+            ("Gray", .gray),
+            ("Light Gray", .lightGray),
+            ("White", .white)
+        ]
+        
+        // Add color actions
+        for (name, color) in colorOptions {
+            let action = UIAlertAction(title: name, style: .default) { [weak self] _ in
+                guard let self = self else { return }
+                self.updateThemeColor(colorRow: row, color: color)
+                self.tableView.reloadData()
+            }
+            // Add color indicator to action
+            if let imageView = self.createColorImage(color: color, size: CGSize(width: 20, height: 20)) {
+                action.setValue(imageView, forKey: "image")
+            }
+            alert.addAction(action)
+        }
+        
+        // Add cancel
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        // Present alert
+        present(alert, animated: true)
+    }
+    
+    private func createColorImage(color: UIColor, size: CGSize) -> UIImage? {
+        UIGraphicsBeginImageContextWithOptions(size, false, 0)
+        color.setFill()
+        UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: size.width / 4).fill()
+        let image = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return image
+    }
+    #endif
     
     private func showAlert(title: String, message: String) {
         let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
@@ -306,18 +396,7 @@ extension AppThemeEditorViewController: UIColorPickerViewControllerDelegate {
         
         // Get the row being edited from the tag
         if let colorRow = ColorRow(rawValue: viewController.view.tag) {
-            switch colorRow {
-            case .primary:
-                currentPrimaryColor = selectedColor
-            case .secondary:
-                currentSecondaryColor = selectedColor
-            case .background:
-                currentBackgroundColor = selectedColor
-            case .accent:
-                currentAccentColor = selectedColor
-            case .text:
-                currentTextColor = selectedColor
-            }
+            updateThemeColor(colorRow: colorRow, color: selectedColor)
             
             // Reload table to update preview
             tableView.reloadData()
@@ -325,28 +404,37 @@ extension AppThemeEditorViewController: UIColorPickerViewControllerDelegate {
     }
     
     func colorPickerViewController(_ viewController: UIColorPickerViewController, didSelect color: UIColor, continuously: Bool) {
-        // Only update preview during continuous selection
+        // Get the row being edited from the tag
+        guard let colorRow = ColorRow(rawValue: viewController.view.tag) else { return }
+        
+        // Real-time update for all platforms
+        updateThemeColor(colorRow: colorRow, color: color)
+        
+        // Reload the appropriate parts of the UI
         if continuously {
-            // Get the row being edited from the tag
-            if let colorRow = ColorRow(rawValue: viewController.view.tag) {
-                switch colorRow {
-                case .primary:
-                    currentPrimaryColor = color
-                case .secondary:
-                    currentSecondaryColor = color
-                case .background:
-                    currentBackgroundColor = color
-                case .accent:
-                    currentAccentColor = color
-                case .text:
-                    currentTextColor = color
-                }
-                
-                // Reload only the preview section for better performance
-                if let previewIndexPath = IndexPath(row: 0, section: Section.preview.rawValue) as IndexPath? {
-                    tableView.reloadRows(at: [previewIndexPath], with: .none)
-                }
+            // Only reload the preview section during continuous selection
+            if let previewIndexPath = IndexPath(row: 0, section: Section.preview.rawValue) as IndexPath? {
+                tableView.reloadRows(at: [previewIndexPath], with: .none)
             }
+        } else {
+            // For non-continuous selection (clicking a color)
+            tableView.reloadData()
+        }
+    }
+    
+    // Helper method to update theme colors
+    private func updateThemeColor(colorRow: ColorRow, color: UIColor) {
+        switch colorRow {
+        case .primary:
+            currentPrimaryColor = color
+        case .secondary:
+            currentSecondaryColor = color
+        case .background:
+            currentBackgroundColor = color
+        case .accent:
+            currentAccentColor = color
+        case .text:
+            currentTextColor = color
         }
     }
 }
@@ -359,27 +447,26 @@ private extension AppThemeEditorViewController {
     func configurePreviewCell(_ cell: UITableViewCell, primaryColor: UIColor, secondaryColor: UIColor, backgroundColor: UIColor, accentColor: UIColor, textColor: UIColor) {
         cell.contentView.backgroundColor = backgroundColor
         
-        // Find the preview container view and other views by tag or looking through the subviews
+        // Find the preview container view and other views by tag
         for view in cell.contentView.subviews {
-            if let containerView = view as? UIView, containerView.tag == 100 {
-                containerView.backgroundColor = backgroundColor
+            if view.tag == 100 {
+                view.backgroundColor = backgroundColor
                 
                 // Configure subviews
-                for subview in containerView.subviews {
-                    if let headerView = subview as? UIView, headerView.tag == 101 {
-                        headerView.backgroundColor = primaryColor
+                for subview in view.subviews {
+                    if subview.tag == 101 {
+                        subview.backgroundColor = primaryColor
                     } else if let titleLabel = subview as? UILabel, titleLabel.tag == 102 {
                         titleLabel.textColor = textColor
                     } else if let bodyLabel = subview as? UILabel, bodyLabel.tag == 103 {
                         bodyLabel.textColor = textColor
                     } else if let linkLabel = subview as? UILabel, linkLabel.tag == 104 {
                         linkLabel.textColor = accentColor
-                    } else if let buttonView = subview as? UIView, buttonView.tag == 105 {
-                        buttonView.backgroundColor = accentColor
+                    } else if subview.tag == 105 {
+                        subview.backgroundColor = accentColor
                     }
                 }
             }
         }
-        // Configuration already done above
     }
 }
