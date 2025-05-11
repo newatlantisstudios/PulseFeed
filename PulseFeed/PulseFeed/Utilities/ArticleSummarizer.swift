@@ -35,7 +35,7 @@ class ArticleSummarizer {
     
     private init() {
         // Set maximum concurrent operations
-        summarizationQueue.maxConcurrentOperationCount = 1
+        summarizationQueue.maxConcurrentOperationCount = OperationQueue.defaultMaxConcurrentOperationCount
         summarizationQueue.qualityOfService = .utility
     }
     

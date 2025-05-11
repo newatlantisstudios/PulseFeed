@@ -357,27 +357,40 @@ class BackgroundRefreshManager {
         // Create a group to wait for all feed refreshes
         let group = DispatchGroup()
         var successCount = 0
-        
+
+        // Track new items across all feeds for consolidated notification
+        var allNewItems: [(feed: RSSFeed, items: [RSSItem])] = []
+
         // Process each feed
         for feed in feeds {
             group.enter()
-            
+
             // Mark that we're refreshing this feed
             RefreshIntervalManager.shared.recordRefresh(forFeed: feed.url)
-            
+
             // Fetch the feed content
-            fetchFeedContent(feed) { success in
+            fetchFeedContent(feed) { success, newItems in
                 if success {
                     successCount += 1
+
+                    // Only collect if there are actually new items
+                    if let items = newItems, !items.isEmpty {
+                        allNewItems.append((feed: feed, items: items))
+                    }
                 }
                 group.leave()
             }
         }
-        
+
         // When all feeds are processed, complete
         group.notify(queue: .global()) {
             print("DEBUG: Background refresh completed for \(feeds.count) feeds, \(successCount) successful")
-            
+
+            // Send a consolidated notification for all new items
+            if !allNewItems.isEmpty {
+                self.sendConsolidatedNotification(allNewItems)
+            }
+
             // Consider the operation successful if at least half of the feeds refreshed successfully
             let success = successCount >= feeds.count / 2
             completion(success)
@@ -387,49 +400,50 @@ class BackgroundRefreshManager {
     /// Fetch content for a single feed
     /// - Parameters:
     ///   - feed: The feed to fetch
-    ///   - completion: Completion handler with success flag
-    private func fetchFeedContent(_ feed: RSSFeed, completion: @escaping (Bool) -> Void) {
+    ///   - completion: Completion handler with success flag and any new items found
+    private func fetchFeedContent(_ feed: RSSFeed, completion: @escaping (Bool, [RSSItem]?) -> Void) {
         guard let url = URL(string: feed.url) else {
-            completion(false)
+            completion(false, nil)
             return
         }
-        
+
         let startTime = Date()
-        
+
         // Create a task to fetch the feed content
         let task = URLSession.shared.dataTask(with: url) { data, response, error in
             let elapsedTime = Date().timeIntervalSince(startTime)
-            
+
             // Record performance metrics
             if error != nil || data == nil {
                 FeedLoadTimeManager.shared.recordFailedFeed(for: feed.title)
-                completion(false)
+                completion(false, nil)
                 return
             }
-            
+
             // Record load time
             FeedLoadTimeManager.shared.recordLoadTime(for: feed.title, time: elapsedTime)
-            
+
             // Parse the feed data
             if let data = data {
                 let parser = XMLParser(data: data)
                 let rssParser = RSSParser(source: feed.title)
                 parser.delegate = rssParser
-                
+
                 if parser.parse() && !rssParser.items.isEmpty {
-                    // Process the new items
-                    self.processNewItems(feed, items: rssParser.items)
-                    completion(true)
+                    // Process the new items and return them
+                    self.processNewItems(feed, items: rssParser.items) { newItems in
+                        completion(true, newItems)
+                    }
                 } else {
                     // XML parsing failed
                     FeedLoadTimeManager.shared.recordFailedFeed(for: feed.title)
-                    completion(false)
+                    completion(false, nil)
                 }
             } else {
-                completion(false)
+                completion(false, nil)
             }
         }
-        
+
         task.resume()
     }
     
@@ -437,25 +451,23 @@ class BackgroundRefreshManager {
     /// - Parameters:
     ///   - feed: The feed the items came from
     ///   - items: The new items from the feed
-    private func processNewItems(_ feed: RSSFeed, items: [RSSItem]) {
+    ///   - completion: Completion handler with new items found
+    private func processNewItems(_ feed: RSSFeed, items: [RSSItem], completion: @escaping ([RSSItem]) -> Void) {
         // Load existing items to compare
         StorageManager.shared.load(forKey: "allItems") { (result: Result<[RSSItem], Error>) in
             var existingItems: [RSSItem] = []
-            
+
             if case .success(let items) = result {
                 existingItems = items
             }
-            
+
             // Find new items not in the existing items
             let existingLinks = Set(existingItems.map { StorageManager.shared.normalizeLink($0.link) })
             let newItems = items.filter { !existingLinks.contains(StorageManager.shared.normalizeLink($0.link)) }
-            
+
             if !newItems.isEmpty {
                 print("DEBUG: Found \(newItems.count) new items in feed: \(feed.title)")
-                
-                // Send local notification for new items if enabled
-                self.sendNotificationForNewItems(feed, newItems: newItems)
-                
+
                 // Update the stored items
                 let updatedItems = existingItems + newItems
                 StorageManager.shared.save(updatedItems, forKey: "allItems") { _ in
@@ -465,43 +477,68 @@ class BackgroundRefreshManager {
                         object: nil,
                         userInfo: ["feedTitle": feed.title, "count": newItems.count]
                     )
+
+                    // Return the new items to the caller
+                    completion(newItems)
                 }
+            } else {
+                // No new items found
+                completion([])
             }
         }
     }
     
-    /// Send a local notification for new feed items
-    /// - Parameters:
-    ///   - feed: The feed with new items
-    ///   - newItems: The new items to notify about
-    private func sendNotificationForNewItems(_ feed: RSSFeed, newItems: [RSSItem]) {
+    /// Send a consolidated notification for new items across multiple feeds
+    /// - Parameter allNewItems: Array of tuples containing feeds and their new items
+    private func sendConsolidatedNotification(_ allNewItems: [(feed: RSSFeed, items: [RSSItem])]) {
         // Check if notifications are enabled
         if UserDefaults.standard.bool(forKey: "enableNewItemNotifications") {
+            // Calculate total count of new items
+            let totalItemCount = allNewItems.reduce(0) { $0 + $1.items.count }
+            let feedCount = allNewItems.count
+
             // Create a notification
             let content = UNMutableNotificationContent()
-            content.title = "New Articles in \(feed.title)"
-            
-            if newItems.count == 1 {
-                content.body = newItems[0].title
+
+            // Use more general title that doesn't mention specific feeds
+            content.title = "New Articles Available"
+
+            // Customize body based on number of new items and feeds
+            if totalItemCount == 1 {
+                // Just one new article
+                let feed = allNewItems[0].feed
+                let item = allNewItems[0].items[0]
+                content.body = "New article in \(feed.title): \(item.title)"
+            } else if feedCount == 1 {
+                // Multiple articles but from a single feed
+                let feed = allNewItems[0].feed
+                content.body = "\(totalItemCount) new articles in \(feed.title)"
             } else {
-                content.body = "\(newItems.count) new articles available"
+                // Multiple articles from multiple feeds
+                content.body = "\(totalItemCount) new articles available in \(feedCount) feeds"
             }
-            
+
             content.sound = UNNotificationSound.default
-            
-            // Add feed information to notification for handling taps
-            content.userInfo = [
-                "feedURL": feed.url,
-                "feedTitle": feed.title
-            ]
-            
+
+            // Add information to notification for handling taps
+            // Just reference the first feed - tapping will open the app anyway
+            if let firstFeed = allNewItems.first {
+                content.userInfo = [
+                    "feedURL": firstFeed.feed.url,
+                    "feedTitle": firstFeed.feed.title,
+                    "isConsolidated": true,
+                    "totalItemCount": totalItemCount,
+                    "feedCount": feedCount
+                ]
+            }
+
             // Create a request to deliver the notification
             let request = UNNotificationRequest(
                 identifier: UUID().uuidString,
                 content: content,
                 trigger: nil // Deliver immediately
             )
-            
+
             // Add the request to the notification center
             UNUserNotificationCenter.current().add(request) { error in
                 if let error = error {
@@ -509,6 +546,15 @@ class BackgroundRefreshManager {
                 }
             }
         }
+    }
+
+    /// Send a notification for new items in a single feed (legacy method, kept for reference)
+    /// - Parameters:
+    ///   - feed: The feed with new items
+    ///   - newItems: The new items to notify about
+    private func sendNotificationForNewItems(_ feed: RSSFeed, newItems: [RSSItem]) {
+        // This method is no longer used directly, but kept for reference
+        // New items are now consolidated into a single notification via sendConsolidatedNotification
     }
     
     /// Configures the app for background fetch operations

@@ -37,25 +37,27 @@ extension HomeFeedViewController {
             guard let self = self else { return }
             
             // Check if we're still in loading state
-            if self.tableView.isHidden {
+            if self.tableView.isHidden && self.items.isEmpty && self.isLoading {
+                print("DEBUG: Failsafe timer fired, but isLoading is true and items are empty. Not restoring UI yet.")
+                // Do not restore UI, just log and return
+                return
+            } else if self.tableView.isHidden {
                 print("DEBUG: Applying failsafe to recover from loading state")
-                
-                // Force UI to be restored
-                self.tableView.isHidden = false
+                print("DEBUG: Failsafe timer fired. items.count = \(self.items.count), tableView.isHidden = \(self.tableView.isHidden)")
+                self.tableView.isHidden = !self.items.isEmpty ? false : true
+                print("DEBUG: tableView.isHidden set to \(self.tableView.isHidden) by failsafe timer")
                 self.loadingIndicator.stopAnimating()
+                print("DEBUG: loadingIndicator.stopAnimating() called by failsafe timer")
                 self.stopRefreshAnimation()
                 self.refreshControl.endRefreshing()
                 self.updateFooterVisibility()
-                
                 // Show a message
                 self.loadingLabel.text = "Loading timed out. You can tap refresh to try again."
                 self.loadingLabel.isHidden = false
-                
                 // Hide the message after a few seconds
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                     self.loadingLabel.isHidden = true
                 }
-                
                 // If we have no items, try to show something
                 if self.items.isEmpty && !self._allItems.isEmpty {
                     self.items = self._allItems
@@ -1300,6 +1302,8 @@ extension HomeFeedViewController {
     
     func loadFolderFeeds(folder: FeedFolder) {
         // Start loading animation
+        isLoading = true
+        print("DEBUG: isLoading set to true in loadFolderFeeds start")
         tableView.isHidden = true
         loadingIndicator.startAnimating()
         startRefreshAnimation() 
@@ -1317,8 +1321,12 @@ extension HomeFeedViewController {
                         self.tableView.reloadData()
                         
                         // Clean up UI
-                        self.tableView.isHidden = false
+                        self.tableView.isHidden = !self.items.isEmpty ? false : true
+                        print("DEBUG: tableView.isHidden set to \(self.tableView.isHidden) after folderFeeds empty")
                         self.loadingIndicator.stopAnimating()
+                        print("DEBUG: loadingIndicator.stopAnimating() after folderFeeds empty")
+                        self.isLoading = false
+                        print("DEBUG: isLoading set to false in loadFolderFeeds (empty)")
                         self.stopRefreshAnimation()
                         self.refreshControl.endRefreshing()
                         self.updateFooterVisibility()
@@ -1337,8 +1345,12 @@ extension HomeFeedViewController {
                     self.tableView.reloadData()
                     
                     // Clean up UI
-                    self.tableView.isHidden = false
+                    self.tableView.isHidden = !self.items.isEmpty ? false : true
+                    print("DEBUG: tableView.isHidden set to \(self.tableView.isHidden) after folderFeeds failure")
                     self.loadingIndicator.stopAnimating()
+                    print("DEBUG: loadingIndicator.stopAnimating() after folderFeeds failure")
+                    self.isLoading = false
+                    print("DEBUG: isLoading set to false in loadFolderFeeds (failure)")
                     self.stopRefreshAnimation()
                     self.refreshControl.endRefreshing()
                     self.updateFooterVisibility()
@@ -1375,10 +1387,14 @@ extension HomeFeedViewController {
                 // Ensure we make the table visible
                 self.items = folderItems
                 self.tableView.reloadData()
-                self.tableView.isHidden = false
+                self.tableView.isHidden = !self.items.isEmpty ? false : true
+                print("DEBUG: tableView.isHidden set to \(self.tableView.isHidden) by folder feed timeout")
                 self.loadingIndicator.stopAnimating()
-                self.loadingLabel.isHidden = true
+                print("DEBUG: loadingIndicator.stopAnimating() by folder feed timeout")
+                self.isLoading = false
+                print("DEBUG: isLoading set to false in folder feed timeout")
                 self.stopRefreshAnimation()
+                self.refreshControl.endRefreshing()
                 self.updateFooterVisibility()
                 
                 // Show timeout message
@@ -1472,9 +1488,12 @@ extension HomeFeedViewController {
             self.tableView.reloadData()
             
             // Show the table
-            self.tableView.isHidden = false
+            self.tableView.isHidden = !self.items.isEmpty
+            print("DEBUG: tableView.isHidden set to \(self.tableView.isHidden) after loading folder items")
             self.loadingIndicator.stopAnimating()
-            self.loadingLabel.isHidden = true
+            print("DEBUG: loadingIndicator.stopAnimating() after loading folder items")
+            self.isLoading = false
+            print("DEBUG: isLoading set to false after loading folder items")
             self.stopRefreshAnimation()
             self.refreshControl.endRefreshing()
             self.updateFooterVisibility()
@@ -1779,7 +1798,7 @@ extension HomeFeedViewController {
                 
                 // Force UI to be restored
                 DispatchQueue.main.async {
-                    self.tableView.isHidden = false
+                    self.tableView.isHidden = !self.items.isEmpty ? false : true
                     self.loadingIndicator.stopAnimating()
                     self.loadingLabel.isHidden = true
                     self.stopRefreshAnimation()
@@ -2000,7 +2019,7 @@ extension HomeFeedViewController {
                 
                 // Show tableView after a short delay to ensure smooth transition
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    self.tableView.isHidden = false
+                    self.tableView.isHidden = !self.items.isEmpty
                     self.loadingIndicator.stopAnimating()
                     self.loadingLabel.isHidden = true
                     self.stopRefreshAnimation() // Stop refresh button animation
@@ -2075,7 +2094,7 @@ extension HomeFeedViewController {
             
             // Show tableView after a short delay to ensure smooth transition
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.tableView.isHidden = false
+                self.tableView.isHidden = !self.items.isEmpty
                 self.loadingIndicator.stopAnimating()
                 self.loadingLabel.isHidden = true
                 self.stopRefreshAnimation() // Stop refresh button animation
@@ -2096,7 +2115,7 @@ extension HomeFeedViewController {
             
             // Show tableView after a short delay to ensure smooth transition
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.tableView.isHidden = false
+                self.tableView.isHidden = !self.items.isEmpty
                 self.loadingIndicator.stopAnimating()
                 self.loadingLabel.isHidden = true
                 self.stopRefreshAnimation() // Stop refresh button animation

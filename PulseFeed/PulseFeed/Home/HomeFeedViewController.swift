@@ -105,6 +105,8 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         self.title = "Archive"
         
         // Hide table and show loading
+        isLoading = true
+        print("DEBUG: isLoading set to true in loadArchivedFeeds start")
         tableView.isHidden = true
         loadingIndicator.startAnimating()
         loadingLabel.text = "Loading archived articles..."
@@ -120,6 +122,8 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             loadingLabel.isHidden = false
             loadingIndicator.stopAnimating()
             tableView.isHidden = false
+            isLoading = false
+            print("DEBUG: isLoading set to false in loadArchivedFeeds (no archived items)")
             return
         }
         
@@ -141,6 +145,8 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
             if filteredItems.isEmpty {
                 loadingLabel.text = "No archived articles"
             }
+            isLoading = false
+            print("DEBUG: isLoading set to false in loadArchivedFeeds (filtered items)")
         } else {
             // If no items are loaded yet, load main RSS feeds first
             loadRSSFeeds()
@@ -173,31 +179,35 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     func finalizeItemLoading(_ filteredItems: [RSSItem]) {
         // Safety check for empty arrays
         guard !filteredItems.isEmpty else {
-            // Handle empty items case
-            DispatchQueue.main.async {
-                self._allItems = []
-                self.items = []
-                self.duplicateGroups = []
-                self.duplicateArticleLinks = []
+            // Handle empty items case directly on the current (presumably main) thread
+            self._allItems = []
+            self.items = []
+            self.duplicateGroups = []
+            self.duplicateArticleLinks = []
 
-                // Reset read tracking state to prevent unwanted auto-marking
-                self.pendingReadRows.removeAll()
-                self.isAutoScrolling = true
-                self.previousMinVisibleRow = 0
-                NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(self.processReadItemsAfterScrolling), object: nil)
+            // Reset read tracking state to prevent unwanted auto-marking
+            self.pendingReadRows.removeAll()
+            self.isAutoScrolling = true
+            self.previousMinVisibleRow = 0
+            NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(self.processReadItemsAfterScrolling), object: nil)
 
-                self.tableView.reloadData()
-                self.refreshControl.endRefreshing()
-                self.loadingIndicator.stopAnimating()
-                self.loadingLabel.text = "No articles found"
-                self.loadingLabel.isHidden = false
-                self.tableView.isHidden = false
-                self.stopRefreshAnimation()
+            self.tableView.reloadData() // Reload first
+            self.refreshControl.endRefreshing()
+            self.loadingIndicator.stopAnimating()
+            print("DEBUG: loadingIndicator.stopAnimating() in finalizeItemLoading (empty)")
+            self.loadingLabel.text = "No articles found"
+            self.loadingLabel.isHidden = false
+            print("DEBUG: loadingLabel.isHidden set to false in finalizeItemLoading (empty)")
+            // Only show the table if there are items or if explicitly showing a no-articles state
+            self.tableView.isHidden = !self.items.isEmpty ? false : true
+            print("DEBUG: tableView.isHidden set to \(self.tableView.isHidden) in finalizeItemLoading (empty)")
+            self.isLoading = false
+            self.stopRefreshAnimation()
 
-                // Reset auto-scrolling flag after a delay
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    self.isAutoScrolling = false
-                }
+            // Reset auto-scrolling flag after a delay
+            // This still needs to be async as it's a delayed action
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.isAutoScrolling = false
             }
             return
         }
@@ -250,27 +260,31 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         self.previousMinVisibleRow = 0
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(self.processReadItemsAfterScrolling), object: nil)
 
-        // Reload the table while it's still hidden
+        // Reload the table with new data
         self.tableView.reloadData()
 
-        // Update state and show the tableView
+        // Update UI state immediately after reloadData()
         self.refreshControl.endRefreshing()
+        self.loadingIndicator.stopAnimating()
+        print("DEBUG: loadingIndicator.stopAnimating() in finalizeItemLoading (non-empty)")
+        self.loadingLabel.isHidden = true
+        print("DEBUG: loadingLabel.isHidden set to true in finalizeItemLoading (non-empty)")
+        // Only show the table if there are items
+        self.tableView.isHidden = self.items.isEmpty
+        print("DEBUG: tableView.isHidden set to \(self.tableView.isHidden) in finalizeItemLoading (non-empty)")
+        self.isLoading = false
+        self.stopRefreshAnimation() // Ensure this is also done before showing table
         self.hasLoadedRSSFeeds = true
         self.updateFooterVisibility()
 
-        // Show the tableView after everything is ready
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.stopRefreshAnimation()
-            self.loadingIndicator.stopAnimating()
-            self.loadingLabel.isHidden = true
-            self.tableView.isHidden = false
-            self.updateFooterVisibility()
 
+        // Perform actions that can be delayed (like scrolling) after a brief moment
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { // Short delay for UI to settle if needed
             // Scroll to top of the list safely and reset auto-scrolling flag after a delay
             self.safeScrollToTop()
 
             // Reset auto-scrolling flag after a delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { // This is a nested delay, consider if it's still needed or can be combined.
                 self.isAutoScrolling = false
             }
         }
@@ -581,6 +595,9 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     
     // Flag to prevent marking articles as read during programmatic scrolling
     internal var isAutoScrolling: Bool = false
+    
+    // Track if articles are currently being loaded
+    internal var isLoading: Bool = false
     
     // MARK: - Lifecycle
     override func viewDidLoad() {

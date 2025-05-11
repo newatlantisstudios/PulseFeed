@@ -6,6 +6,8 @@ extension HomeFeedViewController {
     
     // Load RSS feeds from storage and then fetch articles from each feed URL.
     func loadRSSFeeds() {
+        isLoading = true
+        print("DEBUG: isLoading set to true in loadRSSFeeds start")
         // Hide tableView and show loading indicator
         tableView.isHidden = true
         loadingIndicator.startAnimating()
@@ -46,6 +48,8 @@ extension HomeFeedViewController {
                         
                         // Scroll to top safely
                         self.safeScrollToTop()
+                        self.isLoading = false
+                        print("DEBUG: isLoading set to false in loadRSSFeeds failure handler")
                     }
                 }
             }
@@ -59,6 +63,7 @@ extension HomeFeedViewController {
             
             // We'll gather all live feed items in this array
             var liveItems: [RSSItem] = []
+            let liveItemsQueue = DispatchQueue(label: "com.pulsefeed.liveItemsQueue") // Serial queue for synchronized access
             
             // A dispatch group to wait until all feed network calls finish
             let fetchGroup = DispatchGroup()
@@ -193,7 +198,10 @@ extension HomeFeedViewController {
                                     filtered = readFiltered
                                 }
                                 
-                                liveItems.append(contentsOf: filtered)
+                                // Synchronize access to liveItems
+                                liveItemsQueue.sync {
+                                    liveItems.append(contentsOf: filtered)
+                                }
                                 
                                 // Print some debug info about the feed type (RSS or Atom)
                                 //print("DEBUG: Successfully parsed \(feed.title) - Found \(rssParser.items.count) items")
@@ -211,73 +219,48 @@ extension HomeFeedViewController {
             }
             
             // After all feeds are fetched, process the results
-            fetchGroup.notify(queue: .main) {
-                // Sort all items
-                var finalItems = liveItems
-                self.sortFilteredItems(&finalItems)
-                
-                // Filter items older than 30 days
-                let thirtyDaysAgo = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
-                let filteredItems = finalItems.filter { item in
-                    guard let itemDate = DateUtils.parseDate(item.pubDate) else {
-                        return false // Exclude if date can't be parsed
+            fetchGroup.notify(queue: .main) { [weak self] in // Keep self weak to avoid retain cycles if self can be deallocated before notify block executes
+                guard let self = self else { return }
+                // Update loading message to indicate article processing stage - on main thread
+                self.loadingLabel.text = "Processing articles..."
+
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in // Move processing to a background queue
+                    guard let self = self else { return }
+
+                    // Sort all items
+                    var finalItems = liveItems // Ensure liveItems is captured appropriately, or passed if necessary.
+                                               // If liveItems is modified by other threads, synchronization is needed.
+                                               // Assuming it's a snapshot at this point.
+                    self.sortFilteredItems(&finalItems)
+                    
+                    // Filter items older than 30 days
+                    let thirtyDaysAgo = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
+                    let filteredItems = finalItems.filter { item in
+                        guard let itemDate = DateUtils.parseDate(item.pubDate) else {
+                            return false // Exclude if date can't be parsed
+                        }
+                        return itemDate >= thirtyDaysAgo
                     }
-                    return itemDate >= thirtyDaysAgo
-                }
-                
-                // Update the UI with the fetched items
-                DispatchQueue.main.async {
-                    // If we skipped any feeds, show a message briefly before completing
-                    if skippedFeedsCount > 0 {
-                        self.loadingLabel.text = "Skipped \(skippedFeedsCount) slow/failed feed" + (skippedFeedsCount > 1 ? "s" : "")
-                        
-                        // Delay for a moment so the message is visible
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            // Add safety check before completing
-                            guard !filteredItems.isEmpty else {
-                                // Handle empty items case
-                                self.loadingLabel.text = "No articles found"
-                                self.loadingLabel.isHidden = false
-                                self.loadingIndicator.stopAnimating()
-                                self.stopRefreshAnimation()
-                                self.refreshControl.endRefreshing()
-                                self.tableView.isHidden = false
-                                return
-                            }
+                    
+                    // Update the UI with the fetched items on the main thread
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
+                        // If we skipped any feeds, show a message briefly before completing
+                        if skippedFeedsCount > 0 { // Ensure skippedFeedsCount is also captured or accessed safely
+                            self.loadingLabel.text = "Skipped \(skippedFeedsCount) slow/failed feed" + (skippedFeedsCount > 1 ? "s" : "")
                             
+                            // Delay for a moment so the message is visible, then call completeLoadingWithItems
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                                guard let self = self else { return }
+                                // Always call completeLoadingWithItems; it will handle the empty state.
+                                self.completeLoadingWithItems(filteredItems)
+                            }
+                        } else {
+                            // Always call completeLoadingWithItems; it will handle the empty state.
                             self.completeLoadingWithItems(filteredItems)
                         }
-                    } else {
-                        // Add safety check for nil values and ensure we're on the main thread
-                        guard !filteredItems.isEmpty else {
-                            // Handle empty items case
-                            DispatchQueue.main.async {
-                                self.loadingLabel.text = "No articles found"
-                                self.loadingLabel.isHidden = false
-                                self.loadingIndicator.stopAnimating()
-                                self.stopRefreshAnimation()
-                                self.refreshControl.endRefreshing()
-                                self.tableView.isHidden = false
-                            }
-                            return
-                        }
-                        
-                        // Use async to ensure we're on the main thread
-                        DispatchQueue.main.async {
-                            // Add safety check before completing
-                            guard !filteredItems.isEmpty else {
-                                // Handle empty items case
-                                self.loadingLabel.text = "No articles found"
-                                self.loadingLabel.isHidden = false
-                                self.loadingIndicator.stopAnimating()
-                                self.stopRefreshAnimation()
-                                self.refreshControl.endRefreshing()
-                                self.tableView.isHidden = false
-                                return
-                            }
-                            
-                            self.completeLoadingWithItems(filteredItems)
-                        }
+                        self.isLoading = false
+                        print("DEBUG: isLoading set to false in fetchFeedsContent after all feeds processed")
                     }
                 }
             }
