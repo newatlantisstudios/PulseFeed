@@ -113,29 +113,13 @@ extension HomeFeedViewController {
             action: #selector(refreshButtonTapped),
             tintColor: AppColors.dynamicIconColor
         )
-        bookmarkButton = createBarButton(
-            imageName: "bookmark",
-            action: #selector(bookmarkButtonTapped),
+        // Remove individual left bar buttons for bookmark, heart, archive, and folder
+        // Add toolbox button instead
+        let toolboxButton = createBarButton(
+            imageName: "toolbox", // Use just the asset name
+            action: #selector(toolboxButtonTapped),
             tintColor: AppColors.dynamicIconColor
         )
-        heartButton = createBarButton(
-            imageName: "heart",
-            action: #selector(heartButtonTapped),
-            tintColor: AppColors.dynamicIconColor
-        )
-        archiveButton = createBarButton(
-            imageName: "archivebox", // Using system image for archive
-            action: #selector(archiveButtonTapped),
-            tintColor: AppColors.dynamicIconColor,
-            isSystemImage: true
-        )
-        folderButton = createBarButton(
-            imageName: "folder", // Using system image for folder
-            action: #selector(folderButtonTapped),
-            tintColor: AppColors.dynamicIconColor,
-            isSystemImage: true
-        )
-
         // We've moved the sort functionality to Settings, so no longer need a button here
 
         // Create your right-side buttons
@@ -144,14 +128,12 @@ extension HomeFeedViewController {
             action: #selector(openSettings),
             tintColor: AppColors.dynamicIconColor
         )
-        
         // Create search button using custom icon from assets
         let searchButton = createBarButton(
             imageName: "search",
             action: #selector(quickSearchButtonTapped),
             tintColor: AppColors.dynamicIconColor
         )
-        
         // Create bulk edit button using system icon
         let bulkEditButton = createBarButton(
             imageName: "checkmark.circle",
@@ -159,20 +141,14 @@ extension HomeFeedViewController {
             tintColor: AppColors.dynamicIconColor,
             isSystemImage: true
         )
-
         // Assign them in the order you want on the left side
         navigationItem.leftBarButtonItems = [
             rssButton,
             refreshButton,
-            bookmarkButton,
-            heartButton,
-            archiveButton,
-            folderButton
+            toolboxButton
         ].compactMap { $0 } // Use properties and compactMap to handle potential nils
-
         // Assign the right-side buttons - include bulk edit, settings and search buttons
         navigationItem.rightBarButtonItems = [settingsButton, searchButton, bulkEditButton].compactMap { $0 }
-        
         // Initialize the read status indicator
         updateReadStatusIndicator()
     }
@@ -210,11 +186,11 @@ extension HomeFeedViewController {
     }
     
     func updateNavigationButtons() {
-        guard let leftButtons = navigationItem.leftBarButtonItems, leftButtons.count >= 5 else {
+        guard let leftButtons = navigationItem.leftBarButtonItems, leftButtons.count >= 3 else {
             return
         }
         
-        // leftButtons order: [rss, refresh, bookmark, heart, folder]
+        // leftButtons order: [rss, refresh, toolbox]
         // Update the RSS button image:
         let isFolderOrSmartFolder: Bool
         if case .folder = currentFeedType {
@@ -2226,5 +2202,62 @@ extension HomeFeedViewController {
         let query = SearchQuery()
         let searchVC = SearchResultsViewController(query: query, results: self._allItems)
         navigationController?.pushViewController(searchVC, animated: true)
+    }
+    
+    // MARK: - Toolbox Button
+    @objc func toolboxButtonTapped() {
+        let alert = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+        // Bookmark
+        let bookmarkAction = UIAlertAction(title: "Bookmarks", style: .default) { [weak self] _ in
+            self?.bookmarkButtonTapped()
+        }
+        if let bookmarkImage = UIImage(named: "bookmark")?.resize(to: CGSize(width: 24, height: 24)) {
+            bookmarkAction.setValue(bookmarkImage.withRenderingMode(.alwaysTemplate), forKey: "image")
+        }
+        // Heart
+        let heartAction = UIAlertAction(title: "Favorites", style: .default) { [weak self] _ in
+            self?.heartButtonTapped()
+        }
+        if let heartImage = UIImage(named: "heart")?.resize(to: CGSize(width: 24, height: 24)) {
+            heartAction.setValue(heartImage.withRenderingMode(.alwaysTemplate), forKey: "image")
+        }
+        // Archive
+        let archiveAction = UIAlertAction(title: "Archive", style: .default) { [weak self] _ in
+            self?.archiveButtonTapped()
+        }
+        if let archiveImage = UIImage(systemName: "archivebox") {
+            archiveAction.setValue(archiveImage.withRenderingMode(.alwaysTemplate), forKey: "image")
+        }
+        // Folder
+        let folderAction = UIAlertAction(title: "Folders", style: .default) { [weak self] _ in
+            self?.folderButtonTapped()
+        }
+        if let folderImage = UIImage(systemName: "folder") {
+            folderAction.setValue(folderImage.withRenderingMode(.alwaysTemplate), forKey: "image")
+        }
+        // Cancel
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
+        // Add actions
+        alert.addAction(bookmarkAction)
+        alert.addAction(heartAction)
+        alert.addAction(archiveAction)
+        alert.addAction(folderAction)
+        alert.addAction(cancelAction)
+        // For iPad: set the popover anchor
+        if let popover = alert.popoverPresentationController, let toolboxButton = navigationItem.leftBarButtonItems?.first(where: { $0.action == #selector(toolboxButtonTapped) }) {
+            popover.barButtonItem = toolboxButton
+        }
+        present(alert, animated: true)
+    }
+}
+
+// MARK: - UIImage Resize Helper
+extension UIImage {
+    func resize(to size: CGSize) -> UIImage {
+        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+        self.draw(in: CGRect(origin: .zero, size: size))
+        let newImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return newImage ?? self
     }
 }
