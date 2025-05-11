@@ -18,36 +18,6 @@ struct RSSFeed: Codable, Hashable {
         return lhs.url == rhs.url
     }
     
-    // MARK: - Tag Operations
-    
-    /// Get all tags for this feed
-    func getTags(completion: @escaping (Result<[Tag], Error>) -> Void) {
-        StorageManager.shared.getTagsForItem(itemId: url, itemType: .feed, completion: completion)
-    }
-    
-    /// Add a tag to this feed
-    func addTag(_ tag: Tag, completion: @escaping (Result<Bool, Error>) -> Void) {
-        StorageManager.shared.addTagToItem(tagId: tag.id, itemId: url, itemType: .feed) { result in
-            switch result {
-            case .success(_):
-                completion(.success(true))
-            case .failure(let error):
-                completion(.failure(error))
-            }
-        }
-    }
-    
-    /// Remove a tag from this feed
-    func removeTag(_ tag: Tag, completion: @escaping (Result<Bool, Error>) -> Void) {
-        StorageManager.shared.removeTagFromItem(tagId: tag.id, itemId: url, itemType: .feed) { result in
-            switch result {
-            case .success(_):
-                completion(.success(true))
-            case .failure(let error):
-                completion(.failure(error))
-            }
-        }
-    }
     
     // MARK: - Folder Operations
     

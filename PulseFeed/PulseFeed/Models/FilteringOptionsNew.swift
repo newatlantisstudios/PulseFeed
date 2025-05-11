@@ -9,7 +9,7 @@ enum FilterFieldOption: String, Codable, CaseIterable {
     case author = "Author"
     case content = "Content"
     case regex = "Regex"
-    
+
     var displayName: String {
         return self.rawValue
     }
@@ -41,7 +41,7 @@ enum FilterOperationType: String, Codable, CaseIterable {
         case .readStatus:
             return [.isTrue, .isFalse]
         case .tag:
-            return [.equals, .notEquals]
+            return [.equals, .notEquals, .contains, .notContains]
         case .source:
             return [.equals, .notEquals, .contains, .notContains, .beginsWith, .endsWith]
         case .dateRange:
@@ -111,7 +111,7 @@ struct FilterOptionSet: Codable, Equatable {
     }
     
     /// Checks if an RSS item passes this filter
-    func matchesItem(_ item: RSSItem, tagManager: TagManager) -> Bool {
+    func matchesItem(_ item: RSSItem) -> Bool {
         // If there are no rules, everything passes
         if rules.isEmpty {
             return true
@@ -120,7 +120,7 @@ struct FilterOptionSet: Codable, Equatable {
         var ruleResults = [Bool]()
         
         for rule in rules {
-            let result = evaluateRule(rule, for: item, tagManager: tagManager)
+            let result = evaluateRule(rule, for: item)
             ruleResults.append(result)
         }
         
@@ -135,12 +135,13 @@ struct FilterOptionSet: Codable, Equatable {
         }
     }
     
-    private func evaluateRule(_ rule: FilterRuleOption, for item: RSSItem, tagManager: TagManager) -> Bool {
+    private func evaluateRule(_ rule: FilterRuleOption, for item: RSSItem) -> Bool {
         switch rule.field {
         case .readStatus:
             return evaluateReadStatusRule(rule, for: item)
         case .tag:
-            return evaluateTagRule(rule, for: item, tagManager: tagManager)
+            // Tag evaluation functionality has been removed, but case needed for compilation
+            return false
         case .source:
             return evaluateSourceRule(rule, for: item)
         case .dateRange:
@@ -167,37 +168,7 @@ struct FilterOptionSet: Codable, Equatable {
         }
     }
     
-    private func evaluateTagRule(_ rule: FilterRuleOption, for item: RSSItem, tagManager: TagManager) -> Bool {
-        let tagId = rule.value
-        
-        // Get all tagged items with this tag
-        var result = false
-        let semaphore = DispatchSemaphore(value: 0)
-        
-        tagManager.getItemsWithTag(tagId: tagId, itemType: TaggedItem.ItemType.article) { tagResult in
-            switch tagResult {
-            case .success(let itemIds):
-                // Check if the current item's link is in the list of tagged items
-                let isTagged = itemIds.contains(item.link)
-                
-                switch rule.operation {
-                case .equals:
-                    result = isTagged
-                case .notEquals:
-                    result = !isTagged
-                default:
-                    result = false // Other operations don't apply to tags
-                }
-            case .failure:
-                result = false
-            }
-            semaphore.signal()
-        }
-        
-        // Wait for the async operation to complete
-        _ = semaphore.wait(timeout: .now() + 5)
-        return result
-    }
+    // Tag evaluation has been removed
     
     private func evaluateSourceRule(_ rule: FilterRuleOption, for item: RSSItem) -> Bool {
         let sourceText = item.source.lowercased()

@@ -66,8 +66,7 @@ struct UserDefaultsStorage: ArticleStorage {
                 completion(.success(value))
             } catch {
                 // For collection types, return empty array on decoding error
-                if T.self == [Tag].self || T.self == [TaggedItem].self || 
-                   T.self == [String].self || T.self == [RSSFeed].self {
+                if T.self == [String].self || T.self == [RSSFeed].self {
                     print("DEBUG: UserDefaultsStorage - Failed to decode \(key), returning empty array")
                     completion(.success([] as! T))
                 } else {
@@ -76,8 +75,7 @@ struct UserDefaultsStorage: ArticleStorage {
             }
         } else {
             // For collection types, return empty array when key doesn't exist
-            if T.self == [Tag].self || T.self == [TaggedItem].self || 
-               T.self == [String].self || T.self == [RSSFeed].self {
+            if T.self == [String].self || T.self == [RSSFeed].self {
                 print("DEBUG: UserDefaultsStorage - No data for \(key), returning empty array")
                 completion(.success([] as! T))
             } else {
@@ -1347,14 +1345,17 @@ class StorageManager {
     }
 
     func save<T: Encodable>(_ value: T, forKey key: String, completion: @escaping (Error?) -> Void) {
-        if method == .cloudKit, let items = value as? [String] {
-            switch key {
-            case "readItems", "bookmarkedItems", "heartedItems":
-                mergeAndSaveItems(items, forKey: key, completion: completion)
-                return
-            default:
-                break
+        if method == .cloudKit {
+            if let items = value as? [String] {
+                switch key {
+                case "readItems", "bookmarkedItems", "heartedItems":
+                    mergeAndSaveItems(items, forKey: key, completion: completion)
+                    return
+                default:
+                    break
+                }
             }
+            // --- END ADDED ---
         }
         
         storage.save(value, forKey: key, completion: completion)
@@ -1513,12 +1514,6 @@ class StorageManager {
                             completion(.failure(saveError!))
                         }
                     }
-                    return
-                }
-                // Special handling for tags and taggedItems to return empty arrays instead of errors
-                if (key == "tags" || key == "taggedItems") && T.self == [Tag].self || T.self == [TaggedItem].self {
-                    //print("DEBUG: StorageManager - Converting \(key) not found error to empty array")
-                    completion(.success([] as! T))
                     return
                 }
                 completion(.failure(error))
@@ -3016,29 +3011,6 @@ class StorageManager {
                     object: nil
                 )
                 completion(true, nil)
-            }
-        }
-    }
-    
-    // MARK: - Tag Management
-    
-    /// Get all tags
-    func getTags(completion: @escaping (Result<[Tag], Error>) -> Void) {
-        load(forKey: "tags", completion: completion)
-    }
-    
-    /// Get a specific tag by ID
-    func getTag(id: String, completion: @escaping (Result<Tag, Error>) -> Void) {
-        load(forKey: "tags") { (result: Result<[Tag], Error>) in
-            switch result {
-            case .success(let tags):
-                if let tag = tags.first(where: { $0.id == id }) {
-                    completion(.success(tag))
-                } else {
-                    completion(.failure(NSError(domain: "StorageManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Tag not found"])))
-                }
-            case .failure(let error):
-                completion(.failure(error))
             }
         }
     }

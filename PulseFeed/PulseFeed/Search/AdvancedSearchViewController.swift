@@ -28,11 +28,6 @@ class AdvancedSearchViewController: UIViewController {
     /// Hearted items from the main view controller
     private var heartedItems: Set<String> = []
     
-    /// Available tags for tag selection
-    private var availableTags: [Tag] = []
-    
-    /// Selected tags for filtering
-    private var selectedTagIds: [String] = []
     
     /// Date picker for start date selection
     private let startDatePicker = UIDatePicker()
@@ -65,7 +60,6 @@ class AdvancedSearchViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
-        loadAvailableTags()
     }
     
     override func viewWillAppear(_ animated: Bool) {
@@ -199,22 +193,6 @@ class AdvancedSearchViewController: UIViewController {
     
     // MARK: - Private Methods
     
-    /// Load available tags for filtering
-    private func loadAvailableTags() {
-        StorageManager.shared.getTags { [weak self] result in
-            guard let self = self else { return }
-            
-            switch result {
-            case .success(let tags):
-                self.availableTags = tags.sorted { $0.name.lowercased() < $1.name.lowercased() }
-                DispatchQueue.main.async {
-                    self.tableView.reloadSections(IndexSet(integer: 2), with: .none)
-                }
-            case .failure(let error):
-                print("Error loading tags: \(error.localizedDescription)")
-            }
-        }
-    }
     
     /// Show a date picker for date range selection
     private func showDatePicker(for indexPath: IndexPath) {
@@ -277,9 +255,6 @@ class AdvancedSearchViewController: UIViewController {
         
         searchQuery.searchText = searchBar.text ?? ""
         
-        // Update tag IDs in query
-        searchQuery.tagIds = selectedTagIds
-        searchQuery.filterByTags = !selectedTagIds.isEmpty
         
         // Perform the search
         searchQuery.filterArticles(allArticles, in: bookmarkedItems, heartedItems: heartedItems) { [weak self] results in
@@ -357,18 +332,16 @@ class AdvancedSearchViewController: UIViewController {
 extension AdvancedSearchViewController: UITableViewDataSource {
     
     func numberOfSections(in tableView: UITableView) -> Int {
-        return 4  // Search Options, Date Range, Tags, Saved Searches
+        return 3  // Search Options, Bookmark & Heart Status, Date Range
     }
-    
+
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch section {
         case 0:  // Search Options
             return 5  // Title, Content, Author, Feed, Read Status
         case 1:  // Bookmark & Heart Status
             return 2  // Bookmarked, Hearted
-        case 2:  // Tags
-            return availableTags.count > 0 ? availableTags.count : 1
-        case 3:  // Date Range
+        case 2:  // Date Range
             return 3  // Enable Date Filter, Start Date, End Date
         default:
             return 0
@@ -445,34 +418,6 @@ extension AdvancedSearchViewController: UITableViewDataSource {
             
             return cell
             
-        case 2:  // Tags
-            let cell = tableView.dequeueReusableCell(withIdentifier: "TagCell", for: indexPath)
-            
-            if availableTags.isEmpty {
-                cell.textLabel?.text = "No tags available"
-                cell.selectionStyle = .none
-                cell.accessoryType = .none
-            } else {
-                let tag = availableTags[indexPath.row]
-                cell.textLabel?.text = tag.name
-                
-                // Show checkmark if tag is selected
-                if selectedTagIds.contains(tag.id) {
-                    cell.accessoryType = .checkmark
-                } else {
-                    cell.accessoryType = .none
-                }
-                
-                // Set tag color
-                if let color = UIColor(hexString: tag.colorHex) {
-                    let colorView = UIView(frame: CGRect(x: 0, y: 0, width: 16, height: 16))
-                    colorView.backgroundColor = color
-                    colorView.layer.cornerRadius = 8
-                    cell.accessoryView = cell.accessoryType == .none ? colorView : nil
-                }
-            }
-            
-            return cell
             
         case 3:  // Date Range
             if indexPath.row == 0 {
@@ -530,8 +475,6 @@ extension AdvancedSearchViewController: UITableViewDataSource {
         case 1:
             return "Article Status"
         case 2:
-            return "Filter by Tags"
-        case 3:
             return "Date Range"
         default:
             return nil
@@ -543,8 +486,6 @@ extension AdvancedSearchViewController: UITableViewDataSource {
         case 0:
             return "Select where to search for your terms"
         case 2:
-            return availableTags.isEmpty ? "No tags available" : "Tap to select tags to filter by"
-        case 3:
             return "Filter articles by publication date"
         default:
             return nil
@@ -559,21 +500,8 @@ extension AdvancedSearchViewController: UITableViewDelegate {
         tableView.deselectRow(at: indexPath, animated: true)
         
         switch indexPath.section {
-        case 2:  // Tags
-            if !availableTags.isEmpty {
-                let tag = availableTags[indexPath.row]
-                
-                // Toggle tag selection
-                if let index = selectedTagIds.firstIndex(of: tag.id) {
-                    selectedTagIds.remove(at: index)
-                } else {
-                    selectedTagIds.append(tag.id)
-                }
-                
-                tableView.reloadRows(at: [indexPath], with: .automatic)
-            }
             
-        case 3:  // Date Range
+        case 2:  // Date Range
             if indexPath.row > 0 && searchQuery.filterByDate {
                 showDatePicker(for: indexPath)
             }

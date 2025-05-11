@@ -147,12 +147,7 @@ extension SmartFolder {
         
         for rule in rules {
             switch rule.field {
-            case .tag:
-                group.enter()
-                evaluateTagRule(feed: feed, rule: rule) { result in
-                    ruleResults.append(result)
-                    group.leave()
-                }
+            // Tag case has been removed
                 
             case .feedURL:
                 let normalizedURL = StorageManager.shared.normalizeLink(feed.url)
@@ -209,21 +204,18 @@ extension SmartFolder {
         for rule in rules {
             switch rule.field {
             case .tag:
-                group.enter()
-                evaluateTagRule(article: article, rule: rule) { result in
-                    ruleResults.append(result)
-                    group.leave()
-                }
-                
+                // Tag evaluation functionality has been removed, but case needed for compilation
+                ruleResults.append(false)
+
             case .title:
                 let result = evaluateStringRule(value: article.title, rule: rule)
                 ruleResults.append(result)
-                
+
             case .content:
                 let content = article.content ?? article.description ?? ""
                 let result = evaluateStringRule(value: content, rule: rule)
                 ruleResults.append(result)
-                
+
             case .regex:
                 let result = evaluateRegexRule(article: article, rule: rule)
                 ruleResults.append(result)
@@ -392,97 +384,9 @@ extension SmartFolder {
         }
     }
     
-    /// Evaluates a tag rule for a feed
-    private func evaluateTagRule(feed: RSSFeed, rule: SmartFolderRule, completion: @escaping (Bool) -> Void) {
-        feed.getTags { result in
-            switch result {
-            case .success(let tags):
-                let hasTag = tags.contains { tag in
-                    if rule.operation == .isTagged || rule.operation == .isNotTagged {
-                        // If the rule is looking for a specific tag ID
-                        return tag.id == rule.value
-                    } else {
-                        // If the rule is looking for a tag name match
-                        switch rule.operation {
-                        case .contains:
-                            return tag.name.lowercased().contains(rule.value.lowercased())
-                        case .equals:
-                            return tag.name.lowercased() == rule.value.lowercased()
-                        case .beginsWith:
-                            return tag.name.lowercased().hasPrefix(rule.value.lowercased())
-                        case .endsWith:
-                            return tag.name.lowercased().hasSuffix(rule.value.lowercased())
-                        default:
-                            return false
-                        }
-                    }
-                }
-                
-                // Determine the result based on the operation
-                let result: Bool
-                switch rule.operation {
-                case .isTagged, .contains, .equals, .beginsWith, .endsWith:
-                    result = hasTag
-                case .isNotTagged, .notContains, .notEquals:
-                    result = !hasTag
-                default:
-                    result = false
-                }
-                
-                completion(result)
-                
-            case .failure:
-                // If we fail to get tags, consider the rule not matched
-                completion(false)
-            }
-        }
-    }
+    // Tag evaluation has been removed
     
-    /// Evaluates a tag rule for an article
-    private func evaluateTagRule(article: RSSItem, rule: SmartFolderRule, completion: @escaping (Bool) -> Void) {
-        article.getTags { result in
-            switch result {
-            case .success(let tags):
-                let hasTag = tags.contains { tag in
-                    if rule.operation == .isTagged || rule.operation == .isNotTagged {
-                        // If the rule is looking for a specific tag ID
-                        return tag.id == rule.value
-                    } else {
-                        // If the rule is looking for a tag name match
-                        switch rule.operation {
-                        case .contains:
-                            return tag.name.lowercased().contains(rule.value.lowercased())
-                        case .equals:
-                            return tag.name.lowercased() == rule.value.lowercased()
-                        case .beginsWith:
-                            return tag.name.lowercased().hasPrefix(rule.value.lowercased())
-                        case .endsWith:
-                            return tag.name.lowercased().hasSuffix(rule.value.lowercased())
-                        default:
-                            return false
-                        }
-                    }
-                }
-                
-                // Determine the result based on the operation
-                let result: Bool
-                switch rule.operation {
-                case .isTagged, .contains, .equals, .beginsWith, .endsWith:
-                    result = hasTag
-                case .isNotTagged, .notContains, .notEquals:
-                    result = !hasTag
-                default:
-                    result = false
-                }
-                
-                completion(result)
-                
-            case .failure:
-                // If we fail to get tags, consider the rule not matched
-                completion(false)
-            }
-        }
-    }
+    // Tag evaluation for articles has been removed
     
     /// Evaluates a rule on the feed attributes of an article
     private func evaluateFeedAttributeRule(article: RSSItem, rule: SmartFolderRule, completion: @escaping (Bool) -> Void) {

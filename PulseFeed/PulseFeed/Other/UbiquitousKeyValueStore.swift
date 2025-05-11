@@ -219,8 +219,7 @@ class UbiquitousKeyValueStore {
     func load<T: Decodable>(forKey key: String, completion: @escaping (Result<T, Error>) -> Void) {
         // Get data from storage
         guard let data = self.data(forKey: key) else {
-            if T.self == [Tag].self || T.self == [TaggedItem].self || 
-               T.self == [String].self || T.self == [RSSFeed].self {
+            if T.self == [String].self || T.self == [RSSFeed].self {
                 print("DEBUG: UbiquitousKeyValueStore - No data for \(key), returning empty array")
                 completion(.success([] as! T))
             } else {
@@ -235,8 +234,7 @@ class UbiquitousKeyValueStore {
             completion(.success(value))
         } catch {
             // For collection types, return empty array on decoding error
-            if T.self == [Tag].self || T.self == [TaggedItem].self || 
-               T.self == [String].self || T.self == [RSSFeed].self {
+            if T.self == [String].self || T.self == [RSSFeed].self {
                 print("DEBUG: UbiquitousKeyValueStore - Failed to decode \(key), returning empty array")
                 completion(.success([] as! T))
             } else {

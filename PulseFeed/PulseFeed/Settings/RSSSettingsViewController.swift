@@ -1,16 +1,19 @@
 import UIKit
+import Combine
 
-class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableViewDataSource {
+class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableViewDataSource, UISearchBarDelegate {
 
     private lazy var tableView: UITableView = {
-        let table = UITableView(frame: .zero, style: .grouped)
+        let table = UITableView(frame: .zero, style: .plain)
         table.delegate = self
         table.dataSource = self
         table.backgroundColor = AppColors.background
         table.register(UITableViewCell.self, forCellReuseIdentifier: "FeedCell")
         table.register(SwitchTableViewCell.self, forCellReuseIdentifier: "SwitchCell")
         table.translatesAutoresizingMaskIntoConstraints = false
+        table.allowsSelectionDuringEditing = true
         table.allowsMultipleSelectionDuringEditing = true
+        print("DEBUG: tableView created - allowsMultipleSelectionDuringEditing = \(table.allowsMultipleSelectionDuringEditing), allowsSelectionDuringEditing = \(table.allowsSelectionDuringEditing)")
         return table
     }()
 
@@ -20,6 +23,24 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
         }
     }
 
+    private var filteredFeeds: [RSSFeed] = []
+    private var isEditingMode = false {
+        didSet {
+            tableView.setEditing(isEditingMode, animated: true)
+            updateNavigationBar()
+        }
+    }
+
+    private var isSearching = false
+    private var cancellables = Set<AnyCancellable>()
+
+    // Computed property to get selected feeds based on tableView selection
+    private var feedsToDelete: [RSSFeed] {
+        guard let selectedRows = tableView.indexPathsForSelectedRows else { return [] }
+        let feedArray = isSearching ? filteredFeeds : feeds
+        return selectedRows.filter { $0.section == 1 && $0.row < feedArray.count }.map { feedArray[$0.row] }
+    }
+
     private var useICloud: Bool {
         // The switch flag stored in UserDefaults.
         return UserDefaults.standard.bool(forKey: "useICloud")
@@ -27,13 +48,6 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
 
     private var enableFullTextExtraction: Bool {
         return UserDefaults.standard.bool(forKey: "enableFullTextExtraction")
-    }
-
-    private var isEditingMode = false {
-        didSet {
-            tableView.setEditing(isEditingMode, animated: true)
-            updateNavigationBar()
-        }
     }
 
     private var selectedFeeds: [RSSFeed] {
@@ -145,7 +159,9 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
                 target: self,
                 action: #selector(deleteSelectedButtonTapped)
             )
-            deleteButton.isEnabled = !selectedFeeds.isEmpty
+            // Enable delete button if any rows are selected
+            let selectedCount = tableView.indexPathsForSelectedRows?.filter { $0.section == 1 }.count ?? 0
+            deleteButton.isEnabled = selectedCount > 0
 
             navigationItem.rightBarButtonItems = [doneButton, deleteButton]
             // Don't modify the left bar button item to preserve the back button
@@ -204,6 +220,10 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
         let refreshControl = UIRefreshControl()
         refreshControl.addTarget(self, action: #selector(refreshFeeds), for: .valueChanged)
         tableView.refreshControl = refreshControl
+        
+        // Ensure multiple selection during editing is enabled
+        tableView.allowsMultipleSelectionDuringEditing = true
+        print("DEBUG: setupTableView - allowsMultipleSelectionDuringEditing = \(tableView.allowsMultipleSelectionDuringEditing), allowsSelectionDuringEditing = \(tableView.allowsSelectionDuringEditing)")
     }
 
     @objc private func refreshFeeds() {
@@ -240,24 +260,35 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
     }
 
     @objc private func editButtonTapped() {
-        isEditingMode = true
+        print("DEBUG: editButtonTapped - entering editing mode")
+        tableView.setEditing(true, animated: true)      // Explicitly set table editing state
+        isEditingMode = true                            // Set our tracking var (this will call updateNavigationBar via didSet)
+        tableView.reloadData()                          // Reload data for the new mode
+        updateNavigationBar()                           // Call again to ensure button states are correct
+        print("DEBUG: editButtonTapped - tableView.isEditing = \(tableView.isEditing)")
     }
 
     @objc private func doneButtonTapped() {
-        isEditingMode = false
+        print("DEBUG: doneButtonTapped - exiting editing mode")
+        clearSelections()                               // Visually deselect rows
+        tableView.setEditing(false, animated: true)     // Explicitly set table editing state
+        isEditingMode = false                           // Set our tracking var (this will call updateNavigationBar via didSet)
+        tableView.reloadData()                          // Reload data for the new mode
+        updateNavigationBar()                           // Update button states based on non-editing mode and cleared selections
+        print("DEBUG: doneButtonTapped - tableView.isEditing = \(tableView.isEditing)")
     }
 
     @objc private func deleteSelectedButtonTapped() {
-        guard !selectedFeeds.isEmpty else { return }
+        let feedsToRemove = feedsToDelete // Use the new computed property
+        guard !feedsToRemove.isEmpty else {
+            return
+        }
 
-        let feedCount = selectedFeeds.count
-        let message = feedCount == 1
-            ? "Are you sure you want to delete this RSS feed?"
-            : "Are you sure you want to delete these \(feedCount) RSS feeds?"
+        let feedNames = feedsToRemove.map { $0.title }.joined(separator: ", ")
 
         let alert = UIAlertController(
             title: "Delete RSS Feeds",
-            message: message,
+            message: "Are you sure you want to delete these feeds?",
             preferredStyle: .alert
         )
 
@@ -399,7 +430,7 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
         case 0: // Settings section
             return 1
         case 1: // Feeds section
-            return feeds.count
+            return isSearching ? filteredFeeds.count : feeds.count
         default:
             return 0
         }
@@ -428,19 +459,32 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
             
         case 1: // Feeds section
             let cell = tableView.dequeueReusableCell(withIdentifier: "FeedCell", for: indexPath)
-            let feed = feeds[indexPath.row]
+            let feedArray = isSearching ? filteredFeeds : feeds
+            guard indexPath.row < feedArray.count else {
+                print("ERROR_RSSSettings: indexPath.row out of bounds for feedArray in cellForRowAt.")
+                return cell
+            }
+            let feed = feedArray[indexPath.row]
+            
+            // Restore to use defaultContentConfiguration
             var config = cell.defaultContentConfiguration()
             config.text = feed.title
             config.secondaryText = feed.url
             cell.contentConfiguration = config
 
-            // Configure for editing mode
+            // Custom checkmark logic for editing mode
             if isEditingMode {
                 cell.selectionStyle = .default
+                if let selectedRows = tableView.indexPathsForSelectedRows, selectedRows.contains(indexPath) {
+                    cell.accessoryType = .checkmark
+                } else {
+                    cell.accessoryType = .none
+                }
             } else {
                 cell.selectionStyle = .gray
+                cell.accessoryType = .none
             }
-
+            print("DEBUG: cellForRowAt [row=\(indexPath.row)] - isEditingMode=\(isEditingMode), accessoryType=\(cell.accessoryType == .checkmark ? "checkmark" : "none"), selectedRows=\(tableView.indexPathsForSelectedRows?.map { $0.row } ?? [])")
             return cell
             
         default:
@@ -486,29 +530,25 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
             // Don't allow editing for the settings section
             return .none
         }
-
-        // If we're in our custom editing mode, disable swipe-to-delete
-        if isEditingMode {
-            return .none
-        }
-
-        // When not in editing mode, allow swipe-to-delete
+        // Always allow delete style for feeds section to enable multiple selection with checkmarks
         return .delete
     }
     
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         if tableView.isEditing {
-            // When in editing mode, selection is handled by the table view
-            // Update the delete button state
-            DispatchQueue.main.async {
-                self.updateNavigationBar()
+            if let cell = tableView.cellForRow(at: indexPath) {
+                cell.accessoryType = .checkmark
             }
+            print("DEBUG: didSelectRowAt [row=\(indexPath.row)] - tableView.isEditing=\(tableView.isEditing), selectedRows=\(tableView.indexPathsForSelectedRows?.map { $0.row } ?? [])")
+            updateNavigationBar()
         } else {
             tableView.deselectRow(at: indexPath, animated: true)
 
             // If a feed is selected, allow editing the feed title
             if indexPath.section == 1 {
-                let feed = feeds[indexPath.row]
+                let feedArray = isSearching ? filteredFeeds : feeds
+                guard indexPath.row < feedArray.count else { return }
+                let feed = feedArray[indexPath.row]
                 showEditFeedDialog(feed: feed, at: indexPath)
             }
         }
@@ -516,10 +556,11 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
 
     func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
         if tableView.isEditing {
-            // Update the delete button state when deselecting
-            DispatchQueue.main.async {
-                self.updateNavigationBar()
+            if let cell = tableView.cellForRow(at: indexPath) {
+                cell.accessoryType = .none
             }
+            print("DEBUG: didDeselectRowAt [row=\(indexPath.row)] - tableView.isEditing=\(tableView.isEditing), selectedRows=\(tableView.indexPathsForSelectedRows?.map { $0.row } ?? [])")
+            updateNavigationBar()
         }
     }
     
@@ -581,24 +622,34 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
     
     private func deleteSelectedFeeds() {
         // Get the feeds to delete
-        let feedsToDelete = selectedFeeds
+        let actualFeedsToDelete = self.feedsToDelete
 
-        // Remove the selected feeds from the feeds array
-        feeds.removeAll { feedsToDelete.contains($0) }
+        guard !actualFeedsToDelete.isEmpty else { return }
 
-        // Save the updated feeds array
-        StorageManager.shared.save(feeds, forKey: "rssFeeds") { [weak self] error in
+        let urlsOfFeedsToDelete = Set(actualFeedsToDelete.map { $0.url })
+
+        // Remove from the main feeds array
+        self.feeds.removeAll { feedInMainArray in
+            urlsOfFeedsToDelete.contains(feedInMainArray.url)
+        }
+
+        // If currently searching, also remove from filteredFeeds
+        if self.isSearching {
+            self.filteredFeeds.removeAll { feedInFilteredArray in
+                urlsOfFeedsToDelete.contains(feedInFilteredArray.url)
+            }
+        }
+
+        // Save the updated feeds array (self.feeds)
+        StorageManager.shared.save(self.feeds, forKey: "rssFeeds") { [weak self] error in
             guard let self = self else { return }
 
             if let error = error {
                 self.showError("Failed to delete feeds: \(error.localizedDescription)")
-                // Reload feeds to restore the previous state
                 self.loadFeeds()
             } else {
-                // Exit editing mode after successful deletion
                 self.isEditingMode = false
-
-                // Post notification to update other parts of the app
+                self.updateNavigationBar()
                 NotificationCenter.default.post(name: NSNotification.Name("feedsUpdated"), object: nil)
             }
         }
@@ -612,5 +663,22 @@ class RSSSettingsViewController: UIViewController, UITableViewDelegate, UITableV
         )
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
+    }
+
+    private func clearSelections() {
+        if let selectedIndexPaths = tableView.indexPathsForSelectedRows {
+            for indexPath in selectedIndexPaths {
+                tableView.deselectRow(at: indexPath, animated: false)
+            }
+        }
+    }
+
+    func tableView(_ tableView: UITableView, shouldBeginMultipleSelectionInteractionAt indexPath: IndexPath) -> Bool {
+        print("DEBUG: shouldBeginMultipleSelectionInteractionAt [row=\(indexPath.row)] called, returning true")
+        return true
+    }
+
+    func tableView(_ tableView: UITableView, didBeginMultipleSelectionInteractionAt indexPath: IndexPath) {
+        print("DEBUG: didBeginMultipleSelectionInteractionAt [row=\(indexPath.row)] called")
     }
 }

@@ -605,6 +605,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged(_:)), name: Notification.Name("fontSizeChanged"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appThemeChanged(_:)), name: Notification.Name("appThemeChanged"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleTagsUpdated(_:)), name: Notification.Name("tagsUpdated"), object: nil)
         
         // Setup UI elements
         setupLoadingIndicator()
@@ -2287,9 +2288,6 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         // We need to refresh the table to show the updated tags
         print("DEBUG: Tags updated notification received")
         
-        // First, clear any cached tag data
-        StorageManager.shared.clearTagCache()
-        
         DispatchQueue.main.async {
             // Force a full table reload with animation to ensure changes are visible
             print("DEBUG: Forcing complete table reload due to tag updates")
@@ -2450,6 +2448,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         NotificationCenter.default.removeObserver(self)
         tableView.removeObserver(self, forKeyPath: "contentSize")
         stopAutoRefreshTimer()
+        NotificationCenter.default.removeObserver(self, name: Notification.Name("tagsUpdated"), object: nil)
     }
     
     // MARK: - Keyboard Shortcuts Support

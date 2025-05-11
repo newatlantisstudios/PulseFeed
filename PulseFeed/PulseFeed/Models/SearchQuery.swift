@@ -20,11 +20,6 @@ struct SearchQuery: Codable, Hashable {
     /// Whether to search by feed title/source
     var searchInFeedTitle: Bool = false
     
-    /// Whether to search only in articles with specific tags
-    var filterByTags: Bool = false
-    
-    /// IDs of tags to filter by (if filterByTags is true)
-    var tagIds: [String] = []
     
     /// Whether to filter by read status
     var filterByReadStatus: Bool = false
@@ -64,8 +59,6 @@ struct SearchQuery: Codable, Hashable {
          searchInContent: Bool = true,
          searchInAuthor: Bool = false,
          searchInFeedTitle: Bool = false,
-         filterByTags: Bool = false,
-         tagIds: [String] = [],
          filterByReadStatus: Bool = false,
          isRead: Bool = false,
          filterByDate: Bool = false,
@@ -81,8 +74,6 @@ struct SearchQuery: Codable, Hashable {
         self.searchInContent = searchInContent
         self.searchInAuthor = searchInAuthor
         self.searchInFeedTitle = searchInFeedTitle
-        self.filterByTags = filterByTags
-        self.tagIds = tagIds
         self.filterByReadStatus = filterByReadStatus
         self.isRead = isRead
         self.filterByDate = filterByDate
@@ -112,7 +103,6 @@ extension SearchQuery {
                        completion: @escaping (Bool) -> Void) {
         // Create dispatch group for async operations
         let group = DispatchGroup()
-        var tagCheckResult = true
         
         // First check if there's search text to match
         if !searchText.isEmpty {
@@ -155,25 +145,6 @@ extension SearchQuery {
             }
         }
         
-        // Check tags if enabled
-        if filterByTags && !tagIds.isEmpty {
-            group.enter()
-            
-            // Fetch tags for this article
-            article.getTags { result in
-                switch result {
-                case .success(let tags):
-                    // Check if any of the article's tags match the filter tags
-                    let articleTagIds = tags.map { $0.id }
-                    let hasMatchingTag = !Set(articleTagIds).isDisjoint(with: Set(self.tagIds))
-                    tagCheckResult = hasMatchingTag
-                case .failure:
-                    // If there's an error getting tags, consider it not matching
-                    tagCheckResult = false
-                }
-                group.leave()
-            }
-        }
         
         // Check read status if enabled
         if filterByReadStatus {
@@ -227,12 +198,6 @@ extension SearchQuery {
         
         // Wait for all async operations to complete
         group.notify(queue: .main) {
-            // If tags check failed, the article doesn't match
-            if !tagCheckResult {
-                completion(false)
-                return
-            }
-            
             // If we've passed all filters, the article matches
             completion(true)
         }

@@ -1,106 +1,5 @@
 import UIKit
 
-/// A simple view that displays a collection of tags
-class TagsContainerView: UIView {
-    private let scrollView: UIScrollView = {
-        let scrollView = UIScrollView()
-        scrollView.showsHorizontalScrollIndicator = false
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        return scrollView
-    }()
-    
-    private let stackView: UIStackView = {
-        let stackView = UIStackView()
-        stackView.axis = .horizontal
-        stackView.spacing = 8
-        stackView.distribution = .fillProportionally
-        stackView.alignment = .center
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        return stackView
-    }()
-    
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        setupUI()
-    }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    private func setupUI() {
-        translatesAutoresizingMaskIntoConstraints = false
-        addSubview(scrollView)
-        scrollView.addSubview(stackView)
-        
-        NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            scrollView.heightAnchor.constraint(equalToConstant: 30),
-            
-            stackView.topAnchor.constraint(equalTo: scrollView.topAnchor),
-            stackView.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
-            stackView.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
-            stackView.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
-            stackView.heightAnchor.constraint(equalTo: scrollView.heightAnchor)
-        ])
-    }
-    
-    func setTags(_ tags: [Tag]) {
-        //print("DEBUG: TagsContainerView - Setting \(tags.count) tags")
-        
-        // Remove existing tags
-        stackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        
-        // Add new tags
-        for tag in tags {
-            print("DEBUG: TagsContainerView - Adding tag: \(tag.name)")
-            let tagView = createTagView(for: tag)
-            stackView.addArrangedSubview(tagView)
-        }
-        
-        // Update visibility based on if we have tags
-        isHidden = tags.isEmpty
-        //print("DEBUG: TagsContainerView - Container hidden: \(isHidden)")
-        
-        // Force layout update
-        setNeedsLayout()
-        layoutIfNeeded()
-    }
-    
-    private func createTagView(for tag: Tag) -> UIView {
-        // Create container view
-        let tagView = UIView()
-        tagView.backgroundColor = UIColor(hex: tag.colorHex).withAlphaComponent(0.2)
-        tagView.layer.cornerRadius = 12
-        tagView.translatesAutoresizingMaskIntoConstraints = false
-        
-        // Create label
-        let label = UILabel()
-        label.text = tag.name
-        label.font = UIFont.systemFont(ofSize: 12, weight: .medium)
-        label.textColor = UIColor(hex: tag.colorHex)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        
-        // Add to container
-        tagView.addSubview(label)
-        
-        // Set constraints
-        NSLayoutConstraint.activate([
-            tagView.heightAnchor.constraint(equalToConstant: 24),
-            
-            label.topAnchor.constraint(equalTo: tagView.topAnchor, constant: 4),
-            label.leadingAnchor.constraint(equalTo: tagView.leadingAnchor, constant: 8),
-            label.trailingAnchor.constraint(equalTo: tagView.trailingAnchor, constant: -8),
-            label.bottomAnchor.constraint(equalTo: tagView.bottomAnchor, constant: -4)
-        ])
-        
-        return tagView
-    }
-}
-
 class EnhancedRSSCell: UITableViewCell {
     static let identifier = "EnhancedRSSCell"
 
@@ -196,8 +95,6 @@ class EnhancedRSSCell: UITableViewCell {
         return view
     }()
 
-    // Tags container
-    private let tagsContainerView = TagsContainerView()
 
     // Constraints that we'll need to modify based on settings
     private var titleToPreviewConstraint: NSLayoutConstraint?
@@ -206,8 +103,6 @@ class EnhancedRSSCell: UITableViewCell {
     private var imageToPreviewConstraint: NSLayoutConstraint?
     private var imageWidthConstraint: NSLayoutConstraint?
     private var imageHeightConstraint: NSLayoutConstraint?
-    private var tagsToBottomConstraint: NSLayoutConstraint?
-    private var previewToTagsConstraint: NSLayoutConstraint?
 
     // Track if we should display action buttons (hide on macOS Catalyst)
     private var shouldShowActionButtons: Bool {
@@ -232,7 +127,6 @@ class EnhancedRSSCell: UITableViewCell {
         cardView.addSubview(titleLabel)
         cardView.addSubview(articleImageView) // Kept but hidden
         cardView.addSubview(previewTextLabel)
-        cardView.addSubview(tagsContainerView)
         cardView.addSubview(sourceLabel)
         cardView.addSubview(timeAgoLabel)
         cardView.addSubview(cacheIndicator)
@@ -281,9 +175,6 @@ class EnhancedRSSCell: UITableViewCell {
             previewTextLabel.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 8),
             previewTextLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -8),
             
-            // Tags
-            tagsContainerView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 8),
-            tagsContainerView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -8),
             
             // Source
             sourceLabel.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 8),
@@ -311,16 +202,11 @@ class EnhancedRSSCell: UITableViewCell {
         imageWidthConstraint = articleImageView.widthAnchor.constraint(equalTo: cardView.widthAnchor, constant: -32)
         imageHeightConstraint = articleImageView.heightAnchor.constraint(equalToConstant: 150)
         
-        // Tags constraints
-        tagsToBottomConstraint = sourceLabel.topAnchor.constraint(equalTo: tagsContainerView.bottomAnchor, constant: 8)
-        previewToTagsConstraint = tagsContainerView.topAnchor.constraint(equalTo: previewTextLabel.bottomAnchor, constant: 8)
         
         // Default layout is title directly to source/time (compact view)
         sourceLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8).isActive = true
         timeAgoLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8).isActive = true
         
-        // Hide tags container by default
-        tagsContainerView.isHidden = true
     }
     
     // Basic configure method
@@ -349,8 +235,6 @@ class EnhancedRSSCell: UITableViewCell {
         // Set preview text based on user preferences
         configurePreviewText(item: item)
 
-        // Configure tags
-        configureTags(item: item)
 
         // Set cache indicator visibility
         cacheIndicator.isHidden = !isCached
@@ -423,7 +307,6 @@ class EnhancedRSSCell: UITableViewCell {
         // Deactivate constraints
         previewToBottomConstraint?.isActive = false
         titleToPreviewConstraint?.isActive = false
-        previewToTagsConstraint?.isActive = false
 
         guard previewMode != "none", let description = item.description else {
             return
@@ -461,13 +344,8 @@ class EnhancedRSSCell: UITableViewCell {
             // Activate preview text constraints
             titleToPreviewConstraint?.isActive = true
             
-            // If tags are visible, connect preview to tags
-            if !tagsContainerView.isHidden {
-                previewToTagsConstraint?.isActive = true
-            } else {
-                // Otherwise connect preview to bottom
-                previewToBottomConstraint?.isActive = true
-            }
+            // Connect preview to bottom
+            previewToBottomConstraint?.isActive = true
         }
     }
     
@@ -484,65 +362,6 @@ class EnhancedRSSCell: UITableViewCell {
         imageHeightConstraint?.isActive = false
     }
     
-    private func configureTags(item: RSSItem) {
-        // Reset tags
-        tagsContainerView.setTags([])
-        
-        // Deactivate tag constraints
-        tagsToBottomConstraint?.isActive = false
-        previewToTagsConstraint?.isActive = false
-        
-        // Hide tags container initially until we get tags
-        tagsContainerView.isHidden = true
-        
-        //print("DEBUG: EnhancedRSSCell - Fetching tags for item: \(item.title)")
-        //print("DEBUG: EnhancedRSSCell - Item link: \(item.link)")
-        
-        // Fetch tags for the item
-        item.getTags { [weak self] result in
-            guard let self = self else { return }
-            
-            DispatchQueue.main.async {
-                switch result {
-                case .success(let tags):
-                    //print("DEBUG: EnhancedRSSCell - Got \(tags.count) tags for item: \(item.title)")
-                    if !tags.isEmpty {
-                        // Log each tag
-                        for tag in tags {
-                            print("DEBUG: EnhancedRSSCell - Tag: \(tag.name), Color: \(tag.colorHex)")
-                        }
-                        
-                        // Set tags in the container
-                        self.tagsContainerView.setTags(tags)
-                        self.tagsContainerView.isHidden = false
-                        
-                        // Activate constraints
-                        self.tagsToBottomConstraint?.isActive = true
-                        
-                        // If preview is visible, connect preview to tags
-                        if !self.previewTextLabel.isHidden {
-                            self.previewToTagsConstraint?.isActive = true
-                            self.previewToBottomConstraint?.isActive = false
-                        }
-                        
-                        // Force layout update
-                        self.setNeedsLayout()
-                        self.layoutIfNeeded()
-                        
-                        print("DEBUG: EnhancedRSSCell - Tags container is now visible: \(!self.tagsContainerView.isHidden)")
-                    } else {
-                        // If no tags, hide the container
-                        self.tagsContainerView.isHidden = true
-                        //print("DEBUG: EnhancedRSSCell - No tags, hiding container")
-                    }
-                case .failure(let error):
-                    // If tags fetch fails, keep tags hidden
-                    self.tagsContainerView.isHidden = true
-                    print("DEBUG: EnhancedRSSCell - Failed to get tags: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
     
     private func extractImageUrl(from htmlString: String) -> String? {
         // Simple regex to extract image URL from html content

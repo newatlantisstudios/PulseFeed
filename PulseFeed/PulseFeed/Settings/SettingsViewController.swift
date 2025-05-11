@@ -426,17 +426,12 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                            self?.openHierarchicalFolders()
                        },
                        icon: UIImage(systemName: "folder.fill")),
-            .navigation(title: "Smart Folders", 
+            .navigation(title: "Smart Folders",
                        action: { [weak self] in
                            self?.openSmartFolders()
                        },
                        icon: UIImage(systemName: "folder.badge.gearshape")),
-            .navigation(title: "Tags Management", 
-                       action: { [weak self] in
-                           self?.openTagManagement()
-                       },
-                       icon: UIImage(systemName: "tag.fill")),
-            .navigation(title: "Refresh Intervals", 
+            .navigation(title: "Refresh Intervals",
                        action: { [weak self] in
                            self?.openRefreshIntervals()
                        },
@@ -789,11 +784,6 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     @objc private func openSmartFolders() {
         let smartFoldersVC = SmartFolderViewController()
         navigationController?.pushViewController(smartFoldersVC, animated: true)
-    }
-    
-    @objc private func openTagManagement() {
-        let tagManagementVC = TagManagementViewController()
-        navigationController?.pushViewController(tagManagementVC, animated: true)
     }
     
     @objc private func openRSSLoadingSpeeds() {

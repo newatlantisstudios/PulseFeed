@@ -435,36 +435,19 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
                 }
             }
             
-            // Add tags to secondary text if any
-            item.getTags { result in
-                if case .success(let tags) = result, !tags.isEmpty {
-                    DispatchQueue.main.async {
-                        var tagText = ""
-                        for (index, tag) in tags.enumerated() {
-                            if index == 0 {
-                                tagText += " • 🏷️ "
-                            } else {
-                                tagText += ", "
-                            }
-                            tagText += tag.name
-                        }
-                        
-                        // Update config with tags
-                        var updatedConfig = cell.defaultContentConfiguration()
-                        updatedConfig.text = config.text
-                        updatedConfig.secondaryText = secondaryText + tagText
-                        
-                        // Apply text properties
-                        updatedConfig.textProperties.color = isItemRead ? AppColors.secondary : AppColors.accent
-                        updatedConfig.secondaryTextProperties.color = AppColors.secondary
-                        updatedConfig.secondaryTextProperties.font = .systemFont(ofSize: 12)
-                        updatedConfig.textProperties.font = .systemFont(ofSize: storedFontSize, weight: isItemRead ? .regular : .medium)
-                        
-                        // Update cell
-                        cell.contentConfiguration = updatedConfig
-                    }
-                }
-            }
+            // Apply text properties to cell
+            var updatedConfig = cell.defaultContentConfiguration()
+            updatedConfig.text = config.text
+            updatedConfig.secondaryText = secondaryText
+
+            // Apply text properties
+            updatedConfig.textProperties.color = isItemRead ? AppColors.secondary : AppColors.accent
+            updatedConfig.secondaryTextProperties.color = AppColors.secondary
+            updatedConfig.secondaryTextProperties.font = .systemFont(ofSize: 12)
+            updatedConfig.textProperties.font = .systemFont(ofSize: storedFontSize, weight: isItemRead ? .regular : .medium)
+
+            // Update cell
+            cell.contentConfiguration = updatedConfig
             
             config.secondaryText = secondaryText
             
@@ -662,14 +645,6 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             }
             readingActions.append(cacheAction)
             
-            // MANAGE TAGS ACTION
-            let tagsAction = UIAction(
-                title: "Manage Tags",
-                image: UIImage(systemName: "tag")
-            ) { [weak self] _ in
-                self?.showTagManager(for: item)
-            }
-            organizingActions.append(tagsAction)
             
             // MARK ABOVE AS READ ACTION
             if indexPath.row > 0 {
@@ -706,153 +681,6 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
         }
     }
     
-    func showTagManager(for item: RSSItem) {
-        // Create alert controller
-        let alert = UIAlertController(title: "Manage Tags", message: "Apply tags to this article", preferredStyle: .actionSheet)
-        
-        // First, get all existing tags
-        StorageManager.shared.getTags { [weak self] result in
-            guard let self = self else { return }
-            
-            DispatchQueue.main.async {
-                switch result {
-                case .success(let tags):
-                    // Get the tags for this item
-                    item.getTags { itemTagsResult in
-                        let itemTags: [Tag]
-                        if case .success(let tags) = itemTagsResult {
-                            itemTags = tags
-                        } else {
-                            itemTags = []
-                        }
-                        
-                        // Add actions for each existing tag
-                        for tag in tags.sorted(by: { $0.name < $1.name }) {
-                            let isTagged = itemTags.contains { $0.id == tag.id }
-                            let action = UIAlertAction(
-                                title: isTagged ? "✓ \(tag.name)" : tag.name,
-                                style: isTagged ? .destructive : .default
-                            ) { _ in
-                                // Toggle the tag
-                                if isTagged {
-                                    // Remove tag
-                                    item.removeTag(tag) { [weak self] result in
-                                        if case .success = result {
-                                            // Force refresh the table
-                                            DispatchQueue.main.async {
-                                                self?.tableView.reloadData()
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    // Add tag
-                                    item.addTag(tag) { [weak self] result in
-                                        if case .success = result {
-                                            // Force refresh the table
-                                            DispatchQueue.main.async {
-                                                self?.tableView.reloadData()
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            alert.addAction(action)
-                        }
-                        
-                        // Add an action to create a new tag
-                        alert.addAction(UIAlertAction(title: "Create New Tag", style: .default) { [weak self] _ in
-                            self?.showCreateTagDialog(for: item)
-                        })
-                        
-                        // Add cancel action
-                        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-                        
-                        // Present alert
-                        if let popoverController = alert.popoverPresentationController {
-                            popoverController.sourceView = self.view
-                            popoverController.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
-                            popoverController.permittedArrowDirections = []
-                        }
-                        
-                        self.present(alert, animated: true)
-                    }
-                    
-                case .failure:
-                    // If we can't get tags, just show the create new tag option
-                    alert.addAction(UIAlertAction(title: "Create New Tag", style: .default) { [weak self] _ in
-                        self?.showCreateTagDialog(for: item)
-                    })
-                    alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-                    
-                    if let popoverController = alert.popoverPresentationController {
-                        popoverController.sourceView = self.view
-                        popoverController.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
-                        popoverController.permittedArrowDirections = []
-                    }
-                    
-                    self.present(alert, animated: true)
-                }
-            }
-        }
-    }
-    
-    func showCreateTagDialog(for item: RSSItem? = nil) {
-        let alert = UIAlertController(
-            title: "New Tag",
-            message: "Enter a name for the new tag",
-            preferredStyle: .alert
-        )
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Tag Name"
-        }
-        
-        alert.addAction(UIAlertAction(title: "Create", style: .default) { [weak self] _ in
-            guard let self = self,
-                  let tagName = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !tagName.isEmpty else {
-                return
-            }
-            
-            // Create the tag
-            StorageManager.shared.createTag(name: tagName) { result in
-                switch result {
-                case .success(let newTag):
-                    // If we have an item, add the tag to it
-                    if let item = item {
-                        item.addTag(newTag) { [weak self] tagResult in
-                            if case .success = tagResult {
-                                // Force refresh the table
-                                DispatchQueue.main.async {
-                                    self?.tableView.reloadData()
-                                }
-                            }
-                        }
-                    } else {
-                        // Just reload the table to reflect any changes
-                        DispatchQueue.main.async {
-                            self.tableView.reloadData()
-                        }
-                    }
-                case .failure:
-                    // Show error message
-                    let errorAlert = UIAlertController(
-                        title: "Error",
-                        message: "Failed to create tag",
-                        preferredStyle: .alert
-                    )
-                    errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
-                    DispatchQueue.main.async {
-                        self.present(errorAlert, animated: true)
-                    }
-                }
-            }
-        })
-        
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        
-        present(alert, animated: true)
-    }
 
     func tableView(
         _ tableView: UITableView, didSelectRowAt indexPath: IndexPath
@@ -1177,36 +1005,6 @@ extension HomeFeedViewController: UITableViewDelegate, UITableViewDataSource, UI
             
             cell.contentConfiguration = config
             
-            // Add tags to secondary text if any (for standard cells)
-            item.getTags { result in
-                if case .success(let tags) = result, !tags.isEmpty {
-                    DispatchQueue.main.async {
-                        var tagText = ""
-                        for (index, tag) in tags.enumerated() {
-                            if index == 0 {
-                                tagText += " • 🏷️ "
-                            } else {
-                                tagText += ", "
-                            }
-                            tagText += tag.name
-                        }
-                        
-                        // Update config with tags
-                        var updatedConfig = cell.defaultContentConfiguration()
-                        updatedConfig.text = config.text
-                        updatedConfig.secondaryText = secondaryText + tagText
-                        
-                        // Apply text properties
-                        updatedConfig.textProperties.color = isItemRead ? AppColors.secondary : AppColors.accent
-                        updatedConfig.secondaryTextProperties.color = AppColors.secondary
-                        updatedConfig.secondaryTextProperties.font = .systemFont(ofSize: 12)
-                        updatedConfig.textProperties.font = .systemFont(ofSize: storedFontSize, weight: isItemRead ? .regular : .medium)
-                        
-                        // Update cell
-                        cell.contentConfiguration = updatedConfig
-                    }
-                }
-            }
         }
     }
 

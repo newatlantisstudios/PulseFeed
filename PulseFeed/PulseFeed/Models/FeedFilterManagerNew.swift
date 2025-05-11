@@ -55,7 +55,7 @@ class FeedFilterManagerNew {
         }
         
         return items.filter { item in
-            return currentFilterOption.matchesItem(item, tagManager: TagManager.shared)
+            return currentFilterOption.matchesItem(item)
         }
     }
     
@@ -136,23 +136,4 @@ class FeedFilterManagerNew {
     }
 }
 
-/// Extension to RSSItem for the filtering functionality
-extension RSSItem {
-    func hasTag(withId tagId: String) -> Bool {
-        // Create a dispatch semaphore to make this synchronous
-        let semaphore = DispatchSemaphore(value: 0)
-        var hasMatchingTag = false
-        
-        // Use the getTags method which is already defined in RSSItem
-        getTags { result in
-            if case .success(let tags) = result {
-                hasMatchingTag = tags.contains { $0.id == tagId }
-            }
-            semaphore.signal()
-        }
-        
-        // Wait for the result
-        _ = semaphore.wait(timeout: .now() + 1.0) // Timeout after 1 second
-        return hasMatchingTag
-    }
-}
+// Tag functionality has been removed

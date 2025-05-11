@@ -245,9 +245,9 @@ class SortFilterView: UIView {
             return
         }
         
-        // For tag operations, show tag picker
+        // Tag operations have been removed
         if field == FilterFieldOption.tag {
-            showTagPicker(for: operation)
+            // Skip tag picker as functionality has been removed
             return
         }
         
@@ -395,63 +395,19 @@ class SortFilterView: UIView {
         }
     }
     
+    // Tag picker functionality has been removed
     private func showTagPicker(for operation: FilterOperationType) {
+        // Tag functionality has been removed
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
            let rootViewController = windowScene.windows.first?.rootViewController {
-            
-            // Get all tags from storage
-            StorageManager.shared.getTags { [weak self, weak rootViewController] result in
-                guard let self = self else { return }
-                
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success(let tags):
-                        if tags.isEmpty {
-                            // No tags available
-                            let alert = UIAlertController(
-                                title: "No Tags",
-                                message: "You don't have any tags yet. Create tags in the article context menu.",
-                                preferredStyle: .alert
-                            )
-                            alert.addAction(UIAlertAction(title: "OK", style: .default))
-                            rootViewController?.present(alert, animated: true)
-                        } else {
-                            // Show tag selection
-                            let alert = UIAlertController(
-                                title: "Select Tag",
-                                message: nil,
-                                preferredStyle: .actionSheet
-                            )
-                            
-                            for tag in tags.sorted(by: { $0.name < $1.name }) {
-                                let action = UIAlertAction(title: tag.name, style: .default) { [weak self] _ in
-                                    self?.addFilterRule(field: FilterFieldOption.tag, operation: operation, value: tag.id)
-                                }
-                                alert.addAction(action)
-                            }
-                            
-                            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-                            
-                            // For iPad, set source view
-                            if let popover = alert.popoverPresentationController {
-                                popover.sourceView = self.filterButton
-                                popover.sourceRect = self.filterButton.bounds
-                            }
-                            
-                            rootViewController?.present(alert, animated: true)
-                        }
-                    case .failure:
-                        // Error loading tags
-                        let alert = UIAlertController(
-                            title: "Error",
-                            message: "Could not load tags. Please try again.",
-                            preferredStyle: .alert
-                        )
-                        alert.addAction(UIAlertAction(title: "OK", style: .default))
-                        rootViewController?.present(alert, animated: true)
-                    }
-                }
-            }
+
+            let alert = UIAlertController(
+                title: "Feature Unavailable",
+                message: "Tag filtering has been removed from the app.",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            rootViewController.present(alert, animated: true)
         }
     }
     
@@ -577,30 +533,7 @@ class SortFilterView: UIView {
             return "Read Status \(rule.operation == .isTrue ? "is Read" : "is Unread")"
             
         case .tag:
-            // Try to get the tag name
-            var tagName = "Tag ID: \(rule.value)"
-            
-            // Use a semaphore to make this synchronous
-            let semaphore = DispatchSemaphore(value: 0)
-            
-            StorageManager.shared.getTag(id: rule.value) { result in
-                if case .success(let tag) = result {
-                    tagName = tag.name
-                } else {
-                    // Fallback to loading all tags and finding the matching one
-                    StorageManager.shared.load(forKey: "tags") { (result: Result<[Tag], Error>) in
-                        if case .success(let tags) = result, let tag = tags.first(where: { $0.id == rule.value }) {
-                            tagName = tag.name
-                        }
-                    }
-                }
-                semaphore.signal()
-            }
-            
-            // Wait for the async operation to complete (with timeout)
-            _ = semaphore.wait(timeout: .now() + 1.0)
-            
-            return "Tag \(rule.operation == .equals ? "is" : "is not") \(tagName)"
+            return "Tag filtering has been removed"
             
         case .dateRange:
             // Format the date nicely
