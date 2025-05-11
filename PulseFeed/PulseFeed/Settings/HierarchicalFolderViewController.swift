@@ -1522,12 +1522,6 @@ class HierarchicalFeedSelectionViewController: UIViewController, UITableViewDele
         // Return true only if user explicitly taps to deselect, otherwise we want to maintain selection
         return true
     }
-
-    // The most important part - manually handle cell highlighting and selection
-    func tableView(_ tableView: UITableView, willSelectRowAt indexPath: IndexPath) -> IndexPath? {
-        print("DEBUG-MULTI: ⚠️ willSelectRowAt called for index \(indexPath.row)")
-        return indexPath
-    }
 }
 
 // MARK: - Hierarchical Folder Feeds View Controller
@@ -1632,13 +1626,16 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
     private var selectedFeeds: Set<String> = []
 
     private lazy var tableView: UITableView = {
-        let table = UITableView()
+        let table = UITableView(frame: .zero, style: .plain)
         table.delegate = self
         table.dataSource = self
         table.backgroundColor = AppColors.background
-        table.register(UITableViewCell.self, forCellReuseIdentifier: "FolderFeedCell")
+        // Do NOT register the cell class here, so we can use .subtitle style in cellForRowAt
         table.translatesAutoresizingMaskIntoConstraints = false
         table.allowsMultipleSelection = true // Always allow multiple selection
+        table.allowsMultipleSelectionDuringEditing = true
+        table.allowsSelection = true // Explicitly allow selection
+        table.allowsSelectionDuringEditing = true // Explicitly allow selection during editing
         return table
     }()
 
@@ -1667,16 +1664,15 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
         setupRefreshControl()
         setupNavigationBar()
 
-        // Explicitly enable multiple selection for deletion and make it very clear
         tableView.allowsMultipleSelection = true
         tableView.allowsMultipleSelectionDuringEditing = true
-        // For iOS 13+ users who might long-press, make sure that works too
         if #available(iOS 13.0, *) {
             tableView.allowsMultipleSelectionDuringEditing = true
         }
-        print("DEBUG-MULTI: Multiple selection explicitly enabled in HierarchicalFolderFeedsViewController")
-        print("DEBUG-MULTI: allowsMultipleSelection = \(tableView.allowsMultipleSelection)")
-        print("DEBUG-MULTI: allowsMultipleSelectionDuringEditing = \(tableView.allowsMultipleSelectionDuringEditing)")
+        // Do NOT set editing mode here; only toggle via Select/Cancel
+        print("DEBUG-MULTI: viewDidLoad - allowsMultipleSelection = \(tableView.allowsMultipleSelection)")
+        print("DEBUG-MULTI: viewDidLoad - allowsMultipleSelectionDuringEditing = \(tableView.allowsMultipleSelectionDuringEditing)")
+        print("DEBUG-MULTI: viewDidLoad - isEditing = \(tableView.isEditing)")
 
         // Add a clear visual indicator in the view to explain multiple selection
         let infoLabel = UILabel()
@@ -1873,19 +1869,17 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
         )
         backButton.tintColor = .systemBlue
 
-        // Add delete button (initially disabled)
-        let deleteButton = UIBarButtonItem(
-            title: "Delete (0)",
-            style: .plain,
-            target: self,
-            action: #selector(removeFeedsButtonTapped)
-        )
-        deleteButton.tintColor = .systemRed
-        deleteButton.isEnabled = false
+        // Select and Cancel buttons
+        selectButton = UIBarButtonItem(title: "Select", style: .plain, target: self, action: #selector(selectButtonTapped))
+        cancelButton = UIBarButtonItem(title: "Cancel", style: .plain, target: self, action: #selector(selectButtonTapped))
 
-        // Set up navigation items
+        // Delete button
+        deleteButton = UIBarButtonItem(title: "Delete (0)", style: .plain, target: self, action: #selector(removeFeedsButtonTapped))
+        deleteButton?.tintColor = .systemRed
+        deleteButton?.isEnabled = false
+
         navigationItem.leftBarButtonItem = backButton
-        navigationItem.rightBarButtonItem = deleteButton
+        navigationItem.rightBarButtonItems = [selectButton!]
 
         // Create a permanent instructional footer
         let footerContainer = UIView()
@@ -2123,21 +2117,9 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
     // Direct selection mode is now used instead of toggle edit mode
 
     private func updateRemoveButton() {
-        // Update the Delete button based on selection count
         let count = selectedFeeds.count
-        navigationItem.rightBarButtonItem?.title = "Delete (\(count))"
-        navigationItem.rightBarButtonItem?.isEnabled = count > 0
-
-        // If no items are selected, we need to make sure the table is still showing
-        if count == 0 && tableView.isHidden {
-            tableView.isHidden = false
-
-            // Force layout and reload if table is empty
-            if tableView.numberOfRows(inSection: 0) == 0 && !feeds.isEmpty {
-                print("DEBUG-PERSIST: Table is hidden with zero rows but \(feeds.count) feeds exist - force reload")
-                tableView.reloadData()
-            }
-        }
+        deleteButton?.title = "Delete (\(count))"
+        deleteButton?.isEnabled = isEditingFeeds && count > 0
     }
 
     @objc private func removeFeedsButtonTapped() {
@@ -2298,7 +2280,13 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
 
             // Continue with loading feeds using the latest folder data
             DispatchQueue.main.async {
+                let wasEditing = self.tableView.isEditing
                 self.proceedWithLoadingFeeds()
+                // Restore editing state if needed
+                if wasEditing {
+                    self.tableView.setEditing(true, animated: false)
+                    print("DEBUG: loadFeeds - Restored editing mode after reload. tableView.isEditing = \(self.tableView.isEditing)")
+                }
             }
         }
     }
@@ -2358,6 +2346,7 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
 
                 // Update on main thread
                 DispatchQueue.main.async {
+                    let wasEditing = self.tableView.isEditing
                     // Store and sort the feeds
                     self.feeds = folderFeeds.sorted { $0.title.lowercased() < $1.title.lowercased() }
 
@@ -2377,6 +2366,12 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
                     print("DEBUG-DELETE: Reloading table data")
                     self.tableView.reloadData()
 
+                    // Restore editing state if needed
+                    if wasEditing {
+                        self.tableView.setEditing(true, animated: false)
+                        print("DEBUG: proceedWithLoadingFeeds - Restored editing mode after reload. tableView.isEditing = \(self.tableView.isEditing)")
+                    }
+
                     // After reloading, verify we have rows showing
                     print("DEBUG-DELETE: Table now has \(self.tableView.numberOfRows(inSection: 0)) visible rows")
 
@@ -2385,6 +2380,10 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
                         print("DEBUG-DELETE: 🚨 Table still empty, forcing another reload")
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                             self.tableView.reloadData()
+                            if wasEditing {
+                                self.tableView.setEditing(true, animated: false)
+                                print("DEBUG: proceedWithLoadingFeeds (delayed) - Restored editing mode after reload. tableView.isEditing = \(self.tableView.isEditing)")
+                            }
                         }
                     }
 
@@ -2452,7 +2451,8 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "FolderFeedCell", for: indexPath)
+        let cell = tableView.dequeueReusableCell(withIdentifier: "FolderFeedCell") ??
+            UITableViewCell(style: .subtitle, reuseIdentifier: "FolderFeedCell")
 
         // Critical crash protection: Ensure we have feeds and the index is valid
         guard !feeds.isEmpty, indexPath.row < feeds.count else {
@@ -2511,17 +2511,30 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
         cell.tag = indexPath.row
         cell.isUserInteractionEnabled = true
 
-        // Show checkmark and blue background if selected
-        if selectedFeeds.contains(feed.url) {
-            cell.accessoryType = .checkmark
-            cell.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.1)
-            tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
-            print("DEBUG-DELETE: Pre-selected cell at index \(indexPath.row)")
+        // Only apply custom selection UI when NOT in editing mode
+        if !tableView.isEditing {
+            let feed = feeds[indexPath.row]
+            if selectedFeeds.contains(feed.url) {
+                cell.accessoryType = .checkmark
+                cell.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.1)
+            } else {
+                cell.accessoryType = .none
+                cell.backgroundColor = UIColor.clear
+            }
+            cell.selectionStyle = .default
         } else {
+            // In editing mode, let UIKit handle the checkmarks
             cell.accessoryType = .none
             cell.backgroundColor = UIColor.clear
+            cell.selectionStyle = .default // Use default selection style in editing mode
         }
-
+        // Remove any gesture recognizers in editing mode
+        if tableView.isEditing, let gestures = cell.gestureRecognizers {
+            for gesture in gestures { cell.removeGestureRecognizer(gesture) }
+        }
+        print("DEBUG-MULTI: cellForRowAt[\(indexPath.row)] - tableView.isEditing = \(tableView.isEditing), cell.isEditing = \(cell.isEditing)")
+        // If you are using a custom cell or table view subclass, ensure you call super.setEditing in setEditing overrides.
+        // If you see cell.isEditing always false here, you may have a custom cell issue.
         return cell
     }
 
@@ -2536,83 +2549,35 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
     // MARK: - UITableViewDelegate Methods
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        print("DEBUG-MULTI: 🔵 Selected row at index \(indexPath.row) in FeedsViewController")
-
-        // Critical crash protection
-        guard indexPath.row < feeds.count else {
-            print("DEBUG-MULTI: ❌ Row index out of bounds: \(indexPath.row), max: \(feeds.count - 1)")
-            tableView.deselectRow(at: indexPath, animated: false)
+        print("DEBUG-MULTI: didSelectRowAt[\(indexPath.row)] - isEditing = \(tableView.isEditing)")
+        if tableView.isEditing {
+            let feed = feeds[indexPath.row]
+            selectedFeeds.insert(feed.url)
+            print("DEBUG-MULTI: didSelectRowAt - selectedFeeds = \(selectedFeeds)")
+            updateRemoveButton()
             return
         }
-
-        let feed = feeds[indexPath.row]
-
-        // Add to selected feeds set
-        selectedFeeds.insert(feed.url)
-        print("DEBUG-MULTI: Selected feed URL: \(feed.url)")
-
-        if let cell = tableView.cellForRow(at: indexPath) {
-            cell.accessoryType = .checkmark
-            print("DEBUG-MULTI: Added checkmark to cell at index \(indexPath.row)")
-
-            // Add a visual indicator by changing the background color
-            cell.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.1)
-
-            // Make sure the rest of the UI knows this row is selected
-            tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
-        }
-
-        // Print currently selected rows
-        let selectedRows = tableView.indexPathsForSelectedRows
-        print("DEBUG-MULTI: Selected rows count: \(selectedRows?.count ?? 0)")
-        print("DEBUG-MULTI: Currently selected rows: \(selectedRows?.map { $0.row } ?? [])")
-
-        // Double verification that multiple selection is working
-        print("DEBUG-MULTI: ✅ allowsMultipleSelection = \(tableView.allowsMultipleSelection)")
-        print("DEBUG-MULTI: ✅ allowsMultipleSelectionDuringEditing = \(tableView.allowsMultipleSelectionDuringEditing)")
-        print("DEBUG-DELETE: Currently selected rows: \(selectedRows?.map { $0.row } ?? [])")
-        print("DEBUG-DELETE: Total selected feeds: \(selectedFeeds.count)")
-
-        updateRemoveButton()
+        // ... (non-editing mode logic, if any) ...
     }
 
     func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
-        print("DEBUG-DELETE: 🔴 Deselected row at index \(indexPath.row) in FeedsViewController")
-
-        // Critical crash protection
-        guard indexPath.row < feeds.count else {
-            print("DEBUG-DELETE: ❌ Row index out of bounds: \(indexPath.row), max: \(feeds.count - 1)")
+        print("DEBUG-MULTI: didDeselectRowAt[\(indexPath.row)] - isEditing = \(tableView.isEditing)")
+        if tableView.isEditing {
+            let feed = feeds[indexPath.row]
+            selectedFeeds.remove(feed.url)
+            print("DEBUG-MULTI: didDeselectRowAt - selectedFeeds = \(selectedFeeds)")
+            updateRemoveButton()
             return
         }
-
-        let feed = feeds[indexPath.row]
-        selectedFeeds.remove(feed.url)
-        print("DEBUG-DELETE: Removed feed URL: \(feed.url)")
-
-        if let cell = tableView.cellForRow(at: indexPath) {
-            cell.accessoryType = .none
-            // Remove visual indicator
-            cell.backgroundColor = UIColor.clear
-        }
-
-        // Print remaining selected rows
-        let selectedRows = tableView.indexPathsForSelectedRows
-        print("DEBUG-DELETE: Remaining selected rows: \(selectedRows?.map { $0.row } ?? [])")
-        print("DEBUG-DELETE: Total selected feeds: \(selectedFeeds.count)")
-
-        updateRemoveButton()
+        // ... (non-editing mode logic, if any) ...
     }
 
     // Handle cell selection more explicitly with validation
     func tableView(_ tableView: UITableView, willSelectRowAt indexPath: IndexPath) -> IndexPath? {
-        print("DEBUG-DELETE: willSelectRowAt called for index \(indexPath.row)")
-
-        // Critical crash protection - validate the index path
-        guard !feeds.isEmpty, indexPath.row < feeds.count else {
-            print("DEBUG-DELETE: ❌ Prevented selection of invalid row \(indexPath.row)")
-            return nil
-        }
-
+        // if tableView.isEditing {
+        //     // Prevent selection when tapping the cell body in editing mode
+        //     return nil
+        // }
         return indexPath
     }
 
@@ -2651,5 +2616,40 @@ class HierarchicalFolderFeedsViewController: UIViewController, UITableViewDelega
                 }
             }
         }
+    }
+
+    @objc private func selectButtonTapped() {
+        isEditingFeeds.toggle()
+        tableView.setEditing(isEditingFeeds, animated: true)
+        print("DEBUG: selectButtonTapped - isEditingFeeds = \(isEditingFeeds), tableView.isEditing = \(tableView.isEditing)")
+        tableView.reloadData() // Force reload to update editing state in cells
+        selectedFeeds.removeAll()
+        updateRemoveButton()
+        if isEditingFeeds {
+            navigationItem.rightBarButtonItems = [cancelButton!, deleteButton!]
+        } else {
+            navigationItem.rightBarButtonItems = [selectButton!]
+        }
+    }
+
+    private var isEditingFeeds = false
+    private var selectButton: UIBarButtonItem?
+    private var cancelButton: UIBarButtonItem?
+    private var deleteButton: UIBarButtonItem?
+
+    // Add these delegate methods with debug prints to trace selection logic
+    func tableView(_ tableView: UITableView, shouldHighlightRowAt indexPath: IndexPath) -> Bool {
+        print("DEBUG-SELECT: shouldHighlightRowAt called for row \(indexPath.row)")
+        return true
+    }
+
+    func tableView(_ tableView: UITableView, shouldSelectRowAt indexPath: IndexPath) -> IndexPath? {
+        print("DEBUG-SELECT: shouldSelectRowAt called for row \(indexPath.row)")
+        return indexPath
+    }
+
+    func tableView(_ tableView: UITableView, shouldDeselectRowAt indexPath: IndexPath) -> Bool {
+        print("DEBUG-SELECT: shouldDeselectRowAt called for row \(indexPath.row)")
+        return true
     }
 }

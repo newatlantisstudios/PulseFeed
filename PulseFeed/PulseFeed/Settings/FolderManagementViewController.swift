@@ -776,6 +776,8 @@ class FolderFeedsViewController: UIViewController, UITableViewDelegate, UITableV
         table.dataSource = self
         table.backgroundColor = AppColors.background
         table.register(UITableViewCell.self, forCellReuseIdentifier: "FolderFeedCell")
+        // Enable multi-selection for bulk delete
+        table.allowsMultipleSelection = true
         table.translatesAutoresizingMaskIntoConstraints = false
         return table
     }()
@@ -989,6 +991,8 @@ class FolderFeedsViewController: UIViewController, UITableViewDelegate, UITableV
             name: Notification.Name("feedFoldersUpdated"),
             object: nil
         )
+        // Setup navigation bar items for bulk delete
+        setupNavigationBar()
     }
 
     private func setupFixedFooter() {
@@ -1050,7 +1054,79 @@ class FolderFeedsViewController: UIViewController, UITableViewDelegate, UITableV
 
     // Variable to track the table bottom inset needed for the footer
     private var tableBottomInset: CGFloat = 44.5
+    // MARK: - Bulk Delete Support
+    private var editMode: Bool = false
+    private var selectedFeeds: Set<String> = []
+    private var editButton: UIBarButtonItem!
+    private var cancelButton: UIBarButtonItem!
+    private var deleteButton: UIBarButtonItem!
+    private func updateDeleteButton() {
+        deleteButton.title = "Delete (\(selectedFeeds.count))"
+        deleteButton.isEnabled = !selectedFeeds.isEmpty
+    }
 
+    // Setup navigation bar items for bulk delete
+    private func setupNavigationBar() {
+        // 'Select' toggles multi-select delete mode
+        editButton = UIBarButtonItem(title: "Select", style: .plain, target: self, action: #selector(editButtonTapped))
+        navigationItem.rightBarButtonItem = editButton
+        // Prepare 'Cancel' and 'Delete' buttons
+        cancelButton = UIBarButtonItem(title: "Cancel", style: .plain, target: self, action: #selector(editButtonTapped))
+        deleteButton = UIBarButtonItem(title: "Delete (0)", style: .plain, target: self, action: #selector(deleteButtonTapped))
+        deleteButton.tintColor = .systemRed
+        deleteButton.isEnabled = false
+    }
+    
+    @objc private func editButtonTapped() {
+        editMode.toggle()
+        if editMode {
+            // Enter selection mode
+            editButton.title = "Cancel"
+            navigationItem.setRightBarButtonItems([cancelButton, deleteButton], animated: true)
+            selectedFeeds.removeAll()
+            tableView.reloadData()
+        } else {
+            // Exit selection mode
+            editButton.title = "Select"
+            navigationItem.setRightBarButtonItems([editButton], animated: true)
+            selectedFeeds.removeAll()
+            tableView.reloadData()
+        }
+    }
+    
+    @objc private func deleteButtonTapped() {
+        let alert = UIAlertController(title: "Delete Feeds", message: "Are you sure you want to delete the selected feeds?", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
+            guard let self = self else { return }
+            self.loadingIndicator.startAnimating()
+            // Remove selected feeds from data and UI
+            let feedsToRemove = Array(self.selectedFeeds)
+            var remaining = self.feeds
+            for url in feedsToRemove {
+                if let idx = remaining.firstIndex(where: { $0.url == url }) {
+                    remaining.remove(at: idx)
+                }
+            }
+            self.feeds = remaining
+            self.tableView.reloadData()
+            // Perform backend deletions
+            let group = DispatchGroup()
+            for url in feedsToRemove {
+                group.enter()
+                StorageManager.shared.removeFeedFromFolder(feedURL: url, folderId: self.folder.id) { _ in
+                    group.leave()
+                }
+            }
+            group.notify(queue: .main) {
+                self.loadingIndicator.stopAnimating()
+                // Exit selection mode
+                self.editButtonTapped()
+            }
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+    }
+    
     // Keep this for compatibility with existing calls
     private func setupTableFooter() {
         // This is now a no-op since we're using a fixed footer
@@ -1583,7 +1659,29 @@ class FolderFeedsViewController: UIViewController, UITableViewDelegate, UITableV
     // MARK: - UITableViewDelegate Methods
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
+        if editMode {
+            // In selection mode, toggle checkmark
+            let feed = feeds[indexPath.row]
+            selectedFeeds.insert(feed.url)
+            if let cell = tableView.cellForRow(at: indexPath) {
+                cell.accessoryType = .checkmark
+            }
+            updateDeleteButton()
+        } else {
+            // Normal mode: no bulk action
+            tableView.deselectRow(at: indexPath, animated: true)
+        }
+    }
+    
+    func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
+        if editMode {
+            let feed = feeds[indexPath.row]
+            selectedFeeds.remove(feed.url)
+            if let cell = tableView.cellForRow(at: indexPath) {
+                cell.accessoryType = .none
+            }
+            updateDeleteButton()
+        }
     }
 
     func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
