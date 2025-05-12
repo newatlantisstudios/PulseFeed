@@ -571,7 +571,12 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                        action: { [weak self] in
                            self?.openTipJar()
                        },
-                       icon: UIImage(systemName: "heart.fill"))
+                       icon: UIImage(systemName: "heart.fill")),
+            .button(title: "Open Source Copyrights", 
+                    action: { [weak self] in
+                        self?.showSwiftSoupCopyright()
+                    },
+                    style: createButtonConfiguration(title: "Open Source Copyrights", color: .systemBlue, symbolName: "doc.text"))
         ])
         
         settingSections = [generalSection, readerSection, feedSection, filtersSection, dataSection, advancedSection, supportSection]
@@ -2018,6 +2023,19 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
             }
         })
         
+        present(alert, animated: true)
+    }
+    
+    // MARK: - Copyright Modal
+    private func showSwiftSoupCopyright() {
+        let copyrightText = """
+Copyright (c) 2009-2025 Jonathan Hedley <https://jsoup.org/>
+Swift port copyright (c) 2016-2025 Nabil Chatbi
+"""
+        let alert = UIAlertController(title: "SwiftSoup Copyright",
+                                      message: copyrightText,
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
     }
 }

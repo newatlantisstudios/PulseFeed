@@ -1,4 +1,5 @@
 import Foundation
+import SwiftSoup
 
 class ContentExtractor {
     
@@ -81,41 +82,47 @@ class ContentExtractor {
     
     // MARK: - Content Extraction
     
-    /// Extracts the readable content from HTML
+    /// Extracts the readable content from HTML using SwiftSoup
     static func extractReadableContent(from html: String, url: URL?) -> String {
         let domain = url?.host ?? ""
-        
-        // First look for schema.org metadata which often contains the full article content
-        if let schemaContent = extractSchemaContent(from: html) {
-            return cleanContent(schemaContent)
-        }
-        
-        // Look for structured article content using common selectors
-        for selector in contentSelectors {
-            if let content = extractContentWithSelector(html: html, selector: selector) {
-                if isValidArticleContent(content) {
-                    return cleanContent(content)
+        do {
+            let doc: Document = try SwiftSoup.parse(html, url?.absoluteString ?? "")
+
+            // First look for schema.org metadata which often contains the full article content
+            if let schemaContent = extractSchemaContent(from: html) {
+                return cleanContent(schemaContent, baseUrl: url)
+            }
+
+            // Look for structured article content using common selectors
+            for selector in contentSelectors {
+                if let element = try? doc.select(selector).first(), let content = try? element.outerHtml() {
+                    if isValidArticleContent(content) {
+                        return cleanContent(content, baseUrl: url)
+                    }
                 }
             }
+
+            // Try site-specific extractors for known domains
+            if let content = extractContentForSpecificSite(doc: doc, html: html, domain: domain) {
+                return cleanContent(content, baseUrl: url)
+            }
+
+            // Fallback: extract article using heuristics
+            if let content = extractArticleUsingHeuristics(doc: doc) {
+                return cleanContent(content, baseUrl: url)
+            }
+
+            // Last resort: just clean up the whole body
+            if let body = try? doc.body(), let bodyContent = try? body.html() {
+                return cleanContent(bodyContent, baseUrl: url)
+            }
+
+            // Ultimate fallback
+            return cleanContent(html, baseUrl: url)
+        } catch {
+            // If SwiftSoup fails, fallback to old method
+            return cleanContent(html, baseUrl: url)
         }
-        
-        // Try site-specific extractors for known domains
-        if let content = extractContentForSpecificSite(html: html, domain: domain) {
-            return cleanContent(content)
-        }
-        
-        // Fallback: extract article using heuristics
-        if let content = extractArticleUsingHeuristics(html: html) {
-            return cleanContent(content)
-        }
-        
-        // Last resort: just clean up the whole body
-        if let bodyContent = extractBody(from: html) {
-            return cleanContent(bodyContent)
-        }
-        
-        // Ultimate fallback
-        return cleanContent(html)
     }
     
     /// Look for schema.org metadata which often contains the full article content
@@ -166,34 +173,32 @@ class ContentExtractor {
         return nil
     }
     
-    /// Site-specific content extraction for known domains
-    private static func extractContentForSpecificSite(html: String, domain: String) -> String? {
-        // Medium and similar platforms
-        if domain.contains("medium.com") || html.contains("data-selectable-paragraph") {
-            let paragraphPattern = "<p[^>]*data-selectable-paragraph[^>]*>(.*?)</p>"
-            let paragraphs = html.matches(for: paragraphPattern)
-            
-            if !paragraphs.isEmpty {
-                return "<article>\(paragraphs.joined())</article>"
+    /// Site-specific content extraction for known domains using SwiftSoup
+    private static func extractContentForSpecificSite(doc: Document, html: String, domain: String) -> String? {
+        do {
+            // Medium and similar platforms
+            if domain.contains("medium.com") || html.contains("data-selectable-paragraph") {
+                let paragraphs = try doc.select("p[data-selectable-paragraph]")
+                if !paragraphs.isEmpty() {
+                    let joined = try paragraphs.map { try $0.outerHtml() }.joined()
+                    return "<article>\(joined)</article>"
+                }
             }
-        }
-        
-        // WordPress sites often use specific content classes
-        if html.contains("wp-content") || html.contains("wordpress") {
-            let wpContentPattern = "<div[^>]*class=[\"'].*?\\b(wp-content|entry-content)\\b.*?[\"'][^>]*>(.*?)</div>"
-            if let wpContent = html.firstMatch(for: wpContentPattern) {
-                return wpContent
+            // WordPress sites
+            if html.contains("wp-content") || html.contains("wordpress") {
+                if let wpContent = try doc.select(".wp-content, .entry-content").first() {
+                    return try wpContent.outerHtml()
+                }
             }
-        }
-        
-        // Substack newsletters
-        if domain.contains("substack.com") {
-            let substackPattern = "<div[^>]*class=[\"'].*?\\bpost-content\\b.*?[\"'][^>]*>(.*?)</div>"
-            if let substackContent = html.firstMatch(for: substackPattern) {
-                return substackContent
+            // Substack newsletters
+            if domain.contains("substack.com") {
+                if let substackContent = try doc.select(".post-content").first() {
+                    return try substackContent.outerHtml()
+                }
             }
+        } catch {
+            return nil
         }
-        
         return nil
     }
     
@@ -209,278 +214,98 @@ class ContentExtractor {
         return paragraphCount >= 2 && textLength > 500
     }
     
-    /// Attempts to extract content matching a CSS-like selector (simplified implementation)
-    private static func extractContentWithSelector(html: String, selector: String) -> String? {
-        // Handle ID selector (e.g., "#content")
-        if selector.hasPrefix("#") {
-            let id = selector.dropFirst()
-            let pattern = "<[^>]*\\bid=[\"\']\\s*\(id)\\s*[\"\'][^>]*>(.*?)</.*?>"
-            if let match = html.firstMatch(for: pattern) {
-                return match
-            }
-        }
-        
-        // Handle class selector (e.g., ".content")
-        else if selector.hasPrefix(".") {
-            let className = selector.dropFirst()
-            let pattern = "<[^>]*\\bclass=[\"\'].*?\\b\(className)\\b.*?[\"\'][^>]*>(.*?)</.*?>"
-            if let match = html.firstMatch(for: pattern) {
-                return match
-            }
-        }
-        
-        // Handle tag selector (e.g., "article")
-        else {
-            let pattern = "<\(selector)[^>]*>(.*?)</\(selector)>"
-            if let match = html.firstMatch(for: pattern) {
-                return match
-            }
-        }
-        
-        return nil
-    }
-    
-    /// Extracts article content using basic heuristics
-    private static func extractArticleUsingHeuristics(html: String) -> String? {
-        // Find the div with the most paragraphs and a reasonable text density
-        let divPattern = "<div[^>]*>(.*?)</div>"
-        let divMatches = html.matches(for: divPattern)
-        
-        var bestDiv = ""
-        var maxScore = 0
-        
-        for div in divMatches {
-            let paragraphs = div.matches(for: "<p[^>]*>.*?</p>")
-            let paragraphCount = paragraphs.count
-            
-            // Skip very small divs
-            if paragraphCount < 3 {
-                continue
-            }
-            
-            // Calculate the text density (ratio of text to HTML)
-            let textContent = div.removingHTMLTags()
-            let textLength = textContent.count
-            let htmlLength = div.count
-            
-            guard htmlLength > 0 else { continue }
-            
-            let textDensity = Double(textLength) / Double(htmlLength)
-            
-            // Calculate a score based on paragraph count and text density
-            let score = Int(Double(paragraphCount) * textDensity * 100)
-            
-            // Check for keywords that indicate good content
-            let contentKeywords = ["article", "content", "story", "post", "text", "body"]
-            var keywordBonus = 0
-            
-            for keyword in contentKeywords {
-                if div.lowercased().contains(keyword) {
-                    keywordBonus += 20
+    /// Attempts to extract article content using heuristics (find div with most paragraphs and text density)
+    private static func extractArticleUsingHeuristics(doc: Document) -> String? {
+        do {
+            let divs = try doc.select("div")
+            var bestDiv: Element?
+            var maxScore = 0.0
+            for div in divs.array() {
+                let paragraphs = try div.select("p")
+                let paragraphCount = paragraphs.size()
+                if paragraphCount < 3 { continue }
+                let textContent = try div.text()
+                let textLength = textContent.count
+                let htmlLength = try div.outerHtml().count
+                guard htmlLength > 0 else { continue }
+                let textDensity = Double(textLength) / Double(htmlLength)
+                let score = Double(paragraphCount) * textDensity * 100.0
+                let contentKeywords = ["article", "content", "story", "post", "text", "body"]
+                var keywordBonus = 0.0
+                let divHtml = try div.outerHtml().lowercased()
+                for keyword in contentKeywords {
+                    if divHtml.contains(keyword) { keywordBonus += 20.0 }
+                }
+                let finalScore = score + keywordBonus
+                if finalScore > maxScore {
+                    maxScore = finalScore
+                    bestDiv = div
                 }
             }
-            
-            // Apply the bonus to the score
-            let finalScore = score + keywordBonus
-            
-            if finalScore > maxScore {
-                maxScore = finalScore
-                bestDiv = div
+            if let bestDiv = bestDiv, maxScore > 50 {
+                return try bestDiv.outerHtml()
             }
-        }
-        
-        // If we found a good candidate, return it
-        if maxScore > 50 && !bestDiv.isEmpty {
-            return bestDiv
-        }
-        
-        return nil
-    }
-    
-    /// Extracts the body content from HTML
-    private static func extractBody(from html: String) -> String? {
-        let pattern = "<body[^>]*>(.*?)</body>"
-        if let match = html.firstMatch(for: pattern) {
-            return match
+        } catch {
+            return nil
         }
         return nil
     }
     
-    /// Cleans the extracted content for better readability
-    private static func cleanContent(_ content: String) -> String {
-        var cleanedContent = content
-        
-        // First, preserve certain elements we want to keep
-        cleanedContent = preserveImportantElements(cleanedContent)
-        
-        // Remove unwanted elements
-        for selector in removeSelectors {
-            if selector.hasPrefix(".") {
-                let className = selector.dropFirst()
-                let pattern = "<[^>]*\\bclass=[\"\'].*?\\b\(className)\\b.*?[\"\'][^>]*>.*?</.*?>"
-                cleanedContent = cleanedContent.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
-            } else if selector.hasPrefix("#") {
-                let id = selector.dropFirst()
-                let pattern = "<[^>]*\\bid=[\"\'].*?\(id).*?[\"\'][^>]*>.*?</.*?>"
-                cleanedContent = cleanedContent.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
-            } else if selector.hasPrefix("[") && selector.contains("*=") {
-                // Handle attribute contains selector like [class*='ad-']
-                let parts = selector.dropFirst().dropLast().components(separatedBy: "*=")
-                if parts.count == 2 {
-                    let attr = parts[0]
-                    var value = parts[1]
-                    // Remove quotes from value
-                    value = value.replacingOccurrences(of: "'", with: "").replacingOccurrences(of: "\"", with: "")
-                    let pattern = "<[^>]*\\b\(attr)=[\"\'].*?\(value).*?[\"\'][^>]*>.*?</.*?>"
-                    cleanedContent = cleanedContent.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
-                }
-            } else if selector.contains(":not") {
-                // Special handling for :not pseudo-selector
-                // This is simplified - a real implementation would need more robust parsing
-                continue
-            } else {
-                let pattern = "<\(selector)[^>]*>.*?</\(selector)>"
-                cleanedContent = cleanedContent.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+    /// Cleans the extracted content for better readability using SwiftSoup
+    private static func cleanContent(_ content: String, baseUrl: URL?) -> String {
+        do {
+            let doc = try SwiftSoup.parseBodyFragment(content, baseUrl?.absoluteString ?? "")
+            // Remove unwanted elements
+            for selector in removeSelectors {
+                try doc.select(selector).remove()
             }
-        }
-        
-        // Remove inline scripts and styles
-        cleanedContent = cleanedContent.replacingOccurrences(of: "<script[^>]*>.*?</script>", with: "", options: .regularExpression)
-        cleanedContent = cleanedContent.replacingOccurrences(of: "<style[^>]*>.*?</style>", with: "", options: .regularExpression)
-        cleanedContent = cleanedContent.replacingOccurrences(of: "<!--.*?-->", with: "", options: .regularExpression)
-        
-        // Clean tracking attributes from remaining elements
-        cleanedContent = cleanAttributesFromTags(cleanedContent)
-        
-        // Fix relative URLs for images
-        cleanedContent = fixRelativeImageUrls(cleanedContent)
-        
-        // Remove empty paragraphs and excessive breaks
-        cleanedContent = cleanedContent.replacingOccurrences(of: "<p>\\s*</p>", with: "", options: .regularExpression)
-        cleanedContent = cleanedContent.replacingOccurrences(of: "<br>\\s*<br>\\s*<br>", with: "<br><br>", options: .regularExpression)
-        
-        // Fix unclosed tags and cleanup HTML structure
-        cleanedContent = fixBrokenHtml(cleanedContent)
-        
-        return cleanedContent
-    }
-    
-    /// Preserves important elements like images and embedded videos before cleaning
-    private static func preserveImportantElements(_ html: String) -> String {
-        var processedHtml = html
-        
-        // Preserve images with proper attributes
-        let imgPattern = "<img[^>]*src=[\"'](.*?)[\"'][^>]*>"
-        let imgMatches = html.matches(for: imgPattern)
-        
-        for imgTag in imgMatches {
-            // Extract the source URL
-            if let srcRange = imgTag.range(of: "src=[\"'](.*?)[\"']", options: .regularExpression),
-               let src = imgTag.substring(with: srcRange)?.replacingOccurrences(of: "src=", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) {
-                
-                // Extract alt text if available
-                let alt = imgTag.matches(for: "alt=[\"'](.*?)[\"']").first?.replacingOccurrences(of: "alt=", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) ?? "Image"
-                
-                // Add data-cached attribute to enable client-side caching
-                let cleanImgTag = "<img src=\"\(src)\" alt=\"\(alt)\" class=\"article-image\" data-cached=\"true\" loading=\"lazy\">"
-                
-                // Replace the original tag
-                processedHtml = processedHtml.replacingOccurrences(of: imgTag, with: cleanImgTag, options: .literal)
-            }
-        }
-        
-        // Preserve YouTube/Vimeo embeds
-        let iframePattern = "<iframe[^>]*src=[\"'](.*?youtube\\.com.*?|.*?vimeo\\.com.*?)[\"'][^>]*>.*?</iframe>"
-        let iframeMatches = html.matches(for: iframePattern)
-        
-        for iframeTag in iframeMatches {
-            // Mark as video embed to avoid removal
-            let preservedTag = iframeTag.replacingOccurrences(of: "<iframe", with: "<iframe class=\"video-embed\" loading=\"lazy\"")
-            processedHtml = processedHtml.replacingOccurrences(of: iframeTag, with: preservedTag, options: .literal)
-        }
-        
-        return processedHtml
-    }
-    
-    /// Cleans tracking and unnecessary attributes from HTML tags
-    private static func cleanAttributesFromTags(_ html: String) -> String {
-        var cleanedHtml = html
-        
-        for attr in attributesToClean {
-            let pattern = "\\s\(attr)=[\"'].*?[\"']"
-            cleanedHtml = cleanedHtml.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
-        }
-        
-        return cleanedHtml
-    }
-    
-    /// Fixes relative URLs in image tags to absolute URLs
-    private static func fixRelativeImageUrls(_ html: String, baseUrl: URL? = nil) -> String {
-        var fixedHtml = html
-        
-        // Extract all image tags
-        let imgPattern = "<img[^>]*src=[\"'](.*?)[\"'][^>]*>"
-        let imgMatches = html.matches(for: imgPattern)
-        
-        for imgTag in imgMatches {
-            // Extract the source URL
-            if let srcRange = imgTag.range(of: "src=[\"'](.*?)[\"']", options: .regularExpression),
-               let srcAttr = imgTag.substring(with: srcRange),
-               let src = srcAttr.range(of: "\".*?\"", options: .regularExpression).map({ String(srcAttr[$0]) }) {
-                
-                let cleanSrc = src.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                
-                // Check if it's a relative URL
-                if cleanSrc.hasPrefix("/") && !cleanSrc.hasPrefix("//"), let baseUrl = baseUrl {
-                    // Convert to absolute URL
-                    let absoluteUrl = baseUrl.scheme! + "://" + baseUrl.host! + cleanSrc
-                    let newImgTag = imgTag.replacingOccurrences(of: srcAttr, with: "src=\"\(absoluteUrl)\"")
-                    fixedHtml = fixedHtml.replacingOccurrences(of: imgTag, with: newImgTag)
+            // Remove tracking/unwanted attributes
+            for attr in attributesToClean {
+                let elements = try doc.select("[*|\(attr)]")
+                for el in elements.array() {
+                    try el.removeAttr(attr)
                 }
             }
-        }
-        
-        return fixedHtml
-    }
-    
-    /// Attempts to fix broken HTML structure for better rendering
-    private static func fixBrokenHtml(_ html: String) -> String {
-        // This is a simplified approach to fixing broken HTML
-        var fixedHtml = html
-        
-        // Ensure we have a wrapper article tag
-        if !fixedHtml.hasPrefix("<article") && !fixedHtml.contains("</article>") {
-            fixedHtml = "<article>\(fixedHtml)</article>"
-        }
-        
-        // Fix common broken tag pairs
-        let brokenTagPairs = [
-            ("<div", "</div>"),
-            ("<p", "</p>"),
-            ("<span", "</span>"),
-            ("<h1", "</h1>"),
-            ("<h2", "</h2>"),
-            ("<h3", "</h3>"),
-            ("<h4", "</h4>"),
-            ("<h5", "</h5>"),
-            ("<h6", "</h6>"),
-            ("<section", "</section>"),
-            ("<article", "</article>")
-        ]
-        
-        for (openTag, closeTag) in brokenTagPairs {
-            let openCount = fixedHtml.components(separatedBy: openTag).count - 1
-            let closeCount = fixedHtml.components(separatedBy: closeTag).count - 1
-            
-            if openCount > closeCount {
-                // Add missing closing tags
-                for _ in 0..<(openCount - closeCount) {
-                    fixedHtml += closeTag
+            // Fix relative image URLs
+            if let baseUrl = baseUrl {
+                let images = try doc.select("img[src]")
+                for img in images.array() {
+                    let src = try img.attr("src")
+                    if src.hasPrefix("/") && !src.hasPrefix("//") {
+                        let absoluteUrl = "\(baseUrl.scheme ?? "http")://\(baseUrl.host ?? "")\(src)"
+                        try img.attr("src", absoluteUrl)
+                    }
                 }
             }
+            // Add lazy loading and class to images
+            let images = try doc.select("img")
+            for img in images.array() {
+                try img.attr("loading", "lazy")
+                try img.addClass("article-image")
+            }
+            // Mark video embeds
+            let iframes = try doc.select("iframe")
+            for iframe in iframes.array() {
+                let src = try iframe.attr("src")
+                if src.contains("youtube.com") || src.contains("vimeo.com") {
+                    try iframe.addClass("video-embed")
+                    try iframe.attr("loading", "lazy")
+                }
+            }
+            // Remove empty paragraphs and excessive breaks
+            let paragraphs = try doc.select("p")
+            for p in paragraphs.array() {
+                if try p.text().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try p.remove()
+                }
+            }
+            // Ensure content is wrapped in <article>
+            let html = try doc.body()?.html() ?? content
+            let wrapped = html.hasPrefix("<article") ? html : "<article>\(html)</article>"
+            return wrapped
+        } catch {
+            return content
         }
-        
-        return fixedHtml
     }
     
     // MARK: - HTML Wrapping

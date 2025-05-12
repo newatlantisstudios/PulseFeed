@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1762E3802DD13B9D00D622F2 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = 1762E37F2DD13B9D00D622F2 /* SwiftSoup */; };
 		17A388272D60505B006194C5 /* StoreKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 17A388252D603A60006194C5 /* StoreKit.framework */; };
 /* End PBXBuildFile section */
 
@@ -42,6 +43,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				17A388272D60505B006194C5 /* StoreKit.framework in Frameworks */,
+				1762E3802DD13B9D00D622F2 /* SwiftSoup in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -93,6 +95,7 @@
 			);
 			name = PulseFeed;
 			packageProductDependencies = (
+				1762E37F2DD13B9D00D622F2 /* SwiftSoup */,
 			);
 			productName = PulseFeed;
 			productReference = 17CE03492D22677B0066CD2B /* PulseFeed.app */;
@@ -122,6 +125,9 @@
 			);
 			mainGroup = 17CE03402D22677B0066CD2B;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				1762E37E2DD13B9D00D622F2 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 17CE034A2D22677B0066CD2B /* Products */;
 			projectDirPath = "";
@@ -362,6 +368,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1762E37E2DD13B9D00D622F2 /* XCRemoteSwiftPackageReference "SwiftSoup" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/scinfu/SwiftSoup";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.8.7;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1762E37F2DD13B9D00D622F2 /* SwiftSoup */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1762E37E2DD13B9D00D622F2 /* XCRemoteSwiftPackageReference "SwiftSoup" */;
+			productName = SwiftSoup;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 17CE03412D22677B0066CD2B /* Project object */;
 }
