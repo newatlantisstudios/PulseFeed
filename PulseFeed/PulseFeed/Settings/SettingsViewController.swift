@@ -528,6 +528,33 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
                    },
                    style: createButtonConfiguration(title: "Test iCloud KV Sync", color: .systemPurple, symbolName: "icloud"))
         )
+        
+        // Add debug sync button
+        dataItems.append(
+            .button(title: "Debug Read Status Sync", 
+                   action: { [weak self] in
+                       self?.debugReadStatusSync()
+                   },
+                   style: createButtonConfiguration(title: "Debug Read Status Sync", color: .systemOrange, symbolName: "bug"))
+        )
+        
+        // Add force push button
+        dataItems.append(
+            .button(title: "Force Push to CloudKit", 
+                   action: { [weak self] in
+                       self?.forcePushToCloudKit()
+                   },
+                   style: createButtonConfiguration(title: "Force Push to CloudKit", color: .systemPurple, symbolName: "arrow.up.to.line"))
+        )
+        
+        // Add force overwrite button
+        dataItems.append(
+            .button(title: "Force Overwrite CloudKit", 
+                   action: { [weak self] in
+                       self?.forceOverwriteCloudKit()
+                   },
+                   style: createButtonConfiguration(title: "Force Overwrite CloudKit", color: .systemRed, symbolName: "exclamationmark.triangle"))
+        )
         #endif
         
         let dataSection = SettingSection(type: .dataManagement, items: dataItems)
@@ -1051,11 +1078,9 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
         }
 
         let warningMessage = """
-            This action will force a two-way merge between local data and iCloud. 
-            Feeds, favorites, bookmarks, and read items will be combined.
-
-            If there are discrepancies between iCloud and local storage, 
-            those entries will be joined so both remain in sync.
+            This action will force a sync of all pending operations with iCloud. 
+            
+            Your local changes will be uploaded and any changes from iCloud will be downloaded and merged with your local data.
 
             Do you want to proceed with the Force Sync?
             """
@@ -1083,20 +1108,53 @@ class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
             preferredStyle: .alert
         )
         
+        // Add activity indicator
+        let indicator = UIActivityIndicatorView(style: .medium)
+        indicator.translatesAutoresizingMaskIntoConstraints = false
+        indicator.startAnimating()
+        loadingAlert.view.addSubview(indicator)
+        
+        NSLayoutConstraint.activate([
+            indicator.centerXAnchor.constraint(equalTo: loadingAlert.view.centerXAnchor),
+            indicator.bottomAnchor.constraint(equalTo: loadingAlert.view.bottomAnchor, constant: -20)
+        ])
+        
         present(loadingAlert, animated: true)
         
-        // Use the centralized forceSync method in StorageManager
-        StorageManager.shared.forceSync { success in
+        // Use the new SyncManager for force sync
+        SyncManager.shared.forceSyncAll { success, error in
             DispatchQueue.main.async {
                 loadingAlert.dismiss(animated: true) {
                     // Show result
-                    let alertTitle = success ? "Force Sync Succeeded" : "Force Sync Completed with Warnings"
-                    let alertMessage = "Data has been merged and synchronized."
+                    let alertTitle = success ? "Force Sync Completed" : "Sync Failed"
+                    let alertMessage: String
+                    
+                    if success {
+                        let (state, lastSync, pendingCount) = SyncManager.shared.getSyncStatus()
+                        var message = "All data has been synchronized successfully."
+                        if let lastSync = lastSync {
+                            message += "\n\nLast sync: \(DateFormatter.localizedString(from: lastSync, dateStyle: .short, timeStyle: .medium))"
+                        }
+                        if pendingCount > 0 {
+                            message += "\nPending operations: \(pendingCount)"
+                        }
+                        alertMessage = message
+                    } else {
+                        alertMessage = "Sync encountered errors:\n\n\(error?.localizedDescription ?? "Unknown error")"
+                    }
+                    
                     let finalAlert = UIAlertController(
                         title: alertTitle, 
                         message: alertMessage,
                         preferredStyle: .alert
                     )
+                    
+                    // Add button to view sync history
+                    finalAlert.addAction(UIAlertAction(title: "View History", style: .default) { _ in
+                        let historyVC = SyncHistoryViewController()
+                        self.navigationController?.pushViewController(historyVC, animated: true)
+                    })
+                    
                     finalAlert.addAction(UIAlertAction(title: "OK", style: .default))
                     self.present(finalAlert, animated: true)
                 }
@@ -2056,6 +2114,101 @@ extension SettingsViewController: AppThemeSelectionDelegate {
         
         // You may also want to reload table view to apply new theme colors
         tableView.reloadData()
+    }
+    
+    @objc private func debugReadStatusSync() {
+        // Show loading alert
+        let loadingAlert = UIAlertController(
+            title: "Debug Read Status Sync",
+            message: "Gathering sync information...",
+            preferredStyle: .alert
+        )
+        present(loadingAlert, animated: true)
+        
+        // Trigger debug sync
+        ReadStatusTracker.shared.debugSyncAndPrintStatus()
+        
+        // Show results after a delay to allow sync to process
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            loadingAlert.dismiss(animated: true) {
+                let resultAlert = UIAlertController(
+                    title: "Debug Sync Complete",
+                    message: "Check the console output for detailed sync information. The log will show:\n\n• Device type\n• Read items count before/after sync\n• CloudKit sync status\n• Sample read links\n\nLook for lines starting with 'DEBUG' in the Xcode console.",
+                    preferredStyle: .alert
+                )
+                resultAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(resultAlert, animated: true)
+            }
+        }
+    }
+    
+    @objc private func forcePushToCloudKit() {
+        // Show loading alert
+        let loadingAlert = UIAlertController(
+            title: "Force Push to CloudKit",
+            message: "Pushing local read status to CloudKit...",
+            preferredStyle: .alert
+        )
+        present(loadingAlert, animated: true)
+        
+        // Force push
+        ReadStatusTracker.shared.forcePushToCloudKit()
+        
+        // Use SyncManager to ensure the push completes
+        SyncManager.shared.forceSyncAll { success, error in
+            DispatchQueue.main.async {
+                loadingAlert.dismiss(animated: true) {
+                    let title = success ? "Push Complete" : "Push Failed"
+                    let message = success ? "Local read status has been pushed to CloudKit. Other devices should receive updates after their next sync." : "Failed to push to CloudKit: \(error?.localizedDescription ?? "Unknown error")"
+                    
+                    let resultAlert = UIAlertController(
+                        title: title,
+                        message: message,
+                        preferredStyle: .alert
+                    )
+                    resultAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(resultAlert, animated: true)
+                }
+            }
+        }
+    }
+    
+    @objc private func forceOverwriteCloudKit() {
+        // Show warning alert first
+        let warningAlert = UIAlertController(
+            title: "⚠️ Warning",
+            message: "This will completely overwrite all CloudKit data with your local read status. This cannot be undone and will affect all other devices. Are you sure?",
+            preferredStyle: .alert
+        )
+        
+        warningAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        warningAlert.addAction(UIAlertAction(title: "Overwrite", style: .destructive) { _ in
+            // Show loading alert
+            let loadingAlert = UIAlertController(
+                title: "Force Overwrite CloudKit",
+                message: "Overwriting CloudKit with local data...",
+                preferredStyle: .alert
+            )
+            self.present(loadingAlert, animated: true)
+            
+            // Force overwrite
+            ReadStatusTracker.shared.forceOverwriteCloudKit()
+            
+            // Show result after a delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                loadingAlert.dismiss(animated: true) {
+                    let resultAlert = UIAlertController(
+                        title: "Overwrite Complete",
+                        message: "CloudKit has been overwritten with your local read status data. Other devices will receive this data on their next sync.",
+                        preferredStyle: .alert
+                    )
+                    resultAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(resultAlert, animated: true)
+                }
+            }
+        })
+        
+        present(warningAlert, animated: true)
     }
 }
 

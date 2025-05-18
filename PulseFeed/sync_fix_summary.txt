@@ -1,0 +1,52 @@
+CloudKit Sync Fix Summary
+=======================
+
+Problem:
+- macOS: 6,255 read items
+- iPhone: 5,989 read items
+- CloudKit: only 5,984 items (data loss)
+
+Changes Made:
+
+1. Enhanced Debug Logging:
+   - Added device identification (macOS/iPhone/iPad)
+   - Added timestamp logging
+   - Added data size calculations
+   - Added per-record save status
+   - Added verification after CloudKit saves
+
+2. Fixed Merge Logic:
+   - Always prefer the larger dataset to avoid data loss
+   - Added better conflict resolution
+   - Used .allKeys save policy instead of .changedKeys
+
+3. New Features Added:
+   - Force Overwrite CloudKit button in settings
+   - Post-save verification to confirm CloudKit actually saved data
+   - Added data size logging to check for CloudKit size limits
+
+4. Files Modified:
+   - ReadStatusTracker.swift
+   - SyncManager.swift
+   - SettingsViewController.swift
+
+5. Key Changes in SyncManager.swift:
+   - Added verification read after CloudKit save
+   - Added per-record save block for debugging
+   - Added data size calculation before save
+   - Enhanced error handling
+
+6. Key Changes in ReadStatusTracker.swift:
+   - Added forceOverwriteCloudKit() method
+   - Enhanced debug logging with timestamps and device ID
+
+7. Key Changes in SettingsViewController.swift:
+   - Added "Force Overwrite CloudKit" button with warning
+   - Added implementation for force overwrite functionality
+
+Next Steps:
+1. Build and test the app
+2. Use the new debug features to identify why CloudKit isn't persisting data
+3. Check the verification logs to see if data is being saved but then immediately lost
+4. Consider CloudKit size limits (1MB per record) if data size is too large
+5. Implement chunking if necessary for large datasets

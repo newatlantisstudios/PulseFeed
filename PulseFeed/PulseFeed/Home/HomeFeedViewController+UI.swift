@@ -6,6 +6,16 @@ import CloudKit
 // MARK: - UI Setup and Navigation Components
 extension HomeFeedViewController {
     
+    func setupSyncStatusView() {
+        // Create sync status bar button item if not already created
+        if syncStatusButton == nil {
+            syncStatusButton = SyncStatusBarButtonItem()
+        }
+        
+        // Update the navigation bar to include the sync status button
+        setupNavigationButtons()
+    }
+    
     func setupLoadingIndicator() {
         // Setup main loading indicator
         loadingIndicator = UIActivityIndicatorView(style: .large)
@@ -145,6 +155,7 @@ extension HomeFeedViewController {
         navigationItem.leftBarButtonItems = [
             rssButton,
             refreshButton,
+            syncStatusButton,  // Add sync status after refresh button
             toolboxButton
         ].compactMap { $0 } // Use properties and compactMap to handle potential nils
         // Assign the right-side buttons - include bulk edit, settings and search buttons

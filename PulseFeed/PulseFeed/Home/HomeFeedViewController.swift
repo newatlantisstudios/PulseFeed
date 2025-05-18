@@ -538,6 +538,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
     // Navigation Items
     var rssButton: UIBarButtonItem?
     var refreshButton: UIBarButtonItem?
+    var syncStatusButton: UIBarButtonItem?
     var bookmarkButton: UIBarButtonItem?
     var heartButton: UIBarButtonItem?
     var archiveButton: UIBarButtonItem?
@@ -631,6 +632,7 @@ class HomeFeedViewController: UIViewController, CALayerDelegate {
         navigationItem.largeTitleDisplayMode = .never
         navigationController?.navigationBar.prefersLargeTitles = false
         setupNavigationBar()
+        setupSyncStatusView()  // Add sync status indicator after navigation bar setup
         setupNotificationObserver()
         setupLongPressGesture()
         setupSwipeGestures()

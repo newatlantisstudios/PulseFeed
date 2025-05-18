@@ -281,9 +281,11 @@ struct CloudKitStorage: ArticleStorage {
     }
 
     func load<T: Decodable>(forKey key: String, completion: @escaping (Result<T, Error>) -> Void) {
+        print("DEBUG [\(Date())]: CloudKitStorage loading data for key: \(key)")
         database.fetch(withRecordID: recordID) { record, error in
             DispatchQueue.main.async {
                 if let ckError = error as? CKError, ckError.code == .unknownItem {
+                    print("DEBUG [\(Date())]: CloudKit record not found for key: \(key)")
                     // Return empty array for collection types
                     if T.self == [RSSFeed].self || T.self == [String].self || T.self == [ArticleSummary].self {
                         completion(.success([] as! T))
@@ -301,11 +303,18 @@ struct CloudKitStorage: ArticleStorage {
                 if let record = record, let data = record[key] as? Data {
                     do {
                         let value = try JSONDecoder().decode(T.self, from: data)
+                        print("DEBUG [\(Date())]: Successfully decoded \(key) from CloudKit")
+                        if T.self == [String].self {
+                            let items = value as! [String]
+                            print("DEBUG [\(Date())]: Loaded \(items.count) strings for key: \(key)")
+                        }
                         completion(.success(value))
                     } catch {
+                        print("ERROR [\(Date())]: Failed to decode \(key) from CloudKit: \(error)")
                         completion(.failure(StorageError.decodingFailed(error)))
                     }
                 } else {
+                    print("DEBUG [\(Date())]: No data found for key: \(key) in CloudKit record")
                     // Return empty array for collection types
                     if T.self == [RSSFeed].self || T.self == [String].self || T.self == [ArticleSummary].self {
                         completion(.success([] as! T))
@@ -443,6 +452,15 @@ class StorageManager {
     
     // Network connectivity state
     private var isOffline = false
+    
+    // Device identifier for debugging
+    private let deviceId: String = {
+        #if targetEnvironment(macCatalyst)
+        return "macOS"
+        #else
+        return UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+        #endif
+    }()
     
     // Sync items types
     private enum SyncItemType: String {
@@ -745,9 +763,12 @@ class StorageManager {
     
     func syncFromCloudKit(completion: ((Bool) -> Void)? = nil) {
         guard method == .cloudKit else {
+            print("DEBUG [\(Date())] [\(deviceId)]: syncFromCloudKit called but not using CloudKit storage")
             completion?(false)
             return
         }
+        
+        print("DEBUG [\(Date())] [\(deviceId)]: Starting CloudKit sync...")
         
         // Always ensure article summarization is enabled, regardless of synced value
         UserDefaults.standard.set(true, forKey: "enableArticleSummarization")
@@ -758,7 +779,9 @@ class StorageManager {
         // Sync all item types including hierarchical folders
         for itemType in [SyncItemType.readItems, .bookmarkedItems, .heartedItems, .archivedItems, .feedFolders] {
             syncGroup.enter()
+            print("DEBUG [\(Date())] [\(deviceId)]: Syncing \(itemType.rawValue) from CloudKit...")
             syncItemsFromCloud(type: itemType) { success in
+                print("DEBUG [\(Date())] [\(self.deviceId)]: Sync \(itemType.rawValue) completed: \(success ? "success" : "failed")")
                 if !success {
                     syncSuccess = false
                 }
@@ -769,6 +792,7 @@ class StorageManager {
         // Sync hierarchical folders separately
         syncGroup.enter()
         syncHierarchicalFolders { success in
+            print("DEBUG [\(Date())] [\(self.deviceId)]: Hierarchical folders sync completed: \(success ? "success" : "failed")")
             if !success {
                 syncSuccess = false
             }
@@ -777,6 +801,7 @@ class StorageManager {
         
         // Final callback after all syncs complete
         syncGroup.notify(queue: .main) {
+            print("DEBUG [\(Date())] [\(self.deviceId)]: All CloudKit sync operations completed. Overall success: \(syncSuccess)")
             self.hasSyncedOnLaunch = true
             completion?(syncSuccess)
         }
@@ -983,6 +1008,8 @@ class StorageManager {
     private func syncItemsFromCloud(type: SyncItemType, completion: @escaping (Bool) -> Void) {
         let key = type.rawValue
         
+        print("DEBUG [\(Date())] [\(deviceId)]: syncItemsFromCloud: Starting sync for \(key)")
+        
         // Special handling for folders which are complex objects rather than simple string arrays
         if type == .feedFolders {
             syncFoldersFromCloud(completion: completion)
@@ -993,6 +1020,8 @@ class StorageManager {
             
             switch result {
             case .success(let cloudItems):
+                print("DEBUG [\(Date())] [\(self.deviceId)]: syncItemsFromCloud: Loaded \(cloudItems.count) items from CloudKit for \(key)")
+                
                 // Normalize the items
                 let normalizedCloudItems = cloudItems.map { self.normalizeLink($0) }
                 
@@ -1001,9 +1030,12 @@ class StorageManager {
                 if let data = UserDefaults.standard.data(forKey: key) {
                     do {
                         localItems = try JSONDecoder().decode([String].self, from: data)
+                        print("DEBUG [\(Date())] [\(self.deviceId)]: syncItemsFromCloud: Found \(localItems.count) local items for \(key)")
                     } catch {
-                        print("ERROR: Failed to decode local \(key): \(error.localizedDescription)")
+                        print("ERROR [\(Date())] [\(self.deviceId)]: Failed to decode local \(key): \(error.localizedDescription)")
                     }
+                } else {
+                    print("DEBUG [\(Date())] [\(self.deviceId)]: syncItemsFromCloud: No local items found for \(key)")
                 }
                 
                 let normalizedLocalItems = localItems.map { self.normalizeLink($0) }
@@ -1011,26 +1043,35 @@ class StorageManager {
                 // Merge the two sets
                 let merged = Array(Set(normalizedCloudItems).union(Set(normalizedLocalItems)))
                 
+                print("DEBUG [\(Date())] [\(self.deviceId)]: syncItemsFromCloud: Merge result - Local: \(normalizedLocalItems.count), Cloud: \(normalizedCloudItems.count), Merged: \(merged.count)")
+                
                 // Update local storage
                 if let encodedData = try? JSONEncoder().encode(merged) {
                     UserDefaults.standard.set(encodedData, forKey: key)
                     
                     // Notify that items were updated
+                    print("DEBUG [\(Date())] [\(self.deviceId)]: syncItemsFromCloud: Posting \(key)Updated notification")
                     NotificationCenter.default.post(name: Notification.Name("\(key)Updated"), object: nil)
                     
                     // If the cloud had more items than local, update CloudKit for consistency
                     if normalizedCloudItems.count < merged.count {
+                        print("DEBUG [\(Date())] [\(self.deviceId)]: syncItemsFromCloud: Local has more items than CloudKit, updating CloudKit...")
                         self.mergeAndSaveItems(merged, forKey: key) { error in
+                            if let error = error {
+                                print("ERROR [\(Date())] [\(self.deviceId)]: Failed to update CloudKit: \(error)")
+                            }
                             completion(error == nil)
                         }
                     } else {
                         completion(true)
                     }
                 } else {
+                    print("ERROR [\(Date())] [\(self.deviceId)]: Failed to encode merged items for \(key)")
                     completion(false)
                 }
                 
-            case .failure:
+            case .failure(let error):
+                print("ERROR [\(Date())] [\(self.deviceId)]: Failed to load \(key) from CloudKit: \(error)")
                 completion(false)
             }
         }
